@@ -1,0 +1,759 @@
+"""The SQL adapter, exercised for real.
+
+Runs against SQLite offline (so CI proves the mapping works) and against
+PostgreSQL when ``LAB_TEST_DATABASE_URL`` is set (so the constraints, the partial
+unique index, and ``FOR UPDATE SKIP LOCKED`` are exercised too).
+
+The same acceptance-shaped flow runs here as over the in-memory adapter, which is
+the point: the adapters must be interchangeable.
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import UTC, datetime
+from uuid import uuid4
+
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from lab_assistant.adapters.db.engine import create_schema, make_engine
+from lab_assistant.adapters.db.repositories import sql_uow_factory
+from lab_assistant.adapters.db.search import PostgresSearchIndex
+from lab_assistant.adapters.models.fake import FakeLLMProvider, HashingEmbeddingProvider
+from lab_assistant.adapters.object_store.filesystem import FilesystemObjectStore
+from lab_assistant.adapters.parsers.registry import default_parser_registry
+from lab_assistant.application import build_handler_registry
+from lab_assistant.application.accounts import AccountService
+from lab_assistant.application.chat import ChatService
+from lab_assistant.application.context import ServiceContext
+from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseService
+from lab_assistant.application.tasks import TaskOrchestrator
+from lab_assistant.config import LabEnv, Settings
+from lab_assistant.contracts.connector import IdentifierScheme
+from lab_assistant.contracts.policy import Effect, PolicyAction, ResourceType, SubjectType
+from lab_assistant.contracts.runtime import SequentialIds, system_clock
+from lab_assistant.contracts.stage import StageName
+from lab_assistant.domain.identity import Work, WorkIdentifier, WorkKind
+from lab_assistant.domain.states import RelevanceState
+from lab_assistant.domain.tasks import Task
+from lab_assistant.domain.workspace import Role
+from lab_assistant.policy.engine import PolicyEngine
+from lab_assistant.policy.model_transfer import ModelTransferPolicy
+from lab_assistant.policy.rights import default_open_access_policy
+from lab_assistant.testing import make_actor
+
+DATABASE_URLS = ["sqlite+aiosqlite:///:memory:"]
+if os.environ.get("LAB_TEST_DATABASE_URL"):
+    DATABASE_URLS.append(os.environ["LAB_TEST_DATABASE_URL"])
+
+
+@pytest.fixture(params=DATABASE_URLS, ids=lambda url: url.split(":")[0])
+async def sql_stack(request, tmp_path):
+    settings = Settings(
+        env=LabEnv.LOCAL,
+        database_url=request.param,
+        object_store_root=tmp_path / "objects",
+        llm_provider="fake",
+        embedding_profile="hashing-v1",
+    )
+    engine = make_engine(settings)
+    await create_schema(engine, dimensions=(64,))
+    context = ServiceContext(
+        uow_factory=sql_uow_factory(engine),
+        object_store=FilesystemObjectStore(settings.object_store_root),
+        clock=system_clock,
+        id_factory=SequentialIds(),
+        policy_engine=PolicyEngine(),
+        rights_policy=default_open_access_policy(),
+        model_transfer_policy=ModelTransferPolicy(),
+        settings=settings,
+        search_index=PostgresSearchIndex(engine),
+        parsers=default_parser_registry(),
+        llm_provider=FakeLLMProvider(),
+        embedding_provider=HashingEmbeddingProvider(dimensions=64),
+    )
+    handlers = build_handler_registry(context)
+    try:
+        yield {
+            "engine": engine,
+            "context": context,
+            "handlers": handlers,
+            "orchestrator": TaskOrchestrator(context, handlers),
+            "accounts": AccountService(context),
+        }
+    finally:
+        await engine.dispose()
+
+
+class TestAccountsRoundTrip:
+    async def test_user_and_workspace_persist(self, sql_stack) -> None:
+        accounts = sql_stack["accounts"]
+        user = await accounts.create_user(
+            email="Steward@Lab.invalid", password="a-long-passphrase", full_name="A Steward"
+        )
+        workspace, membership = await accounts.create_workspace(
+            slug="rla-lab", display_name="RLA Lab", owner_user_id=user.id
+        )
+        async with sql_stack["context"].uow_factory() as uow:
+            loaded = await uow.users.get(user.id)
+            by_email = await uow.users.get_by_email("steward@lab.invalid")
+            memberships = await uow.workspaces.list_memberships(workspace.id)
+            for_user = await uow.workspaces.list_for_user(user.id)
+        assert loaded is not None and loaded.full_name == "A Steward"
+        assert by_email is not None and by_email.id == user.id
+        assert [m.id for m in memberships] == [membership.id]
+        assert [w.slug for w in for_user] == ["rla-lab"]
+
+    async def test_authentication_round_trips_through_the_database(self, sql_stack) -> None:
+        accounts = sql_stack["accounts"]
+        await accounts.create_user(email="s@lab.invalid", password="a-long-passphrase")
+        authenticated = await accounts.authenticate(
+            email="s@lab.invalid", password="a-long-passphrase"
+        )
+        assert authenticated.last_login_at is not None
+
+    async def test_groups_keep_their_members(self, sql_stack) -> None:
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        member = await accounts.create_user(email="m@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+        admin = make_actor(user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN)
+        await accounts.add_member(admin, user_id=member.id, role=Role.RESEARCHER)
+        group = await accounts.create_group(
+            admin,
+            slug="restricted",
+            display_name="Restricted",
+            member_user_ids=frozenset({owner.id, member.id}),
+        )
+        async with sql_stack["context"].uow_factory() as uow:
+            groups = await uow.workspaces.list_groups(workspace.id, user_id=member.id)
+        assert [g.id for g in groups] == [group.id]
+        assert groups[0].member_user_ids == frozenset({owner.id, member.id})
+
+    async def test_grants_round_trip_with_their_enums(self, sql_stack) -> None:
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+        admin = make_actor(user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN)
+        grant = await accounts.grant(
+            admin,
+            subject_type=SubjectType.WORKSPACE,
+            subject_id=workspace.id,
+            resource_type=ResourceType.WORKSPACE,
+            resource_id=workspace.id,
+            action=PolicyAction.QUERY,
+            effect=Effect.ALLOW,
+            policy_basis="test",
+        )
+        async with sql_stack["context"].uow_factory() as uow:
+            grants = await uow.policies.list_grants(workspace.id, subject_ids=[workspace.id])
+        assert [g.id for g in grants] == [grant.id]
+        assert grants[0].action is PolicyAction.QUERY
+        assert grants[0].effect is Effect.ALLOW
+
+
+class TestIdentityConstraints:
+    async def test_one_active_work_per_strong_identifier(self, sql_stack) -> None:
+        """The invariant is a database index, not application discipline."""
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+
+        async def _add_work_with_doi(doi: str) -> Work:
+            async with context.uow_factory() as uow:
+                work = Work(
+                    id=context.new_id(),
+                    workspace_id=workspace.id,
+                    work_kind=WorkKind.ARTICLE,
+                    created_at=datetime.now(tz=UTC),
+                )
+                await uow.works.add(work)
+                await uow.works.add_identifier(
+                    WorkIdentifier(
+                        id=context.new_id(),
+                        workspace_id=workspace.id,
+                        work_id=work.id,
+                        scheme=IdentifierScheme.DOI,
+                        value_normalized=doi,
+                        value_display=doi,
+                    )
+                )
+                await uow.commit()
+            return work
+
+        first = await _add_work_with_doi("10.1/x")
+        with pytest.raises(IntegrityError):
+            await _add_work_with_doi("10.1/x")
+
+        async with context.uow_factory() as uow:
+            found = await uow.works.find_by_identifier(
+                workspace.id, scheme="doi", value_normalized="10.1/x"
+            )
+        assert found is not None and found.id == first.id
+
+    async def test_workspace_scoping_is_enforced_by_the_query(self, sql_stack) -> None:
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        left, _ = await accounts.create_workspace(
+            slug="left", display_name="Left", owner_user_id=owner.id
+        )
+        right, _ = await accounts.create_workspace(
+            slug="right", display_name="Right", owner_user_id=owner.id
+        )
+        async with context.uow_factory() as uow:
+            work = Work(
+                id=context.new_id(),
+                workspace_id=left.id,
+                work_kind=WorkKind.ARTICLE,
+                created_at=datetime.now(tz=UTC),
+            )
+            await uow.works.add(work)
+            await uow.commit()
+        async with context.uow_factory() as uow:
+            assert await uow.works.get(left.id, work.id) is not None
+            assert await uow.works.get(right.id, work.id) is None
+
+
+class TestTransactions:
+    async def test_leaving_without_committing_rolls_back(self, sql_stack) -> None:
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+        work_id = context.new_id()
+        async with context.uow_factory() as uow:
+            await uow.works.add(
+                Work(
+                    id=work_id,
+                    workspace_id=workspace.id,
+                    work_kind=WorkKind.ARTICLE,
+                    created_at=datetime.now(tz=UTC),
+                )
+            )
+            # No commit: the write must not survive.
+        async with context.uow_factory() as uow:
+            assert await uow.works.get(workspace.id, work_id) is None
+
+    async def test_an_exception_rolls_back(self, sql_stack) -> None:
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+        work_id = context.new_id()
+        with pytest.raises(RuntimeError):
+            async with context.uow_factory() as uow:
+                await uow.works.add(
+                    Work(
+                        id=work_id,
+                        workspace_id=workspace.id,
+                        work_kind=WorkKind.ARTICLE,
+                        created_at=datetime.now(tz=UTC),
+                    )
+                )
+                raise RuntimeError("something failed mid-transaction")
+        async with context.uow_factory() as uow:
+            assert await uow.works.get(workspace.id, work_id) is None
+
+
+class TestTaskEngineOverSql:
+    async def test_claim_respects_the_stage_cap_and_lease(self, sql_stack) -> None:
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+        now = datetime.now(tz=UTC)
+        async with context.uow_factory() as uow:
+            for index in range(2):
+                await uow.tasks.add(
+                    Task(
+                        id=context.new_id(),
+                        workspace_id=workspace.id,
+                        stage=StageName.INDEXING,
+                        state="ready",
+                        input_fingerprint=f"task:{index}",
+                        inputs={"release_id": str(uuid4())},
+                        created_at=now,
+                    )
+                )
+            await uow.commit()
+
+        async with context.uow_factory() as uow:
+            first = await uow.tasks.claim_next(
+                owner="worker-a",
+                worker_class="compute",
+                now=now,
+                stages=(StageName.INDEXING,),
+                stage_concurrency={StageName.INDEXING: 1},
+            )
+            await uow.commit()
+        assert first is not None
+
+        async with context.uow_factory() as uow:
+            blocked = await uow.tasks.claim_next(
+                owner="worker-b",
+                worker_class="compute",
+                now=now,
+                stages=(StageName.INDEXING,),
+                stage_concurrency={StageName.INDEXING: 1},
+            )
+        assert blocked is None
+
+    async def test_fingerprint_uniqueness_is_enforced(self, sql_stack) -> None:
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+        now = datetime.now(tz=UTC)
+
+        async def _add(task_id) -> None:
+            async with context.uow_factory() as uow:
+                await uow.tasks.add(
+                    Task(
+                        id=task_id,
+                        workspace_id=workspace.id,
+                        stage=StageName.PARSING,
+                        state="ready",
+                        input_fingerprint="task:same",
+                        created_at=now,
+                    )
+                )
+                await uow.commit()
+
+        await _add(context.new_id())
+        with pytest.raises(IntegrityError):
+            await _add(context.new_id())
+
+
+class TestSearchProjectionOverSql:
+    async def test_chunks_embeddings_and_copies_round_trip(self, sql_stack) -> None:
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        search = context.search_index
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+        release_a, release_b = context.new_id(), context.new_id()
+        work_id = context.new_id()
+        rendition_id = context.new_id()
+
+        from lab_assistant.domain.release import CorpusRelease
+
+        async with context.uow_factory() as uow:
+            for release_id in (release_a, release_b):
+                await uow.releases.add(
+                    CorpusRelease(
+                        id=release_id,
+                        workspace_id=workspace.id,
+                        name="corpus",
+                        semantic_version=f"1.{release_id.int % 10}.0",
+                        created_at=datetime.now(tz=UTC),
+                    )
+                )
+            await uow.commit()
+
+        rows = [
+            {
+                "chunk_key": "chunk:one",
+                "work_id": str(work_id),
+                "rendition_id": str(rendition_id),
+                "node_ids": ["p-1"],
+                "content": "Strain YL-A reached a lipid yield of 0.42 g/g substrate.",
+                "content_sha256": "a" * 64,
+                "chunk_type": "paragraph",
+                "section_label": "Results",
+                "page": None,
+                "token_count": 12,
+                "chunker_id": "structural-v1",
+                "chunker_version": "1",
+                "metadata": {},
+            }
+        ]
+        assert await search.write_chunks(workspace.id, release_a, rows) == 1
+        # Writing the same content twice is a no-op, not a duplicate.
+        await search.write_chunks(workspace.id, release_a, rows)
+        assert await search.count_chunks(workspace.id, release_a) == 1
+
+        embedder = context.embedding_provider
+        vector = await embedder.embed_query(rows[0]["content"])
+        await search.write_embeddings(
+            workspace.id,
+            release_a,
+            profile_id="hashing-v1",
+            rows=[
+                {
+                    "chunk_key": "chunk:one",
+                    "work_id": str(work_id),
+                    "vector": list(vector),
+                }
+            ],
+        )
+
+        lexical = await search.lexical_search(
+            workspace.id, release_a, query="lipid yield", top_k=5, work_ids=[work_id]
+        )
+        assert lexical and lexical[0]["chunk_key"] == "chunk:one"
+
+        vectors = await search.vector_search(
+            workspace.id,
+            release_a,
+            profile_id="hashing-v1",
+            vector=list(vector),
+            top_k=5,
+            work_ids=[work_id],
+        )
+        assert vectors and vectors[0]["chunk_key"] == "chunk:one"
+
+        # Policy filtering happens in the candidate SQL: an empty allowlist yields
+        # nothing rather than everything.
+        assert await search.lexical_search(
+            workspace.id, release_a, query="lipid", top_k=5, work_ids=[]
+        ) == []
+
+        copied = await search.copy_chunks(
+            workspace.id, from_release_id=release_a, to_release_id=release_b, work_ids=[work_id]
+        )
+        assert copied == 1
+        assert await search.count_chunks(workspace.id, release_b) == 1
+
+    async def test_vector_search_is_scoped_to_one_release(self, sql_stack) -> None:
+        """A chunk key is content-derived, so releases share keys by design.
+
+        The vector table used to be joined to the chunk table on ``chunk_key``
+        alone. Once an unchanged item was copied into a successor release — which is
+        exactly what makes an incremental build cheap — every vector hit matched
+        two chunk rows: inflated candidate counts, and a citation that could resolve
+        against a stale release.
+        """
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        search = context.search_index
+        owner = await accounts.create_user(email="v@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="vectors", display_name="Vectors", owner_user_id=owner.id
+        )
+        release_a, release_b = context.new_id(), context.new_id()
+        work_id, rendition_id = context.new_id(), context.new_id()
+
+        from lab_assistant.domain.release import CorpusRelease
+
+        async with context.uow_factory() as uow:
+            for index, release_id in enumerate((release_a, release_b)):
+                await uow.releases.add(
+                    CorpusRelease(
+                        id=release_id,
+                        workspace_id=workspace.id,
+                        name="corpus",
+                        semantic_version=f"2.{index}.0",
+                        created_at=datetime.now(tz=UTC),
+                    )
+                )
+            await uow.commit()
+
+        row = {
+            "chunk_key": "chunk:shared",
+            "work_id": str(work_id),
+            "rendition_id": str(rendition_id),
+            "node_ids": ["p-1"],
+            "content": "Strain YL-B reached a lipid titre of 12 g/L on glucose.",
+            "content_sha256": "b" * 64,
+            "chunk_type": "paragraph",
+            "section_label": "Results",
+            "page": None,
+            "token_count": 12,
+            "chunker_id": "structural-v1",
+            "chunker_version": "1",
+            "metadata": {},
+        }
+        vector = list(await context.embedding_provider.embed_query(row["content"]))
+        for release_id in (release_a, release_b):
+            await search.write_chunks(workspace.id, release_id, [row])
+            await search.write_embeddings(
+                workspace.id,
+                release_id,
+                profile_id="hashing-v1",
+                rows=[{"chunk_key": row["chunk_key"], "work_id": str(work_id), "vector": vector}],
+            )
+
+        hits = await search.vector_search(
+            workspace.id, release_a, profile_id="hashing-v1", vector=vector, top_k=10
+        )
+        assert len(hits) == 1
+        assert hits[0]["release_id"] == str(release_a)
+
+        other = await search.vector_search(
+            workspace.id, release_b, profile_id="hashing-v1", vector=vector, top_k=10
+        )
+        assert [hit["release_id"] for hit in other] == [str(release_b)]
+
+    async def test_counts_and_claims_obey_the_work_filter(self, sql_stack) -> None:
+        """Aggregates are a disclosure channel; they take the same allowlist."""
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        search = context.search_index
+        owner = await accounts.create_user(email="c@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="counts", display_name="Counts", owner_user_id=owner.id
+        )
+        release_id = context.new_id()
+        visible, restricted = context.new_id(), context.new_id()
+
+        from lab_assistant.domain.release import CorpusRelease
+
+        async with context.uow_factory() as uow:
+            await uow.releases.add(
+                CorpusRelease(
+                    id=release_id,
+                    workspace_id=workspace.id,
+                    name="corpus",
+                    semantic_version="3.0.0",
+                    created_at=datetime.now(tz=UTC),
+                )
+            )
+            await uow.commit()
+
+        def chunk(work_id, key: str) -> dict:
+            return {
+                "chunk_key": key,
+                "work_id": str(work_id),
+                "rendition_id": str(context.new_id()),
+                "node_ids": ["p-1"],
+                "content": f"content {key}",
+                "content_sha256": key.ljust(64, "0"),
+                "chunk_type": "paragraph",
+                "section_label": None,
+                "page": None,
+                "token_count": 4,
+                "chunker_id": "structural-v1",
+                "chunker_version": "1",
+                "metadata": {},
+            }
+
+        await search.write_chunks(
+            workspace.id,
+            release_id,
+            [chunk(visible, "visible"), chunk(restricted, "restricted")],
+        )
+        await search.write_claim_projection(
+            workspace.id,
+            release_id,
+            [
+                {
+                    "revision_id": str(context.new_id()),
+                    "claim_id": str(context.new_id()),
+                    "work_id": str(work_id),
+                    "predicate": "lipid_yield",
+                    "subject": "YL",
+                    "object_kind": "quantity",
+                    "value": "0.21",
+                    "unit": "g/g",
+                    "review_status": "accepted",
+                    "abstention_reason": "reported",
+                    "evidence_span_ids": [],
+                }
+                for work_id in (visible, restricted)
+            ],
+        )
+
+        assert await search.count_chunks(workspace.id, release_id) == 2
+        assert await search.count_chunks(workspace.id, release_id, work_ids=[visible]) == 1
+        assert await search.count_chunks(workspace.id, release_id, work_ids=[]) == 0
+
+        claims = await search.claim_search(
+            workspace.id, release_id, top_k=10, work_ids=[visible]
+        )
+        assert [claim["work_id"] for claim in claims] == [str(visible)]
+        assert await search.claim_search(
+            workspace.id, release_id, top_k=10, work_ids=[]
+        ) == []
+
+
+class TestEndToEndOverSql:
+    async def test_release_publish_and_answer(self, sql_stack) -> None:
+        """The same flow as the in-memory acceptance test, over SQL."""
+        from lab_assistant.contracts.canonical import canonical_json
+        from lab_assistant.contracts.parsing import (
+            NodeKind,
+            ParseQualityMetrics,
+            RenditionDocument,
+            RenditionNode,
+        )
+        from lab_assistant.domain.assets import (
+            AcquisitionRoute,
+            Asset,
+            MalwareScanStatus,
+            ValidationStatus,
+        )
+        from lab_assistant.domain.renditions import ParseRun, Rendition
+        from lab_assistant.domain.states import ParseState
+
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+        admin = make_actor(user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN)
+        grants = []
+        for action in (
+            PolicyAction.QUERY,
+            PolicyAction.VIEW_CONTENT,
+            PolicyAction.DISPLAY_EXCERPT,
+            PolicyAction.INDEX,
+        ):
+            grants.append(
+                await accounts.grant(
+                    admin,
+                    subject_type=SubjectType.WORKSPACE,
+                    subject_id=workspace.id,
+                    resource_type=ResourceType.WORKSPACE,
+                    resource_id=workspace.id,
+                    action=action,
+                    effect=Effect.ALLOW,
+                    policy_basis="workspace_corpus",
+                )
+            )
+        actor = make_actor(
+            user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN, grants=tuple(grants)
+        )
+
+        text_body = "Strain YL-A reached a lipid yield of 0.42 g/g substrate at 30 degrees C."
+        document = RenditionDocument(
+            format="jats",
+            nodes=(RenditionNode(node_id="p-1", kind=NodeKind.PARAGRAPH, text=text_body),),
+            quality=ParseQualityMetrics(characters=len(text_body), section_count=1),
+        )
+        rendition_object = await context.object_store.put(
+            canonical_json(document.model_dump(mode="json")),
+            workspace_id=workspace.id,
+            object_class="rendition",
+            media_type="application/json",
+        )
+        asset_object = await context.object_store.put(
+            text_body.encode(), workspace_id=workspace.id, object_class="asset"
+        )
+
+        from lab_assistant.application.acquisition import AcquisitionService
+
+        async with context.uow_factory() as uow:
+            work = Work(
+                id=context.new_id(),
+                workspace_id=workspace.id,
+                work_kind=WorkKind.ARTICLE,
+                relevance=RelevanceState.INCLUDED,
+                created_at=datetime.now(tz=UTC),
+            )
+            await uow.works.add(work)
+            asset = Asset(
+                id=context.new_id(),
+                workspace_id=workspace.id,
+                sha256=asset_object.sha256,
+                byte_length=asset_object.byte_length,
+                object_id=asset_object.id,
+                media_type_detected="application/xml",
+                malware_scan_status=MalwareScanStatus.PASSED,
+                validation_status=ValidationStatus.PASSED,
+                work_id=work.id,
+                identity_verified=True,
+                created_at=datetime.now(tz=UTC),
+            )
+            await uow.assets.add_asset(asset)
+            await uow.commit()
+
+        rights = await AcquisitionService(context).decide_rights(
+            actor,
+            subject_type="asset",
+            subject_id=asset.id,
+            licence_expression="cc-by-4.0",
+            access_basis="open_access_repository",
+            route=AcquisitionRoute.OPEN_ACCESS_API,
+            requested_actions=frozenset(
+                {PolicyAction.PROCESS_LOCAL, PolicyAction.INDEX, PolicyAction.QUERY}
+            ),
+        )
+        async with context.uow_factory() as uow:
+            asset.rights_decision_id = rights.id
+            await uow.assets.update_asset(asset)
+            parse_run = ParseRun(
+                id=context.new_id(),
+                workspace_id=workspace.id,
+                asset_id=asset.id,
+                parser_id="jats-etree",
+                parser_version="1.0.0",
+                input_sha256=asset.sha256,
+                run_fingerprint="parse_run:sql",
+                status="succeeded",
+            )
+            await uow.renditions.add_parse_run(parse_run)
+            await uow.renditions.add_rendition(
+                Rendition(
+                    id=context.new_id(),
+                    workspace_id=workspace.id,
+                    parse_run_id=parse_run.id,
+                    asset_id=asset.id,
+                    work_id=work.id,
+                    object_id=rendition_object.id,
+                    sha256=rendition_object.sha256,
+                    quality_status=ParseState.READY,
+                    created_at=datetime.now(tz=UTC),
+                )
+            )
+            await uow.commit()
+
+        releases = ReleaseService(context)
+        release, manifest, _diff = await releases.draft(
+            actor,
+            ReleaseDraftRequest(
+                name="corpus",
+                semantic_version="1.0.0",
+                embedding_profile_ids=("hashing-v1",),
+                include_claims=False,
+            ),
+        )
+        assert manifest.items
+        report = await releases.validate(actor, release_id=release.id)
+        assert report.passed, report.failures
+        _approved, tasks = await releases.approve(actor, release_id=release.id)
+        submitted = await sql_stack["orchestrator"].submit_requests(
+            tasks, workspace_id=workspace.id, actor_id=owner.id
+        )
+        for task in submitted:
+            await sql_stack["orchestrator"].execute(task)
+        await releases.publish(actor, release_id=release.id)
+
+        chat = ChatService(context)
+        session = await chat.create_session(actor)
+        answer = await chat.ask(
+            actor, session_id=session.id, question="What lipid yield was reported?"
+        )
+        assert answer.message.citations
+        assert answer.message.citation_validation_passed
+        resolved = await chat.resolve_citation(
+            actor, message_id=answer.message.id, handle=answer.message.citations[0].handle
+        )
+        assert resolved["resolved"], resolved
+
+        # Audit chain survives a round trip through SQL.
+        from lab_assistant.provenance.audit import verify_chain
+
+        async with context.uow_factory() as uow:
+            events = await uow.audit.list_events(workspace.id, limit=500)
+        ok, problems = verify_chain(events)
+        assert ok, problems

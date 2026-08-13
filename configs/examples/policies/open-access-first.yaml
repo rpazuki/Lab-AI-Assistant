@@ -1,0 +1,65 @@
+# Institution-approved rights rules. The software executes these; it does not
+# decide copyright law, and anything unclear becomes a steward decision.
+policy_id: open-access-first
+semantic_version: 1.0.0
+default_review_after_days: 365
+
+# External model transfer needs an approved processor AND an approved region, no
+# matter what a licence rule says. An empty list means no external transfer.
+approved_external_processors: []
+approved_processor_regions: []
+
+rules:
+  - rule_id: cc-open
+    description: Creative Commons and public-domain licences permit local processing.
+    licence_prefixes: [cc-by, cc0, cc-by-sa, cc-by-nc, public-domain]
+    effect: allow
+    actions:
+      - store_metadata
+      - view_metadata
+      - store_content
+      - process_local
+      - create_embeddings_local
+      - index
+      - query
+      - display_excerpt
+      - display_full_content
+      - export_metadata
+      - export_claims
+      - export_evidence
+      - retain
+
+  - rule_id: user-assisted-attested
+    description: A user-supplied copy with a recorded access basis.
+    routes: [user_assisted]
+    requires_attestation: true
+    effect: allow
+    review_after_days: 180
+    restrictions:
+      - no external model transfer
+      - no content export
+    actions:
+      - store_content
+      - process_local
+      - create_embeddings_local
+      - index
+      - query
+      - display_excerpt
+      - retain
+
+  - rule_id: metadata-fallback
+    description: Metadata and abstract tier where content rights are absent.
+    effect: allow
+    actions: [store_metadata, view_metadata, query, export_metadata, retain]
+
+  - rule_id: entitled-content-review
+    description: Entitled or unclear content requires a steward decision.
+    licence_prefixes: [all-rights-reserved, publisher-specific, unknown]
+    effect: require_review
+    review_after_days: 90
+    actions:
+      - store_content
+      - process_local
+      - send_to_external_model
+      - export_content
+      - display_full_content

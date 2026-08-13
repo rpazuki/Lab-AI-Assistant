@@ -1,0 +1,12 @@
+# Behaviour for the `local` scenario. No secrets, no addresses that a container
+# would need to override: the compiled defaults already serve `local`.
+log_level: DEBUG
+log_format: console
+worker_poll_interval_seconds: 0.5
+stage_concurrency:
+  discovery: 2
+  acquisition: 2
+  parsing: 1
+  extraction: 1
+  indexing: 1
+  evaluation: 1

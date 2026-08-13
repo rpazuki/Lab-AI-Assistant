@@ -1,0 +1,152 @@
+"""Audit and outbox event contracts.
+
+Audit events map onto PROV concepts: entities (observation, asset, rendition,
+claim, release), activities (request, merge, parse, extract, review, publish),
+and agents (user, connector, worker version, model provider). A full RDF export
+is optional; retaining the lineage relationally is not.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import StrEnum
+from typing import Any
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
+
+__all__ = [
+    "ActorType",
+    "AuditAction",
+    "AuditEventRecord",
+    "OutboxEvent",
+]
+
+
+class ActorType(StrEnum):
+    USER = "user"
+    SERVICE_ACCOUNT = "service_account"
+    WORKER = "worker"
+    CONNECTOR = "connector"
+    MODEL_PROVIDER = "model_provider"
+    SYSTEM = "system"
+
+
+class AuditAction(StrEnum):
+    # authentication and membership
+    LOGIN_SUCCEEDED = "login_succeeded"
+    LOGIN_FAILED = "login_failed"
+    LOGOUT = "logout"
+    SESSION_REVOKED = "session_revoked"
+    INVITATION_CREATED = "invitation_created"
+    INVITATION_ACCEPTED = "invitation_accepted"
+    MEMBERSHIP_CHANGED = "membership_changed"
+    GRANT_CHANGED = "grant_changed"
+    # discovery and identity
+    SCOPE_APPROVED = "scope_approved"
+    DISCOVERY_RUN_STARTED = "discovery_run_started"
+    DISCOVERY_RUN_FROZEN = "discovery_run_frozen"
+    DEGRADED_SOURCE_ACCEPTED = "degraded_source_accepted"
+    IDENTITY_DECIDED = "identity_decided"
+    RELEVANCE_DECIDED = "relevance_decided"
+    # rights and acquisition
+    RIGHTS_DECIDED = "rights_decided"
+    ACQUISITION_ATTEMPTED = "acquisition_attempted"
+    ASSET_REGISTERED = "asset_registered"
+    ASSET_QUARANTINED = "asset_quarantined"
+    ASSISTED_UPLOAD_ACCEPTED = "assisted_upload_accepted"
+    # parsing and extraction
+    PARSE_COMPLETED = "parse_completed"
+    RENDITION_ACCEPTED_DEGRADED = "rendition_accepted_degraded"
+    EXTRACTION_COMPLETED = "extraction_completed"
+    PROPOSAL_REJECTED = "proposal_rejected"
+    # review and release
+    CLAIM_REVIEWED = "claim_reviewed"
+    RELEASE_DRAFTED = "release_drafted"
+    RELEASE_VALIDATED = "release_validated"
+    RELEASE_APPROVED = "release_approved"
+    RELEASE_PUBLISHED = "release_published"
+    RELEASE_ROLLED_BACK = "release_rolled_back"
+    RELEASE_WITHDRAWN = "release_withdrawn"
+    # serving and export
+    ANSWER_GENERATED = "answer_generated"
+    CITATION_VALIDATION_FAILED = "citation_validation_failed"
+    EXPORT_CREATED = "export_created"
+    EXPORT_DOWNLOADED = "export_downloaded"
+    ASSET_DOWNLOADED = "asset_downloaded"
+    POLICY_DENIED = "policy_denied"
+    # operations
+    TASK_DEAD_LETTERED = "task_dead_lettered"
+    OBJECT_INTEGRITY_FAILED = "object_integrity_failed"
+    ADMIN_ACTION = "admin_action"
+    LEGACY_IMPORT_RUN = "legacy_import_run"
+
+
+class AuditEventRecord(BaseModel):
+    """Append-only audit row.
+
+    ``integrity_hash`` chains to the previous event for the same workspace, so a
+    deleted or reordered row is detectable.
+    """
+
+    model_config = {"frozen": True}
+
+    id: UUID
+    workspace_id: UUID | None
+    occurred_at: datetime
+    actor_type: ActorType
+    actor_id: UUID | None
+    action: AuditAction
+    subject_type: str
+    subject_id: UUID | None
+    run_id: UUID | None = None
+    request_id: str | None = None
+    reason_code: str | None = None
+    before_object_id: UUID | None = None
+    after_object_id: UUID | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    previous_integrity_hash: str | None = None
+    integrity_hash: str = ""
+
+    def compute_integrity_hash(self) -> str:
+        return sha256_bytes(
+            canonical_json(
+                {
+                    "id": self.id,
+                    "workspace_id": self.workspace_id,
+                    "occurred_at": self.occurred_at,
+                    "actor_type": self.actor_type,
+                    "actor_id": self.actor_id,
+                    "action": self.action,
+                    "subject_type": self.subject_type,
+                    "subject_id": self.subject_id,
+                    "run_id": self.run_id,
+                    "reason_code": self.reason_code,
+                    "metadata": self.metadata,
+                    "previous": self.previous_integrity_hash,
+                }
+            )
+        )
+
+    def with_integrity(self, previous_hash: str | None) -> AuditEventRecord:
+        candidate = self.model_copy(update={"previous_integrity_hash": previous_hash})
+        return candidate.model_copy(update={"integrity_hash": candidate.compute_integrity_hash()})
+
+    def verify(self) -> bool:
+        return self.integrity_hash == self.compute_integrity_hash()
+
+
+class OutboxEvent(BaseModel):
+    """Transactional outbox row: a side effect registered with the write."""
+
+    model_config = {"frozen": True}
+
+    id: UUID
+    workspace_id: UUID | None
+    topic: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    published_at: datetime | None = None
+    attempts: int = 0

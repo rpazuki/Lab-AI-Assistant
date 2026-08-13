@@ -1,0 +1,25 @@
+{
+  "benchmark_id": "generation-citations",
+  "version": "1.0.0",
+  "kind": "generation",
+  "description": "Citation validity and a mechanical faithfulness proxy. Expert review and a versioned judge model remain necessary; this is the cheap check that runs on every release.",
+  "origin": "synthetic, written for this repository",
+  "licence": "internal",
+  "permitted_use": "release gating",
+  "sensitivity": "public",
+  "cases": [
+    {
+      "case_id": "yield-with-citation",
+      "question": "What lipid yield was reported for the engineered strain?",
+      "relevant": ["work:yeast"],
+      "expected_citation_count": 1
+    },
+    {
+      "case_id": "absent-topic",
+      "question": "What was the oxygen transfer rate?",
+      "relevant": [],
+      "notes": "Nothing in the corpus answers this. The expected behaviour is an explicit gap, not a plausible number."
+    }
+  ],
+  "thresholds": { "citation_validity": 1.0, "faithfulness_proxy": 0.9 }
+}

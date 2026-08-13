@@ -1,0 +1,21 @@
+# Schedule meeting the stated targets: RPO 15 minutes for the control plane (WAL
+# archiving is continuous; the base backup bounds replay time), RPO 24 hours for the
+# object store, RTO 4 hours assuming the VM must be rebuilt.
+#
+# Install with `crontab -u lab -` and keep the secrets in the environment file the
+# unit reads, never in this file.
+
+SHELL=/bin/bash
+BACKUP_ROOT=/var/backups/lab-assistant
+OBJECT_ROOT=/var/lib/lab-assistant/objects
+
+# Nightly base backup and object snapshot.
+15 2 * * *  /opt/lab-assistant/infra/backup/backup.sh >> /var/log/lab-backup.log 2>&1
+
+# Weekly: verify the audit chain of the live deployment. A break is an incident, not
+# a metric — see docs/operations/runbooks/audit-chain-failure.md.
+30 3 * * 0  cd /opt/lab-assistant && docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml run --rm api lab db verify-audit --workspace rla-lab >> /var/log/lab-audit.log 2>&1
+
+# Twice a year, a human restores into a scratch VM and records the result. It is not
+# in this crontab on purpose: an unattended restore proves the script runs, not that
+# the deployment can be recovered.

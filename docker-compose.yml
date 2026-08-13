@@ -1,0 +1,107 @@
+# Local development stack.
+#
+# Addresses come from .env.compose (committed, no secrets). DATABASE_URL is built
+# here from POSTGRES_* under `environment:`, which outranks `env_file:` — so the
+# password has exactly one owner and cannot drift when it is rotated.
+#
+# `${VAR}` interpolation reads the shell and the project .env only; a service-level
+# env_file does not feed it. Anything used for interpolation stays in .env.
+
+x-logging: &logging
+  # Docker's default json-file driver never rotates. An unbounded log fills the
+  # disk and takes PostgreSQL with it.
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lab_assistant}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      # Published so host processes can reach it; Settings defaults to this port
+      # for the `local` scenario.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    env_file: [.env, .env.compose]
+    environment:
+      LAB_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lab_assistant}
+    depends_on:
+      db: { condition: service_healthy }
+    ports: ["8000:8000"]
+    volumes:
+      - objects:/var/lib/lab-assistant/objects
+      - modelcache:/var/lib/lab-assistant/model-cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  # Two worker deployments, not six: network-bound and compute-bound. Per-stage
+  # concurrency caps live in the database, so scaling a replica adds resilience
+  # rather than request rate (scale §3.2).
+  worker-network:
+    build:
+      context: .
+      dockerfile: workers/discovery/Dockerfile
+    command: ["network"]
+    env_file: [.env, .env.compose]
+    environment:
+      LAB_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lab_assistant}
+    depends_on:
+      db: { condition: service_healthy }
+    volumes:
+      - objects:/var/lib/lab-assistant/objects
+    logging: *logging
+
+  worker-compute:
+    build:
+      context: .
+      dockerfile: workers/parsing/Dockerfile
+    command: ["compute"]
+    env_file: [.env, .env.compose]
+    environment:
+      LAB_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lab_assistant}
+    depends_on:
+      db: { condition: service_healthy }
+    volumes:
+      - objects:/var/lib/lab-assistant/objects
+      - modelcache:/var/lib/lab-assistant/model-cache
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      # The frontend owns exactly one address, and it is injected here.
+      LAB_API_URL: http://api:8000
+      NODE_ENV: production
+    depends_on:
+      api: { condition: service_started }
+    ports: ["3000:3000"]
+    logging: *logging
+
+volumes:
+  pgdata:
+  objects:
+  # Model weights are deployment state: a rebuild must not re-download them.
+  modelcache:

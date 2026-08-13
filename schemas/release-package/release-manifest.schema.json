@@ -1,0 +1,211 @@
+{
+  "$defs": {
+    "ReleaseItemRecord": {
+      "description": "One manifest line. Sorted before hashing.",
+      "properties": {
+        "access_policy_snapshot_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Access Policy Snapshot Id"
+        },
+        "asset_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Asset Id"
+        },
+        "claim_revision_ids": {
+          "default": [],
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Claim Revision Ids",
+          "type": "array"
+        },
+        "inclusion_reason": {
+          "default": "steward_selected",
+          "title": "Inclusion Reason",
+          "type": "string"
+        },
+        "manifestation_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Manifestation Id"
+        },
+        "rendition_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rendition Digest"
+        },
+        "rendition_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rendition Id"
+        },
+        "source_discovery_run_ids": {
+          "default": [],
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Source Discovery Run Ids",
+          "type": "array"
+        },
+        "work_id": {
+          "format": "uuid",
+          "title": "Work Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "work_id"
+      ],
+      "title": "ReleaseItemRecord",
+      "type": "object"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/release-package/release-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "chunker_id": {
+      "default": "structural-v1",
+      "title": "Chunker Id",
+      "type": "string"
+    },
+    "chunker_version": {
+      "default": "1",
+      "title": "Chunker Version",
+      "type": "string"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
+    "embedding_profile_ids": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Embedding Profile Ids",
+      "type": "array"
+    },
+    "items": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ReleaseItemRecord"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "parent_release_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Release Id"
+    },
+    "policy_version_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Policy Version Id"
+    },
+    "release_id": {
+      "format": "uuid",
+      "title": "Release Id",
+      "type": "string"
+    },
+    "scope_version_ids": {
+      "default": [],
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Scope Version Ids",
+      "type": "array"
+    },
+    "semantic_version": {
+      "title": "Semantic Version",
+      "type": "string"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "release_id",
+    "workspace_id",
+    "name",
+    "semantic_version"
+  ],
+  "title": "ReleaseManifest",
+  "type": "object",
+  "x-semantic-version": "1.0.0"
+}

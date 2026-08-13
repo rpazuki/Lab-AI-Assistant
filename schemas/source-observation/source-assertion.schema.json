@@ -1,0 +1,154 @@
+{
+  "$defs": {
+    "AssertionStatus": {
+      "enum": [
+        "active",
+        "superseded",
+        "withdrawn",
+        "quarantined"
+      ],
+      "title": "AssertionStatus",
+      "type": "string"
+    },
+    "Predicate": {
+      "description": "What a source can assert about a record.\n\nExtending this list is a schema change with a migration, not a free-form\nstring, because canonical metadata resolution is defined per predicate.",
+      "enum": [
+        "title",
+        "abstract",
+        "identifier",
+        "resource_kind",
+        "author",
+        "journal",
+        "publication_date",
+        "year",
+        "language",
+        "licence",
+        "access_status",
+        "full_text_location",
+        "subject_term",
+        "keyword",
+        "relation",
+        "retraction",
+        "correction",
+        "version_label",
+        "publisher",
+        "affiliation",
+        "funding",
+        "cited_by_count"
+      ],
+      "title": "Predicate",
+      "type": "string"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/source-observation/source-assertion.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One field-level statement by one source.\n\n``subject_hint`` is what the source thinks the record is about (usually a\nnormalised identifier). It is a hint precisely because identity has not been\ndecided yet.",
+  "properties": {
+    "asserted_at_source": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Asserted At Source"
+    },
+    "confidence": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Confidence"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "normalised_value_json": {
+      "anyOf": [
+        {},
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Normalised Value Json"
+    },
+    "predicate": {
+      "$ref": "#/$defs/Predicate"
+    },
+    "source_observation_id": {
+      "format": "uuid",
+      "title": "Source Observation Id",
+      "type": "string"
+    },
+    "source_priority_class": {
+      "default": "aggregator",
+      "title": "Source Priority Class",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/AssertionStatus",
+      "default": "active"
+    },
+    "subject_hint": {
+      "title": "Subject Hint",
+      "type": "string"
+    },
+    "valid_from_source": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Valid From Source"
+    },
+    "value_json": {
+      "title": "Value Json"
+    },
+    "work_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Work Id"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "workspace_id",
+    "source_observation_id",
+    "subject_hint",
+    "predicate",
+    "value_json"
+  ],
+  "title": "SourceAssertion",
+  "type": "object",
+  "x-semantic-version": "1.0.0"
+}

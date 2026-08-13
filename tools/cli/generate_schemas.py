@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Generate JSON Schema for the domain contracts.
+
+Schemas have stable ids and semantic versions, and they are committed so a
+consumer can validate a payload without importing this package. CI regenerates
+them and fails on drift.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from pydantic import TypeAdapter
+
+from lab_assistant.contracts.extraction import ClaimProposal, TemplateVersionSpec
+from lab_assistant.contracts.parsing import RenditionDocument
+from lab_assistant.contracts.release import ExportPackageManifest, ReleaseManifest
+from lab_assistant.domain.observation import SourceAssertion
+from lab_assistant.domain.scope import ScopeVersion
+
+ROOT = Path(__file__).resolve().parents[2]
+SCHEMAS = ROOT / "schemas"
+
+TARGETS = {
+    "source-observation/source-assertion.schema.json": (SourceAssertion, "1.0.0"),
+    "source-observation/scope-version.schema.json": (ScopeVersion, "1.0.0"),
+    "rendition/rendition-document.schema.json": (RenditionDocument, "1.0.0"),
+    "claim/claim-proposal.schema.json": (ClaimProposal, "1.0.0"),
+    "claim/template-version.schema.json": (TemplateVersionSpec, "1.0.0"),
+    "release-package/release-manifest.schema.json": (ReleaseManifest, "1.0.0"),
+    "release-package/export-package-manifest.schema.json": (ExportPackageManifest, "1.0.0"),
+}
+
+
+def main() -> int:
+    for relative, (model, version) in TARGETS.items():
+        schema = TypeAdapter(model).json_schema(by_alias=True)
+        schema["$id"] = f"https://lab-ai-assistant.invalid/schemas/{relative}"
+        schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+        schema["x-semantic-version"] = version
+        path = SCHEMAS / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(f"wrote {path.relative_to(ROOT)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,1173 @@
+"""In-memory repositories and unit of work.
+
+Not a toy: this is the adapter the deterministic test suite runs against, and it
+enforces the same rules the PostgreSQL adapter must. In particular every method
+requires ``workspace_id`` and filters on it, and ``_MemoryStore`` asserts that a
+row being written carries the workspace it is being written under. A repository
+that silently ignored the workspace argument would make the isolation tests
+vacuous, so the guard lives here rather than only in the SQL layer.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
+from types import TracebackType
+from typing import Any, TypeVar
+from uuid import UUID
+
+from lab_assistant.application.ports import WorkVisibilityRow
+from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
+from lab_assistant.contracts.policy import GrantSpec
+from lab_assistant.contracts.stage import StageName
+from lab_assistant.domain.assets import (
+    AcquisitionAttempt,
+    AcquisitionPlan,
+    Asset,
+    Manifestation,
+    RightsDecision,
+)
+from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback
+from lab_assistant.domain.claims import Claim, ClaimRevision, Entity, Experiment, Review
+from lab_assistant.domain.identity import IdentityDecision, Work, WorkIdentifier, WorkRelation
+from lab_assistant.domain.observation import (
+    DiscoveryRun,
+    SourceAssertion,
+    SourceObservation,
+    SourceRequest,
+)
+from lab_assistant.domain.release import CorpusRelease, ReleaseItem, SearchAlias
+from lab_assistant.domain.renditions import EvidenceSpan, ParseRun, Rendition
+from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
+from lab_assistant.domain.states import TaskState
+from lab_assistant.domain.tasks import RateBudget, Task
+from lab_assistant.domain.workspace import Group, Invitation, Membership, User, Workspace
+
+__all__ = ["MemoryDatabase", "MemoryUnitOfWork", "memory_uow_factory"]
+
+T = TypeVar("T")
+
+
+def _check_workspace(workspace_id: UUID, row: Any) -> None:
+    row_workspace = getattr(row, "workspace_id", None)
+    if row_workspace is not None and row_workspace != workspace_id:
+        raise AssertionError(
+            f"row {getattr(row, 'id', row)!r} belongs to workspace {row_workspace}, "
+            f"expected {workspace_id}"
+        )
+
+
+@dataclass
+class MemoryDatabase:
+    """The shared store behind every unit of work in one test or process."""
+
+    users: dict[UUID, User] = field(default_factory=dict)
+    workspaces: dict[UUID, Workspace] = field(default_factory=dict)
+    memberships: dict[tuple[UUID, UUID], Membership] = field(default_factory=dict)
+    groups: dict[UUID, Group] = field(default_factory=dict)
+    invitations: dict[UUID, Invitation] = field(default_factory=dict)
+    grants: dict[UUID, GrantSpec] = field(default_factory=dict)
+    rights_decisions: dict[UUID, RightsDecision] = field(default_factory=dict)
+    scope_versions: dict[UUID, ScopeVersion] = field(default_factory=dict)
+    config_versions: dict[UUID, ConfigVersion] = field(default_factory=dict)
+    discovery_runs: dict[UUID, DiscoveryRun] = field(default_factory=dict)
+    source_requests: dict[UUID, SourceRequest] = field(default_factory=dict)
+    observations: dict[UUID, SourceObservation] = field(default_factory=dict)
+    assertions: dict[UUID, SourceAssertion] = field(default_factory=dict)
+    cursors: dict[tuple[UUID, str], tuple[str | None, bool]] = field(default_factory=dict)
+    works: dict[UUID, Work] = field(default_factory=dict)
+    identifiers: dict[UUID, WorkIdentifier] = field(default_factory=dict)
+    relations: dict[UUID, WorkRelation] = field(default_factory=dict)
+    identity_decisions: dict[UUID, IdentityDecision] = field(default_factory=dict)
+    manifestations: dict[UUID, Manifestation] = field(default_factory=dict)
+    plans: dict[UUID, AcquisitionPlan] = field(default_factory=dict)
+    attempts: dict[UUID, AcquisitionAttempt] = field(default_factory=dict)
+    assets: dict[UUID, Asset] = field(default_factory=dict)
+    parse_runs: dict[UUID, ParseRun] = field(default_factory=dict)
+    renditions: dict[UUID, Rendition] = field(default_factory=dict)
+    spans: dict[UUID, EvidenceSpan] = field(default_factory=dict)
+    entities: dict[UUID, Entity] = field(default_factory=dict)
+    experiments: dict[UUID, Experiment] = field(default_factory=dict)
+    claims: dict[UUID, Claim] = field(default_factory=dict)
+    revisions: dict[UUID, ClaimRevision] = field(default_factory=dict)
+    reviews: dict[UUID, Review] = field(default_factory=dict)
+    releases: dict[UUID, CorpusRelease] = field(default_factory=dict)
+    release_items: dict[UUID, ReleaseItem] = field(default_factory=dict)
+    aliases: dict[tuple[UUID, str], SearchAlias] = field(default_factory=dict)
+    tasks: dict[UUID, Task] = field(default_factory=dict)
+    rate_budgets: dict[str, RateBudget] = field(default_factory=dict)
+    audit_events: list[AuditEventRecord] = field(default_factory=list)
+    outbox: dict[UUID, OutboxEvent] = field(default_factory=dict)
+    chat_sessions: dict[UUID, ChatSession] = field(default_factory=dict)
+    chat_messages: dict[UUID, ChatMessage] = field(default_factory=dict)
+    feedback: dict[UUID, Feedback] = field(default_factory=dict)
+    evaluation_runs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Per-stage leases, tracked by task id rather than as a counter. Rows here
+    #: are mutated in place, so "what state was this task in before?" is not a
+    #: question this store can answer — a counter would leak on every update.
+    leased_task_ids: dict[StageName, set[UUID]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
+
+
+class _Users:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def get(self, user_id: UUID) -> User | None:
+        return self._db.users.get(user_id)
+
+    async def get_by_email(self, email_normalized: str) -> User | None:
+        for user in self._db.users.values():
+            if user.email_normalized == email_normalized:
+                return user
+        return None
+
+    async def add(self, user: User) -> None:
+        self._db.users[user.id] = user
+
+    async def update(self, user: User) -> None:
+        self._db.users[user.id] = user
+
+    async def list_all(self, *, limit: int = 100, cursor: str | None = None) -> list[User]:
+        users = sorted(self._db.users.values(), key=lambda u: u.email_normalized)
+        if cursor:
+            users = [u for u in users if u.email_normalized > cursor]
+        return users[:limit]
+
+
+class _Workspaces:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def get(self, workspace_id: UUID) -> Workspace | None:
+        return self._db.workspaces.get(workspace_id)
+
+    async def get_by_slug(self, slug: str) -> Workspace | None:
+        for workspace in self._db.workspaces.values():
+            if workspace.slug == slug:
+                return workspace
+        return None
+
+    async def add(self, workspace: Workspace) -> None:
+        self._db.workspaces[workspace.id] = workspace
+
+    async def list_for_user(self, user_id: UUID) -> list[Workspace]:
+        ids = {ws_id for (ws_id, uid) in self._db.memberships if uid == user_id}
+        return [self._db.workspaces[i] for i in sorted(ids, key=str) if i in self._db.workspaces]
+
+    async def get_membership(self, workspace_id: UUID, user_id: UUID) -> Membership | None:
+        return self._db.memberships.get((workspace_id, user_id))
+
+    async def list_memberships(self, workspace_id: UUID) -> list[Membership]:
+        return [m for (ws, _), m in self._db.memberships.items() if ws == workspace_id]
+
+    async def add_membership(self, membership: Membership) -> None:
+        self._db.memberships[(membership.workspace_id, membership.user_id)] = membership
+
+    async def update_membership(self, membership: Membership) -> None:
+        self._db.memberships[(membership.workspace_id, membership.user_id)] = membership
+
+    async def list_groups(self, workspace_id: UUID, *, user_id: UUID | None = None) -> list[Group]:
+        groups = [g for g in self._db.groups.values() if g.workspace_id == workspace_id]
+        if user_id is not None:
+            groups = [g for g in groups if g.contains(user_id)]
+        return sorted(groups, key=lambda g: g.slug)
+
+    async def add_group(self, group: Group) -> None:
+        self._db.groups[group.id] = group
+
+    async def update_group(self, group: Group) -> None:
+        self._db.groups[group.id] = group
+
+    async def add_invitation(self, invitation: Invitation) -> None:
+        self._db.invitations[invitation.id] = invitation
+
+    async def get_invitation_by_digest(self, token_digest: str) -> Invitation | None:
+        for invitation in self._db.invitations.values():
+            if invitation.token_digest == token_digest:
+                return invitation
+        return None
+
+    async def update_invitation(self, invitation: Invitation) -> None:
+        self._db.invitations[invitation.id] = invitation
+
+    async def list_invitations(self, workspace_id: UUID) -> list[Invitation]:
+        return [i for i in self._db.invitations.values() if i.workspace_id == workspace_id]
+
+
+class _Policies:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def list_grants(
+        self, workspace_id: UUID, *, subject_ids: Sequence[UUID]
+    ) -> list[GrantSpec]:
+        subjects = set(subject_ids)
+        return [
+            grant
+            for grant in self._db.grants.values()
+            if grant.workspace_id == workspace_id and grant.subject_id in subjects
+        ]
+
+    async def add_grant(self, grant: GrantSpec) -> None:
+        self._db.grants[grant.id] = grant
+
+    async def remove_grant(self, workspace_id: UUID, grant_id: UUID) -> None:
+        grant = self._db.grants.get(grant_id)
+        if grant is not None:
+            _check_workspace(workspace_id, grant)
+            del self._db.grants[grant_id]
+
+    async def add_rights_decision(self, decision: RightsDecision) -> None:
+        self._db.rights_decisions[decision.id] = decision
+
+    async def get_rights_decision(
+        self, workspace_id: UUID, decision_id: UUID
+    ) -> RightsDecision | None:
+        decision = self._db.rights_decisions.get(decision_id)
+        if decision is None:
+            return None
+        _check_workspace(workspace_id, decision)
+        return decision
+
+    async def find_rights_decision(
+        self, workspace_id: UUID, *, subject_id: UUID
+    ) -> RightsDecision | None:
+        matches = [
+            decision
+            for decision in self._db.rights_decisions.values()
+            if decision.workspace_id == workspace_id and decision.subject_id == subject_id
+        ]
+        return sorted(matches, key=lambda d: d.decided_at or datetime.min)[-1] if matches else None
+
+    async def list_rights_decisions(
+        self, workspace_id: UUID, *, expiring_before: datetime | None = None
+    ) -> list[RightsDecision]:
+        decisions = [
+            d for d in self._db.rights_decisions.values() if d.workspace_id == workspace_id
+        ]
+        if expiring_before is not None:
+            decisions = [
+                d
+                for d in decisions
+                if d.review_due_at is not None and d.review_due_at < expiring_before
+            ]
+        return decisions
+
+
+class _Configs:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add_scope_version(self, scope: ScopeVersion) -> None:
+        self._db.scope_versions[scope.id] = scope
+
+    async def get_scope_version(
+        self, workspace_id: UUID, scope_version_id: UUID
+    ) -> ScopeVersion | None:
+        scope = self._db.scope_versions.get(scope_version_id)
+        if scope is None:
+            return None
+        _check_workspace(workspace_id, scope)
+        return scope
+
+    async def latest_scope_version(self, workspace_id: UUID, scope_id: UUID) -> ScopeVersion | None:
+        versions = [
+            s
+            for s in self._db.scope_versions.values()
+            if s.workspace_id == workspace_id and s.scope_id == scope_id
+        ]
+        return max(versions, key=lambda s: s.version) if versions else None
+
+    async def list_scope_versions(self, workspace_id: UUID) -> list[ScopeVersion]:
+        return sorted(
+            (s for s in self._db.scope_versions.values() if s.workspace_id == workspace_id),
+            key=lambda s: (str(s.scope_id), s.version),
+        )
+
+    async def add_config_version(self, config: ConfigVersion) -> None:
+        self._db.config_versions[config.id] = config
+
+    async def get_config_version(self, config_version_id: UUID) -> ConfigVersion | None:
+        return self._db.config_versions.get(config_version_id)
+
+    async def find_config_version(
+        self, workspace_id: UUID | None, *, kind: str, logical_id: str, semantic_version: str
+    ) -> ConfigVersion | None:
+        for config in self._db.config_versions.values():
+            if (
+                config.workspace_id == workspace_id
+                and config.kind.value == kind
+                and config.logical_id == logical_id
+                and config.semantic_version == semantic_version
+            ):
+                return config
+        return None
+
+    async def list_config_versions(
+        self, workspace_id: UUID | None, *, kind: str | None = None
+    ) -> list[ConfigVersion]:
+        configs = [
+            config
+            for config in self._db.config_versions.values()
+            if config.workspace_id == workspace_id and (kind is None or config.kind.value == kind)
+        ]
+        return sorted(configs, key=lambda c: (c.logical_id, c.semantic_version))
+
+
+class _Observations:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add_run(self, run: DiscoveryRun) -> None:
+        self._db.discovery_runs[run.id] = run
+
+    async def update_run(self, run: DiscoveryRun) -> None:
+        self._db.discovery_runs[run.id] = run
+
+    async def get_run(self, workspace_id: UUID, run_id: UUID) -> DiscoveryRun | None:
+        run = self._db.discovery_runs.get(run_id)
+        if run is None:
+            return None
+        _check_workspace(workspace_id, run)
+        return run
+
+    async def list_runs(self, workspace_id: UUID, *, limit: int = 50) -> list[DiscoveryRun]:
+        runs = [r for r in self._db.discovery_runs.values() if r.workspace_id == workspace_id]
+        return sorted(runs, key=lambda r: r.started_at or datetime.min, reverse=True)[:limit]
+
+    async def add_request(self, request: SourceRequest) -> None:
+        self._db.source_requests[request.id] = request
+
+    async def update_request(self, request: SourceRequest) -> None:
+        self._db.source_requests[request.id] = request
+
+    async def find_request_by_fingerprint(
+        self, workspace_id: UUID, fingerprint: str
+    ) -> SourceRequest | None:
+        for request in self._db.source_requests.values():
+            if request.workspace_id == workspace_id and request.request_fingerprint == fingerprint:
+                return request
+        return None
+
+    async def list_requests(self, workspace_id: UUID, run_id: UUID) -> list[SourceRequest]:
+        return [
+            request
+            for request in self._db.source_requests.values()
+            if request.workspace_id == workspace_id and request.discovery_run_id == run_id
+        ]
+
+    async def add_observation(self, observation: SourceObservation) -> None:
+        self._db.observations[observation.id] = observation
+
+    async def list_observations(
+        self, workspace_id: UUID, *, request_id: UUID | None = None
+    ) -> list[SourceObservation]:
+        return [
+            observation
+            for observation in self._db.observations.values()
+            if observation.workspace_id == workspace_id
+            and (request_id is None or observation.source_request_id == request_id)
+        ]
+
+    async def add_assertions(self, assertions: Sequence[SourceAssertion]) -> None:
+        for assertion in assertions:
+            self._db.assertions[assertion.id] = assertion
+
+    async def list_assertions(
+        self,
+        workspace_id: UUID,
+        *,
+        observation_id: UUID | None = None,
+        subject_hint: str | None = None,
+        work_id: UUID | None = None,
+    ) -> list[SourceAssertion]:
+        result = []
+        for assertion in self._db.assertions.values():
+            if assertion.workspace_id != workspace_id:
+                continue
+            if observation_id is not None and assertion.source_observation_id != observation_id:
+                continue
+            if subject_hint is not None and assertion.subject_hint != subject_hint:
+                continue
+            if work_id is not None and assertion.work_id != work_id:
+                continue
+            result.append(assertion)
+        return result
+
+    async def update_assertion(self, assertion: SourceAssertion) -> None:
+        self._db.assertions[assertion.id] = assertion
+
+    async def get_cursor(self, workspace_id: UUID, *, lineage_key: str) -> str | None:
+        return self._db.cursors.get((workspace_id, lineage_key), (None, False))[0]
+
+    async def set_cursor(
+        self, workspace_id: UUID, *, lineage_key: str, position: str | None, exhausted: bool
+    ) -> None:
+        self._db.cursors[(workspace_id, lineage_key)] = (position, exhausted)
+
+
+class _Works:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add(self, work: Work) -> None:
+        self._db.works[work.id] = work
+
+    async def update(self, work: Work) -> None:
+        self._db.works[work.id] = work
+
+    async def get(self, workspace_id: UUID, work_id: UUID) -> Work | None:
+        work = self._db.works.get(work_id)
+        if work is None:
+            return None
+        _check_workspace(workspace_id, work)
+        return work
+
+    async def list_works(
+        self,
+        workspace_id: UUID,
+        *,
+        relevance: str | None = None,
+        limit: int = 100,
+        after_id: UUID | None = None,
+    ) -> list[Work]:
+        works = [w for w in self._db.works.values() if w.workspace_id == workspace_id]
+        if relevance is not None:
+            works = [w for w in works if w.relevance.value == relevance]
+        ordered = sorted(works, key=lambda w: str(w.id))
+        if after_id is not None:
+            cursor = str(after_id)
+            ordered = [w for w in ordered if str(w.id) > cursor]
+        return ordered[:limit]
+
+    async def list_work_visibility(
+        self,
+        workspace_id: UUID,
+        *,
+        relevance: str | None = None,
+        limit: int = 500,
+        after_id: UUID | None = None,
+    ) -> list[WorkVisibilityRow]:
+        page = await self.list_works(
+            workspace_id, relevance=relevance, limit=limit, after_id=after_id
+        )
+        rows: list[WorkVisibilityRow] = []
+        for work in page:
+            restricted: list[UUID] = []
+            sensitivity = "internal"
+            has_decision = False
+            for asset in self._db.assets.values():
+                if asset.workspace_id != workspace_id or asset.work_id != work.id:
+                    continue
+                if asset.rights_decision_id is None:
+                    continue
+                decision = self._db.rights_decisions.get(asset.rights_decision_id)
+                if decision is None:
+                    continue
+                has_decision = True
+                restricted.extend(decision.restricted_to_group_ids)
+                if decision.restrictions:
+                    sensitivity = "restricted"
+            rows.append(
+                WorkVisibilityRow(
+                    work_id=work.id,
+                    is_active=work.is_active,
+                    relevance=work.relevance.value,
+                    restricted_to_groups=tuple(dict.fromkeys(restricted)),
+                    sensitivity=sensitivity,
+                    has_rights_decision=has_decision,
+                )
+            )
+        return rows
+
+    async def add_identifier(self, identifier: WorkIdentifier) -> None:
+        self._db.identifiers[identifier.id] = identifier
+
+    async def update_identifier(self, identifier: WorkIdentifier) -> None:
+        self._db.identifiers[identifier.id] = identifier
+
+    async def list_identifiers(self, workspace_id: UUID, work_id: UUID) -> list[WorkIdentifier]:
+        return [
+            identifier
+            for identifier in self._db.identifiers.values()
+            if identifier.workspace_id == workspace_id and identifier.work_id == work_id
+        ]
+
+    async def find_by_identifier(
+        self, workspace_id: UUID, *, scheme: str, value_normalized: str
+    ) -> Work | None:
+        for identifier in self._db.identifiers.values():
+            if (
+                identifier.workspace_id == workspace_id
+                and identifier.scheme.value == scheme
+                and identifier.value_normalized == value_normalized
+                and identifier.status == "active"
+            ):
+                work = self._db.works.get(identifier.work_id)
+                if work is not None and work.is_active:
+                    return work
+        return None
+
+    async def add_relation(self, relation: WorkRelation) -> None:
+        self._db.relations[relation.id] = relation
+
+    async def list_relations(self, workspace_id: UUID, work_id: UUID) -> list[WorkRelation]:
+        return [
+            relation
+            for relation in self._db.relations.values()
+            if relation.workspace_id == workspace_id
+            and work_id in (relation.from_work_id, relation.to_work_id)
+        ]
+
+    async def add_decision(self, decision: IdentityDecision) -> None:
+        self._db.identity_decisions[decision.id] = decision
+
+    async def list_decisions(
+        self, workspace_id: UUID, *, work_id: UUID | None = None
+    ) -> list[IdentityDecision]:
+        decisions = [
+            decision
+            for decision in self._db.identity_decisions.values()
+            if decision.workspace_id == workspace_id
+            and (work_id is None or work_id in decision.subject_work_ids)
+        ]
+        return sorted(decisions, key=lambda d: d.decided_at or datetime.min)
+
+
+class _Assets:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add_manifestation(self, manifestation: Manifestation) -> None:
+        self._db.manifestations[manifestation.id] = manifestation
+
+    async def get_manifestation(
+        self, workspace_id: UUID, manifestation_id: UUID
+    ) -> Manifestation | None:
+        manifestation = self._db.manifestations.get(manifestation_id)
+        if manifestation is None:
+            return None
+        _check_workspace(workspace_id, manifestation)
+        return manifestation
+
+    async def list_manifestations(self, workspace_id: UUID, work_id: UUID) -> list[Manifestation]:
+        return [
+            manifestation
+            for manifestation in self._db.manifestations.values()
+            if manifestation.workspace_id == workspace_id and manifestation.work_id == work_id
+        ]
+
+    async def add_plan(self, plan: AcquisitionPlan) -> None:
+        self._db.plans[plan.id] = plan
+
+    async def update_plan(self, plan: AcquisitionPlan) -> None:
+        self._db.plans[plan.id] = plan
+
+    async def get_plan(self, workspace_id: UUID, plan_id: UUID) -> AcquisitionPlan | None:
+        plan = self._db.plans.get(plan_id)
+        if plan is None:
+            return None
+        _check_workspace(workspace_id, plan)
+        return plan
+
+    async def list_plans(
+        self, workspace_id: UUID, *, status: str | None = None
+    ) -> list[AcquisitionPlan]:
+        plans = [p for p in self._db.plans.values() if p.workspace_id == workspace_id]
+        if status is not None:
+            plans = [p for p in plans if p.status == status]
+        return sorted(plans, key=lambda p: str(p.id))
+
+    async def add_attempt(self, attempt: AcquisitionAttempt) -> None:
+        self._db.attempts[attempt.id] = attempt
+
+    async def list_attempts(
+        self, workspace_id: UUID, *, plan_id: UUID | None = None
+    ) -> list[AcquisitionAttempt]:
+        attempts = [
+            attempt
+            for attempt in self._db.attempts.values()
+            if attempt.workspace_id == workspace_id
+            and (plan_id is None or attempt.acquisition_plan_id == plan_id)
+        ]
+        return sorted(attempts, key=lambda a: a.attempt_number)
+
+    async def add_asset(self, asset: Asset) -> None:
+        self._db.assets[asset.id] = asset
+
+    async def update_asset(self, asset: Asset) -> None:
+        self._db.assets[asset.id] = asset
+
+    async def get_asset(self, workspace_id: UUID, asset_id: UUID) -> Asset | None:
+        asset = self._db.assets.get(asset_id)
+        if asset is None:
+            return None
+        _check_workspace(workspace_id, asset)
+        return asset
+
+    async def find_asset_by_digest(
+        self,
+        workspace_id: UUID,
+        sha256: str,
+        *,
+        work_id: UUID | None = None,
+        manifestation_id: UUID | None = None,
+    ) -> Asset | None:
+        for asset in sorted(self._db.assets.values(), key=lambda a: str(a.id)):
+            if asset.workspace_id != workspace_id or asset.sha256 != sha256:
+                continue
+            if work_id is not None and asset.work_id != work_id:
+                continue
+            if manifestation_id is not None and asset.manifestation_id != manifestation_id:
+                continue
+            return asset
+        return None
+
+    async def list_assets(self, workspace_id: UUID, *, work_id: UUID | None = None) -> list[Asset]:
+        return [
+            asset
+            for asset in self._db.assets.values()
+            if asset.workspace_id == workspace_id and (work_id is None or asset.work_id == work_id)
+        ]
+
+
+class _Renditions:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add_parse_run(self, run: ParseRun) -> None:
+        self._db.parse_runs[run.id] = run
+
+    async def update_parse_run(self, run: ParseRun) -> None:
+        self._db.parse_runs[run.id] = run
+
+    async def get_parse_run(self, workspace_id: UUID, run_id: UUID) -> ParseRun | None:
+        run = self._db.parse_runs.get(run_id)
+        if run is None:
+            return None
+        _check_workspace(workspace_id, run)
+        return run
+
+    async def find_parse_run_by_fingerprint(
+        self, workspace_id: UUID, fingerprint: str
+    ) -> ParseRun | None:
+        for run in self._db.parse_runs.values():
+            if run.workspace_id == workspace_id and run.run_fingerprint == fingerprint:
+                return run
+        return None
+
+    async def add_rendition(self, rendition: Rendition) -> None:
+        self._db.renditions[rendition.id] = rendition
+
+    async def update_rendition(self, rendition: Rendition) -> None:
+        self._db.renditions[rendition.id] = rendition
+
+    async def get_rendition(self, workspace_id: UUID, rendition_id: UUID) -> Rendition | None:
+        rendition = self._db.renditions.get(rendition_id)
+        if rendition is None:
+            return None
+        _check_workspace(workspace_id, rendition)
+        return rendition
+
+    async def list_renditions(
+        self, workspace_id: UUID, *, asset_id: UUID | None = None, work_id: UUID | None = None
+    ) -> list[Rendition]:
+        return [
+            rendition
+            for rendition in self._db.renditions.values()
+            if rendition.workspace_id == workspace_id
+            and (asset_id is None or rendition.asset_id == asset_id)
+            and (work_id is None or rendition.work_id == work_id)
+        ]
+
+    async def add_spans(self, spans: Sequence[EvidenceSpan]) -> None:
+        for span in spans:
+            self._db.spans[span.id] = span
+
+    async def get_span(self, workspace_id: UUID, span_id: UUID) -> EvidenceSpan | None:
+        span = self._db.spans.get(span_id)
+        if span is None:
+            return None
+        _check_workspace(workspace_id, span)
+        return span
+
+    async def list_spans(self, workspace_id: UUID, rendition_id: UUID) -> list[EvidenceSpan]:
+        return [
+            span
+            for span in self._db.spans.values()
+            if span.workspace_id == workspace_id and span.rendition_id == rendition_id
+        ]
+
+
+class _Claims:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add_entity(self, entity: Entity) -> None:
+        self._db.entities[entity.id] = entity
+
+    async def find_entity(
+        self, workspace_id: UUID, *, entity_type: str, normalised_value: str
+    ) -> Entity | None:
+        for entity in self._db.entities.values():
+            if (
+                entity.workspace_id == workspace_id
+                and entity.entity_type.value == entity_type
+                and entity.normalised_value == normalised_value
+            ):
+                return entity
+        return None
+
+    async def add_experiment(self, experiment: Experiment) -> None:
+        self._db.experiments[experiment.id] = experiment
+
+    async def update_experiment(self, experiment: Experiment) -> None:
+        self._db.experiments[experiment.id] = experiment
+
+    async def list_experiments(self, workspace_id: UUID, work_id: UUID) -> list[Experiment]:
+        return [
+            experiment
+            for experiment in self._db.experiments.values()
+            if experiment.workspace_id == workspace_id and experiment.work_id == work_id
+        ]
+
+    async def add_claim(self, claim: Claim) -> None:
+        self._db.claims[claim.id] = claim
+
+    async def update_claim(self, claim: Claim) -> None:
+        self._db.claims[claim.id] = claim
+
+    async def get_claim(self, workspace_id: UUID, claim_id: UUID) -> Claim | None:
+        claim = self._db.claims.get(claim_id)
+        if claim is None:
+            return None
+        _check_workspace(workspace_id, claim)
+        return claim
+
+    async def list_claims(
+        self,
+        workspace_id: UUID,
+        *,
+        work_id: UUID | None = None,
+        review_status: str | None = None,
+        limit: int = 200,
+        after_id: UUID | None = None,
+    ) -> list[Claim]:
+        claims = [
+            claim
+            for claim in self._db.claims.values()
+            if claim.workspace_id == workspace_id and (work_id is None or claim.work_id == work_id)
+        ]
+        if review_status is not None:
+            filtered = []
+            for claim in claims:
+                revision = (
+                    self._db.revisions.get(claim.current_revision_id)
+                    if claim.current_revision_id
+                    else None
+                )
+                if revision is not None and revision.review_status.value == review_status:
+                    filtered.append(claim)
+            claims = filtered
+        ordered = sorted(claims, key=lambda c: str(c.id))
+        if after_id is not None:
+            cursor = str(after_id)
+            ordered = [claim for claim in ordered if str(claim.id) > cursor]
+        return ordered[:limit]
+
+    async def add_revision(self, revision: ClaimRevision) -> None:
+        self._db.revisions[revision.id] = revision
+
+    async def update_revision(self, revision: ClaimRevision) -> None:
+        self._db.revisions[revision.id] = revision
+
+    async def get_revision(self, workspace_id: UUID, revision_id: UUID) -> ClaimRevision | None:
+        revision = self._db.revisions.get(revision_id)
+        if revision is None:
+            return None
+        _check_workspace(workspace_id, revision)
+        return revision
+
+    async def list_revisions(self, workspace_id: UUID, claim_id: UUID) -> list[ClaimRevision]:
+        revisions = [
+            revision
+            for revision in self._db.revisions.values()
+            if revision.workspace_id == workspace_id and revision.claim_id == claim_id
+        ]
+        return sorted(revisions, key=lambda r: r.revision_number)
+
+    async def find_revision_by_fingerprint(
+        self, workspace_id: UUID, fingerprint: str
+    ) -> ClaimRevision | None:
+        for revision in self._db.revisions.values():
+            if (
+                revision.workspace_id == workspace_id
+                and revision.extractor_fingerprint == fingerprint
+            ):
+                return revision
+        return None
+
+    async def add_review(self, review: Review) -> None:
+        self._db.reviews[review.id] = review
+
+    async def list_reviews(
+        self, workspace_id: UUID, *, subject_id: UUID | None = None
+    ) -> list[Review]:
+        return [
+            review
+            for review in self._db.reviews.values()
+            if review.workspace_id == workspace_id
+            and (subject_id is None or review.subject_id == subject_id)
+        ]
+
+
+class _Releases:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add(self, release: CorpusRelease) -> None:
+        self._db.releases[release.id] = release
+
+    async def update(self, release: CorpusRelease) -> None:
+        self._db.releases[release.id] = release
+
+    async def get(self, workspace_id: UUID, release_id: UUID) -> CorpusRelease | None:
+        release = self._db.releases.get(release_id)
+        if release is None:
+            return None
+        _check_workspace(workspace_id, release)
+        return release
+
+    async def list_releases(self, workspace_id: UUID, *, limit: int = 50) -> list[CorpusRelease]:
+        releases = [r for r in self._db.releases.values() if r.workspace_id == workspace_id]
+        return sorted(releases, key=lambda r: r.created_at or datetime.min, reverse=True)[:limit]
+
+    async def add_items(self, items: Sequence[ReleaseItem]) -> None:
+        for item in items:
+            self._db.release_items[item.id] = item
+
+    async def list_items(self, workspace_id: UUID, release_id: UUID) -> list[ReleaseItem]:
+        items = [
+            item
+            for item in self._db.release_items.values()
+            if item.workspace_id == workspace_id and item.release_id == release_id
+        ]
+        return sorted(items, key=lambda i: i.record.sort_key)
+
+    async def get_alias(self, workspace_id: UUID, alias: str) -> SearchAlias | None:
+        return self._db.aliases.get((workspace_id, alias))
+
+    async def upsert_alias(self, alias: SearchAlias) -> None:
+        self._db.aliases[(alias.workspace_id, alias.alias)] = alias
+
+    async def list_aliases(self, workspace_id: UUID) -> list[SearchAlias]:
+        return [a for (ws, _), a in self._db.aliases.items() if ws == workspace_id]
+
+
+class _Tasks:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add(self, task: Task) -> None:
+        self._db.tasks[task.id] = task
+
+    async def update(self, task: Task) -> None:
+        previous = self._db.tasks.get(task.id)
+        if (
+            previous is not None
+            and previous.state is TaskState.LEASED
+            and (task.state is not TaskState.LEASED)
+        ):
+            self._db.leased_by_stage[task.stage] = max(0, self._db.leased_by_stage[task.stage] - 1)
+        self._db.tasks[task.id] = task
+
+    async def get(self, workspace_id: UUID, task_id: UUID) -> Task | None:
+        task = self._db.tasks.get(task_id)
+        if task is None:
+            return None
+        _check_workspace(workspace_id, task)
+        return task
+
+    async def find_by_fingerprint(self, workspace_id: UUID, fingerprint: str) -> Task | None:
+        for task in self._db.tasks.values():
+            if task.workspace_id == workspace_id and task.input_fingerprint == fingerprint:
+                return task
+        return None
+
+    async def claim_next(
+        self,
+        *,
+        owner: str,
+        worker_class: str,
+        now: datetime,
+        stages: Sequence[StageName] | None = None,
+        lease_seconds: int = 300,
+        stage_concurrency: dict[StageName, int] | None = None,
+    ) -> Task | None:
+        eligible = [
+            task
+            for task in self._db.tasks.values()
+            if task.worker_class == worker_class
+            and (stages is None or task.stage in stages)
+            and task.is_claimable(now)
+        ]
+        # Priority, then creation order: deterministic and starvation-free.
+        eligible.sort(key=lambda t: (t.priority, t.created_at or datetime.min, str(t.id)))
+        caps = stage_concurrency or {}
+        for task in eligible:
+            in_flight = self._db.leased_task_ids[task.stage]
+            # An expired lease is reclaimable: the previous owner is gone.
+            in_flight = {
+                task_id
+                for task_id in in_flight
+                if (held := self._db.tasks.get(task_id)) is not None
+                and held.state is TaskState.LEASED
+                and (held.lease_expires_at is None or held.lease_expires_at > now)
+            }
+            self._db.leased_task_ids[task.stage] = in_flight
+            if len(in_flight) >= caps.get(task.stage, 1):
+                continue
+            task.claim(owner=owner, now=now, lease_seconds=lease_seconds)
+            in_flight.add(task.id)
+            self._db.tasks[task.id] = task
+            return task
+        return None
+
+    async def list_tasks(
+        self,
+        workspace_id: UUID,
+        *,
+        state: str | None = None,
+        stage: str | None = None,
+        limit: int = 100,
+    ) -> list[Task]:
+        tasks = [
+            task
+            for task in self._db.tasks.values()
+            if task.workspace_id == workspace_id
+            and (state is None or task.state.value == state)
+            and (stage is None or task.stage.value == stage)
+        ]
+        return sorted(tasks, key=lambda t: t.created_at or datetime.min)[:limit]
+
+    async def count_by_state(self, workspace_id: UUID) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for task in self._db.tasks.values():
+            if task.workspace_id != workspace_id:
+                continue
+            counts[task.state.value] = counts.get(task.state.value, 0) + 1
+        return dict(sorted(counts.items()))
+
+    async def release_dependencies(self, workspace_id: UUID, completed_task_id: UUID) -> list[Task]:
+        unblocked: list[Task] = []
+        for task in self._db.tasks.values():
+            if task.workspace_id != workspace_id or task.state is not TaskState.BLOCKED:
+                continue
+            if completed_task_id not in task.depends_on:
+                continue
+            remaining = [
+                dependency
+                for dependency in task.depends_on
+                if dependency != completed_task_id
+                and (self._db.tasks.get(dependency) or task).state is not TaskState.SUCCEEDED
+            ]
+            if not remaining:
+                task.release_dependency_block()
+                unblocked.append(task)
+        return unblocked
+
+    async def get_rate_budget(self, key: str, *, for_update: bool = False) -> RateBudget | None:
+        # One process, one event loop: there is nothing to lock against. The
+        # argument exists so the in-memory and SQL adapters stay interchangeable.
+        return self._db.rate_budgets.get(key)
+
+    async def upsert_rate_budget(self, budget: RateBudget) -> None:
+        self._db.rate_budgets[budget.key] = budget
+
+
+class _Audit:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def append(self, event: AuditEventRecord) -> None:
+        self._db.audit_events.append(event)
+
+    async def latest_hash(self, workspace_id: UUID | None) -> str | None:
+        for event in reversed(self._db.audit_events):
+            if event.workspace_id == workspace_id:
+                return event.integrity_hash
+        return None
+
+    async def list_events(
+        self,
+        workspace_id: UUID | None,
+        *,
+        subject_id: UUID | None = None,
+        action: str | None = None,
+        limit: int = 100,
+    ) -> list[AuditEventRecord]:
+        events = [
+            event
+            for event in self._db.audit_events
+            if event.workspace_id == workspace_id
+            and (subject_id is None or event.subject_id == subject_id)
+            and (action is None or event.action.value == action)
+        ]
+        return events[-limit:]
+
+    async def add_outbox(self, event: OutboxEvent) -> None:
+        self._db.outbox[event.id] = event
+
+    async def list_unpublished_outbox(self, *, limit: int = 100) -> list[OutboxEvent]:
+        return [e for e in self._db.outbox.values() if e.published_at is None][:limit]
+
+    async def mark_outbox_published(self, event_id: UUID, *, at: datetime) -> None:
+        event = self._db.outbox.get(event_id)
+        if event is not None:
+            self._db.outbox[event_id] = event.model_copy(update={"published_at": at})
+
+
+class _Chat:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add_session(self, session: ChatSession) -> None:
+        self._db.chat_sessions[session.id] = session
+
+    async def update_session(self, session: ChatSession) -> None:
+        self._db.chat_sessions[session.id] = session
+
+    async def get_session(self, workspace_id: UUID, session_id: UUID) -> ChatSession | None:
+        session = self._db.chat_sessions.get(session_id)
+        if session is None:
+            return None
+        _check_workspace(workspace_id, session)
+        return session
+
+    async def list_sessions(
+        self, workspace_id: UUID, user_id: UUID, *, limit: int = 50
+    ) -> list[ChatSession]:
+        sessions = [
+            session
+            for session in self._db.chat_sessions.values()
+            if session.workspace_id == workspace_id and session.user_id == user_id
+        ]
+        return sorted(sessions, key=lambda s: s.updated_at or datetime.min, reverse=True)[:limit]
+
+    async def list_workspace_sessions(
+        self, workspace_id: UUID, *, limit: int = 1000
+    ) -> list[ChatSession]:
+        sessions = [
+            session
+            for session in self._db.chat_sessions.values()
+            if session.workspace_id == workspace_id
+        ]
+        return sorted(sessions, key=lambda s: str(s.id))[:limit]
+
+    async def add_message(self, message: ChatMessage) -> None:
+        self._db.chat_messages[message.id] = message
+
+    async def list_messages(self, workspace_id: UUID, session_id: UUID) -> list[ChatMessage]:
+        messages = [
+            message
+            for message in self._db.chat_messages.values()
+            if message.workspace_id == workspace_id and message.session_id == session_id
+        ]
+        return sorted(messages, key=lambda m: m.created_at or datetime.min)
+
+    async def get_message(self, workspace_id: UUID, message_id: UUID) -> ChatMessage | None:
+        message = self._db.chat_messages.get(message_id)
+        if message is None:
+            return None
+        _check_workspace(workspace_id, message)
+        return message
+
+    async def add_feedback(self, feedback: Feedback) -> None:
+        self._db.feedback[feedback.id] = feedback
+
+    async def list_feedback(self, workspace_id: UUID, *, limit: int = 100) -> list[Feedback]:
+        return [f for f in self._db.feedback.values() if f.workspace_id == workspace_id][:limit]
+
+
+class _Evaluations:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add_run(self, run: dict[str, Any]) -> None:
+        self._db.evaluation_runs[str(run["id"])] = run
+
+    async def get_run(self, workspace_id: UUID, run_id: UUID) -> dict[str, Any] | None:
+        run = self._db.evaluation_runs.get(str(run_id))
+        if run is None or run.get("workspace_id") != str(workspace_id):
+            return None
+        return run
+
+    async def list_runs(
+        self, workspace_id: UUID, *, benchmark_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        return [
+            run
+            for run in self._db.evaluation_runs.values()
+            if run.get("workspace_id") == str(workspace_id)
+            and (benchmark_id is None or str(run.get("benchmark", "")).startswith(benchmark_id))
+        ]
+
+
+class MemoryUnitOfWork:
+    """A unit of work over the in-memory store.
+
+    ``commit`` is a no-op because writes land in the shared dictionaries
+    immediately; ``rollback`` raises rather than pretending, so a test that
+    depends on rollback semantics fails loudly instead of passing by accident.
+    """
+
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+        self.users = _Users(db)
+        self.workspaces = _Workspaces(db)
+        self.policies = _Policies(db)
+        self.configs = _Configs(db)
+        self.observations = _Observations(db)
+        self.works = _Works(db)
+        self.assets = _Assets(db)
+        self.renditions = _Renditions(db)
+        self.claims = _Claims(db)
+        self.releases = _Releases(db)
+        self.tasks = _Tasks(db)
+        self.audit = _Audit(db)
+        self.chat = _Chat(db)
+        self.evaluations = _Evaluations(db)
+        self._committed = False
+
+    async def __aenter__(self) -> MemoryUnitOfWork:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        return None
+
+    async def commit(self) -> None:
+        self._committed = True
+
+    async def rollback(self) -> None:
+        raise NotImplementedError(
+            "the in-memory unit of work cannot roll back; use the PostgreSQL adapter for "
+            "tests that depend on transactional rollback"
+        )
+
+
+def memory_uow_factory(db: MemoryDatabase):
+    """Return a callable that produces units of work over ``db``."""
+
+    def factory() -> MemoryUnitOfWork:
+        return MemoryUnitOfWork(db)
+
+    return factory

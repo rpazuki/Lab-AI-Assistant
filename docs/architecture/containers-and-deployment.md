@@ -1,0 +1,60 @@
+Status: active
+Owner: operator + technical owner
+Last verified: 2026-08-12
+Source of truth: `docker-compose.yml`, `infra/compose/docker-compose.prod.yml`
+
+# Containers and deployment
+
+## Supported profile
+
+One VM running the compose stack: PostgreSQL 16 with pgvector, the API, two worker
+deployments, and the web application. One workspace. No GPU.
+
+```bash
+docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml up -d
+```
+
+## What the production overlay changes
+
+- **the database port is not published** — nothing outside the compose network reaches
+  PostgreSQL;
+- read-only root filesystems with explicit `tmpfs` where a process must write;
+- `no-new-privileges` on every service;
+- resource limits, so one runaway parse cannot take the VM;
+- **`network_mode: none` on the compute worker** — parsing untrusted documents with no
+  network is a control, not a precaution;
+- log rotation, 20 MB × 5 per service. Docker's default `json-file` driver never
+  rotates, and an unbounded backend log fills the disk and takes PostgreSQL with it.
+
+The API image also carries the malware scanner. An assisted upload is scanned on the
+request path — before any parse task is queued — so the scanner has to be where the
+upload arrives, not only in the parsing worker. When it is absent the scanner reports
+itself *unavailable* rather than *clean*, and the upload is visibly blocked.
+
+## Volumes
+
+| Volume | Holds | Why it must persist |
+|---|---|---|
+| `pgdata` | the control plane | obvious |
+| `objects` | immutable assets, renditions, packages | citation targets live here |
+| `modelcache` | embedding weights | a rebuild must not re-download them |
+
+## Health and readiness
+
+`/health` answers if the process is up. `/ready` checks the control plane and the
+object store and reports each one, so a degraded dependency is visible rather than
+inferred. `deploy.sh` waits on both and rolls back if health does not come up.
+
+## Refusing to start
+
+In `server` mode the API refuses to start with development defaults still in place: a
+default `SECRET_KEY`, a `localhost` public URL or CORS origin, the fake model
+provider, or a local-directory object store. A local directory on the database's own
+disk is not a durable data plane, and calling it one would be the failure this check
+exists to prevent.
+
+## Backup
+
+See [backup and restore](../operations/backup-and-restore.md). The short version:
+PostgreSQL with point-in-time recovery, object-store versioning, and a restore that
+someone has actually performed. A backup nobody has restored is not a backup.

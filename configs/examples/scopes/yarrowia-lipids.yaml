@@ -1,0 +1,79 @@
+# A scope version: what this collection is for, and how each source is queried.
+# Query languages differ per source, so there is no single query string.
+id: 00000000-0000-4000-8000-00000000a001
+workspace_id: 00000000-0000-4000-8000-000000000001
+scope_id: 00000000-0000-4000-8000-00000000a000
+version: 1
+name: Yarrowia lipid production
+scientific_objective: >
+  Lipid yields, culture conditions, and engineered strains in oleaginous yeast,
+  for the lab's sustainable-protein programme.
+inclusion_criteria:
+  - engineered or wild-type oleaginous yeast
+  - reports a measured lipid yield or titre
+exclusion_criteria:
+  - review articles without primary measurements
+  - plant or algal lipid production
+languages: [en]
+resource_kinds: [article, preprint, dataset]
+concepts:
+  - lipid production
+  - yarrowia lipolytica
+  - oleaginous yeast
+  - metabolic engineering
+controlled_terms:
+  organism:
+    - Yarrowia lipolytica
+    - Rhodotorula toruloides
+date_from: 2000-01-01
+date_to: 2026-12-31
+
+# Required connectors gate the run: a required source that ends degraded blocks
+# the run from freezing until a steward accepts it.
+connector_plan:
+  - connector_id: pubmed
+    connector_version: 1.0.0
+    required: true
+    query: >
+      ("Yarrowia lipolytica"[Title/Abstract] OR "oleaginous yeast"[Title/Abstract])
+      AND ("lipid production"[Title/Abstract] OR "lipid yield"[Title/Abstract])
+      AND english[lang]
+    page_size: 100
+  - connector_id: europepmc
+    connector_version: 1.0.0
+    required: true
+    query: >
+      (TITLE_ABS:"Yarrowia lipolytica" OR TITLE_ABS:"oleaginous yeast")
+      AND TITLE_ABS:"lipid"
+  - connector_id: crossref
+    connector_version: 1.0.0
+    required: false
+    query: Yarrowia lipolytica lipid production
+  - connector_id: openalex
+    connector_version: 1.0.0
+    required: false
+    query: Yarrowia lipolytica lipid production
+  - connector_id: datacite
+    connector_version: 1.0.0
+    required: false
+    query: Yarrowia lipolytica dataset
+
+relevance_policy:
+  include_threshold: 0.75
+  exclude_threshold: 0.25
+  # Unknown relevance goes to a review queue. It is never silently included.
+  uncertain_action: review
+  allow_included_uncertain: false
+
+intended_uses:
+  - internal literature search
+  - datasheet extraction
+
+# Known-relevant records, used to measure recall before the scope may run.
+gold_seed_identifiers:
+  - doi:10.1186/s13068-019-1359-1
+  - doi:10.1038/s41467-020-15577-2
+known_negative_identifiers:
+  - doi:10.1016/j.plaphy.2019.09.001
+gold_seed_recall_threshold: 0.9
+approval_state: draft

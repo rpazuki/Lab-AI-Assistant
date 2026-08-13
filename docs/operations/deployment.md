@@ -1,0 +1,126 @@
+Status: active
+Owner: operator
+Last verified: 2026-08-12
+Source of truth: `scripts/`, `infra/compose/docker-compose.prod.yml`
+
+# Deployment
+
+One VM, compose stack, one workspace. Everything below is idempotent.
+
+## First install
+
+```bash
+git clone <repository> /opt/lab-assistant
+```
+
+```bash
+cp .env.example .env
+```
+
+Then, in `.env`: a 32-byte hex `SECRET_KEY`, the database password, the provider API
+key, and contact emails. **No hostnames, ports, or URLs** — those live in `.env.server`,
+which is committed. The reasoning is
+[ADR-0012](../architecture/adr/0012-configuration-model.md).
+
+```bash
+docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml up -d db
+```
+
+```bash
+docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml run --rm api alembic upgrade head
+```
+
+```bash
+docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml up -d
+```
+
+Create the first admin through the CLI. There is no self-registration and no default
+account. The password comes from `LAB_ADMIN_PASSWORD` or an interactive prompt —
+never from the command line, where it would land in `ps` output and shell history:
+
+```bash
+lab db create-admin --email <you@example.ac.uk> --workspace <slug>
+```
+
+## Routine deploys
+
+```bash
+./scripts/deploy.sh --dry-run
+```
+
+```bash
+./scripts/deploy.sh
+```
+
+`deploy.sh` fast-forwards from GitHub, maps changed paths to services and rebuilds only
+those, applies migrations, waits on `/health` and `/ready`, and **rolls back to the
+previous image and commit if either fails**. It never pushes, never commits, and never
+prints a secret.
+
+## Object storage
+
+Production requires an S3-compatible store: a local directory on the database's disk is
+not a durable data plane, and `production_blockers()` says so. Bucket, endpoint, and
+region are addresses and live in `.env.server`; the access key and secret are secrets
+and live in `.env`:
+
+```bash
+LAB_OBJECT_STORE_KIND=s3
+```
+
+The store refuses to construct when any of bucket, endpoint, region, or credentials is
+missing, so a misconfiguration fails the deploy rather than the first acquisition run
+hours later. `/ready` reports the object store separately from the database, and uses a
+cheap list rather than writing a readiness object into the bucket every few seconds.
+Any S3-compatible endpoint works — AWS, MinIO, Ceph, an institutional gateway
+(ADR-0017).
+
+## Malware scanning
+
+Uploads are scanned by default. The container wires a real scanner whenever either scan
+gate is on, and the parse task is **not queued** for an asset that did not pass: the
+upload reports itself blocked, with the reason, instead of leaving a task that can
+never run. `clamdscan` must be present in the worker image; if it is not, the scanner
+reports itself unavailable rather than reporting `clean`.
+
+## What refuses to start, and why that is the feature
+
+In `server` mode the API refuses a default `SECRET_KEY`, a `localhost` public URL or
+CORS origin, the fake model provider, a disabled malware scanner, or a local-directory
+object store. Each of these has been a production incident somewhere. A stack that
+starts and quietly serves with a development secret is worse than one that will not
+start.
+
+## Reading the effective configuration
+
+```bash
+lab config print
+```
+
+`GET /api/v1/config` returns the same thing over HTTP, and requires an authenticated
+member with the operations capability. Secrets are digests either way — but redaction
+is not a reason to publish deployment topology, provider choices, and which staged
+controls are off.
+
+## Migrations
+
+Forward-only. Every migration is tested against a populated database. A destructive
+change is two releases: add and backfill, then remove after the previous release is no
+longer served. A migration that drops a column the running release still reads causes
+an outage at the worst possible moment.
+
+## Model weights
+
+Embedding weights live in the `modelcache` volume. First start downloads them; a
+rebuild must not. If the volume is lost, the next start re-downloads — slow, not fatal,
+but it means the first deploy after a disk restore is not the moment to be in a hurry.
+
+## Rolling back
+
+Application: `./scripts/deploy.sh --ref <previous-tag>`.
+Corpus: repoint the alias — see [runbooks](runbooks/README.md). They are independent,
+and conflating them is a common way to make an incident worse.
+
+See also: [monitoring](monitoring.md) · [support bundles](support-bundles.md) ·
+[backup and restore](backup-and-restore.md) ·
+[containers and deployment](../architecture/containers-and-deployment.md)

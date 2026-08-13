@@ -1,0 +1,67 @@
+# An extraction template: workspace data with a stable id and a semantic version.
+# No domain template is embedded as an unexplained default in core code.
+template_id: yeast-lipid-datasheet
+semantic_version: 1.0.0
+title: Yeast lipid datasheet
+scientific_purpose: >
+  Per-experiment lipid yields and the culture conditions they were measured under,
+  for strain comparison across the literature.
+exclusions: >
+  Not for pathway-level flux estimates, and not for values reported only in a
+  figure without a numeric caption.
+cardinality: per_experiment
+evidence_standard: >
+  Exact span in focal content under normalisation version 1. A value that cannot be
+  quoted is an abstention, not a guess.
+reviewer_instructions: >
+  Check the unit and the basis, not just the number. A yield "per gram substrate"
+  and one "per gram dry cell weight" are different measurements.
+
+targets:
+  - target_id: strain
+    predicate: strain
+    object_kind: entity
+    description: The strain the measurement belongs to.
+    likely_sections: [Results, Methods, Table]
+    required: true
+  - target_id: lipid_yield
+    predicate: lipid_yield
+    object_kind: quantity
+    description: Lipid yield as reported, with its unit and basis.
+    unit_expectation: g/g
+    likely_sections: [Results, Table]
+    required: true
+  - target_id: lipid_titre
+    predicate: lipid_titre
+    object_kind: quantity
+    description: Lipid titre in the culture.
+    unit_expectation: g/L
+    likely_sections: [Results, Table]
+  - target_id: culture_temperature
+    predicate: culture_temperature
+    object_kind: quantity
+    description: Culture temperature during the reported run.
+    unit_expectation: degrees C
+    likely_sections: [Methods, Table]
+  - target_id: carbon_source
+    predicate: carbon_source
+    object_kind: text
+    description: Carbon source fed during the run.
+    controlled_vocabulary: [glucose, glycerol, xylose, acetate, waste cooking oil]
+    likely_sections: [Methods]
+  - target_id: doi
+    predicate: doi
+    object_kind: text
+    description: >
+      Bibliographic identifier. Deterministic metadata: it comes from resolved
+      source assertions, and a model that proposes it is rejected.
+    deterministic_metadata: true
+
+# The wide sheet is a supported, documented output generated from the release, and
+# it carries revision ids back to the long form.
+wide_projection_columns:
+  - strain
+  - lipid_yield
+  - lipid_titre
+  - culture_temperature
+  - carbon_source

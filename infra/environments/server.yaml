@@ -1,0 +1,17 @@
+# Behaviour for the deployment VM. Addresses live in .env.server; secrets are
+# injected by the environment. Keeping them apart is why `source .env` is safe.
+log_level: INFO
+log_format: json
+worker_lease_seconds: 600
+worker_poll_interval_seconds: 2.0
+# Sized for one VM without a GPU. Raise `parsing` only after measuring: OCR and
+# PDF parsing are the memory-hungry stages.
+stage_concurrency:
+  discovery: 4
+  acquisition: 3
+  parsing: 2
+  extraction: 2
+  indexing: 1
+  evaluation: 1
+monthly_token_budget: 5000000
+reranker_enabled: false

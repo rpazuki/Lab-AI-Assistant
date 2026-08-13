@@ -1,0 +1,316 @@
+{
+  "$defs": {
+    "ApprovalState": {
+      "enum": [
+        "draft",
+        "in_review",
+        "approved",
+        "retired"
+      ],
+      "title": "ApprovalState",
+      "type": "string"
+    },
+    "ConnectorPlanEntry": {
+      "description": "One source in a scope's strategy, with its own query.\n\nQuery languages and coverage differ per source, so there is no single query\nstring in a scope.",
+      "properties": {
+        "connector_id": {
+          "title": "Connector Id",
+          "type": "string"
+        },
+        "connector_version": {
+          "title": "Connector Version",
+          "type": "string"
+        },
+        "max_pages": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Pages"
+        },
+        "page_size": {
+          "default": 50,
+          "title": "Page Size",
+          "type": "integer"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        },
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "connector_id",
+        "connector_version",
+        "query"
+      ],
+      "title": "ConnectorPlanEntry",
+      "type": "object"
+    },
+    "RelevancePolicy": {
+      "properties": {
+        "allow_included_uncertain": {
+          "default": false,
+          "title": "Allow Included Uncertain",
+          "type": "boolean"
+        },
+        "exclude_threshold": {
+          "default": 0.25,
+          "title": "Exclude Threshold",
+          "type": "number"
+        },
+        "include_threshold": {
+          "default": 0.75,
+          "title": "Include Threshold",
+          "type": "number"
+        },
+        "uncertain_action": {
+          "default": "review",
+          "title": "Uncertain Action",
+          "type": "string"
+        }
+      },
+      "title": "RelevancePolicy",
+      "type": "object"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/source-observation/scope-version.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "An immutable, approvable statement of what a collection is for.",
+  "properties": {
+    "approval_state": {
+      "$ref": "#/$defs/ApprovalState",
+      "default": "draft"
+    },
+    "authored_by": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Authored By"
+    },
+    "concepts": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Concepts",
+      "type": "array"
+    },
+    "connector_plan": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ConnectorPlanEntry"
+      },
+      "title": "Connector Plan",
+      "type": "array"
+    },
+    "controlled_terms": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "title": "Controlled Terms",
+      "type": "object"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
+    "date_from": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Date From"
+    },
+    "date_to": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Date To"
+    },
+    "exclusion_criteria": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Exclusion Criteria",
+      "type": "array"
+    },
+    "frozen_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Frozen At"
+    },
+    "gold_seed_identifiers": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Gold Seed Identifiers",
+      "type": "array"
+    },
+    "gold_seed_recall_threshold": {
+      "default": 0.9,
+      "title": "Gold Seed Recall Threshold",
+      "type": "number"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "inclusion_criteria": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Inclusion Criteria",
+      "type": "array"
+    },
+    "intended_uses": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Intended Uses",
+      "type": "array"
+    },
+    "known_negative_identifiers": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Known Negative Identifiers",
+      "type": "array"
+    },
+    "languages": {
+      "default": [
+        "en"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Languages",
+      "type": "array"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "relevance_policy": {
+      "$ref": "#/$defs/RelevancePolicy",
+      "default": {
+        "allow_included_uncertain": false,
+        "exclude_threshold": 0.25,
+        "include_threshold": 0.75,
+        "uncertain_action": "review"
+      }
+    },
+    "resource_kinds": {
+      "default": [
+        "article"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Resource Kinds",
+      "type": "array"
+    },
+    "reviewed_by": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reviewed By"
+    },
+    "scientific_objective": {
+      "title": "Scientific Objective",
+      "type": "string"
+    },
+    "scope_id": {
+      "format": "uuid",
+      "title": "Scope Id",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "integer"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "workspace_id",
+    "scope_id",
+    "version",
+    "name",
+    "scientific_objective"
+  ],
+  "title": "ScopeVersion",
+  "type": "object",
+  "x-semantic-version": "1.0.0"
+}

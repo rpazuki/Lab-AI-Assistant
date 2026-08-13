@@ -1,0 +1,30 @@
+{
+  "benchmark_id": "policy-probes",
+  "version": "1.0.0",
+  "kind": "policy",
+  "description": "Negative access tests. Any leak fails the release: zero is the only passing value.",
+  "origin": "synthetic, written for this repository",
+  "licence": "internal",
+  "permitted_use": "release gating",
+  "sensitivity": "internal",
+  "cases": [],
+  "probes": [
+    {
+      "probe_id": "outsider-cannot-see-restricted",
+      "user_email": "outsider@lab.invalid",
+      "workspace_slug": "rla-lab",
+      "query": "confidential strain screen",
+      "forbidden_work_titles": ["Confidential strain screen"],
+      "assert_zero_results": false
+    },
+    {
+      "probe_id": "other-workspace-sees-nothing",
+      "user_email": "owner@coral-lab.invalid",
+      "workspace_slug": "coral-lab",
+      "query": "lipid yield yeast",
+      "forbidden_work_titles": ["Lipid production in an oleaginous yeast"],
+      "assert_zero_results": true
+    }
+  ],
+  "thresholds": {}
+}

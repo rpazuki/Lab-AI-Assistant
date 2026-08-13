@@ -1,0 +1,25 @@
+{
+  "benchmark_id": "retrieval-smoke",
+  "version": "1.0.0",
+  "kind": "retrieval",
+  "description": "Small synthetic retrieval set over the deterministic fixtures. Catches a wiring regression, not a ranking regression.",
+  "origin": "synthetic, written for this repository",
+  "licence": "internal",
+  "permitted_use": "continuous integration and local development",
+  "sensitivity": "public",
+  "blinded": false,
+  "cases": [
+    {
+      "case_id": "lipid-yield",
+      "question": "What lipid yield was reported for the engineered strain?",
+      "relevant": ["work:yeast"],
+      "notes": "The answer is in a Results paragraph and repeated in a table row."
+    },
+    {
+      "case_id": "culture-temperature",
+      "question": "At what temperature was the culture grown?",
+      "relevant": ["work:yeast"]
+    }
+  ],
+  "thresholds": { "recall@5": 0.5, "citation_ready_rate": 0.5 }
+}

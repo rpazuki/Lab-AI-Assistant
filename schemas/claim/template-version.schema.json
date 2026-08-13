@@ -1,0 +1,152 @@
+{
+  "$defs": {
+    "TemplateCardinality": {
+      "enum": [
+        "per_work",
+        "per_experiment",
+        "per_sample",
+        "per_claim",
+        "per_relation"
+      ],
+      "title": "TemplateCardinality",
+      "type": "string"
+    },
+    "TemplateTarget": {
+      "description": "One thing a template asks the extractor to find.",
+      "properties": {
+        "controlled_vocabulary": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Controlled Vocabulary",
+          "type": "array"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "deterministic_metadata": {
+          "default": false,
+          "title": "Deterministic Metadata",
+          "type": "boolean"
+        },
+        "likely_sections": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Likely Sections",
+          "type": "array"
+        },
+        "object_kind": {
+          "title": "Object Kind",
+          "type": "string"
+        },
+        "predicate": {
+          "title": "Predicate",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "unit_expectation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit Expectation"
+        }
+      },
+      "required": [
+        "target_id",
+        "predicate",
+        "object_kind",
+        "description"
+      ],
+      "title": "TemplateTarget",
+      "type": "object"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/claim/template-version.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Immutable template definition (data model \u00a712.1).",
+  "properties": {
+    "cardinality": {
+      "$ref": "#/$defs/TemplateCardinality",
+      "default": "per_experiment"
+    },
+    "evidence_standard": {
+      "default": "exact span in focal content, normalisation version 1",
+      "title": "Evidence Standard",
+      "type": "string"
+    },
+    "exclusions": {
+      "default": "",
+      "title": "Exclusions",
+      "type": "string"
+    },
+    "reviewer_instructions": {
+      "default": "",
+      "title": "Reviewer Instructions",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scientific_purpose": {
+      "title": "Scientific Purpose",
+      "type": "string"
+    },
+    "semantic_version": {
+      "title": "Semantic Version",
+      "type": "string"
+    },
+    "targets": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TemplateTarget"
+      },
+      "title": "Targets",
+      "type": "array"
+    },
+    "template_id": {
+      "title": "Template Id",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "wide_projection_columns": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Wide Projection Columns",
+      "type": "array"
+    }
+  },
+  "required": [
+    "template_id",
+    "semantic_version",
+    "title",
+    "scientific_purpose"
+  ],
+  "title": "TemplateVersionSpec",
+  "type": "object",
+  "x-semantic-version": "1.0.0"
+}

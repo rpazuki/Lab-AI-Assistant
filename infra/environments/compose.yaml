@@ -1,0 +1,10 @@
+log_level: INFO
+log_format: json
+worker_poll_interval_seconds: 1.0
+stage_concurrency:
+  discovery: 4
+  acquisition: 4
+  parsing: 2
+  extraction: 2
+  indexing: 1
+  evaluation: 1

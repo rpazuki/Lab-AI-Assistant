@@ -1,0 +1,33 @@
+# Review perspectives are explicit even when one person holds several of them.
+# See docs/contributing/review-ownership.md.
+
+*                                   @technical-owner
+
+# Domain and data contracts: technical owner plus data steward.
+/packages/python/lab_assistant/domain/       @technical-owner @data-steward
+/packages/python/lab_assistant/contracts/    @technical-owner @data-steward
+/docs/data-contracts/                        @technical-owner @data-steward
+
+# Rights, policy, and security.
+/packages/python/lab_assistant/policy/       @security-owner @data-steward
+/services/api/src/lab_assistant_api/security.py  @security-owner
+/docs/security/                              @security-owner
+
+# Connectors: connector owner plus a platform reviewer.
+/packages/python/lab_assistant/adapters/connectors/  @connector-owner @technical-owner
+/docs/connectors/                            @connector-owner
+
+# Parsers and extraction templates: data engineer plus scientific reviewer.
+/packages/python/lab_assistant/adapters/parsers/     @technical-owner @scientific-owner
+/configs/examples/templates/                 @scientific-owner
+/docs/extraction-templates/                  @scientific-owner
+
+# Database migrations: backend owner plus operator.
+/database/                                   @technical-owner @operator
+
+# Release and evaluation thresholds: product and scientific owner.
+/benchmarks/                                 @scientific-owner @product-owner
+
+# Runbooks: the operator who exercises them.
+/docs/operations/runbooks/                   @operator
+/scripts/                                    @operator

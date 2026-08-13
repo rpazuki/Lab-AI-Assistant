@@ -1,0 +1,58 @@
+# Example workspace configuration.
+#
+# A deployment becomes specific to a lab through versioned configuration like this,
+# not through code. No organism, method, or date range is compiled into the domain.
+#
+# Credentials appear here by NAME only. A value in this file would fail validation
+# before it reached the database.
+slug: rla-lab
+display_name: Rodrigo Ledesma-Amaro Lab
+branding:
+  accent: "#2f5ecb"
+  contact: ops@example.ac.uk
+
+# Scientific scope versions, resolved relative to this directory.
+scopes:
+  - scopes/yarrowia-lipids.yaml
+
+# Extraction templates. Each is versioned; changing meaning or cardinality is a
+# major version, not an edit.
+templates:
+  - templates/yeast-lipid-datasheet.yaml
+
+# Institution-approved rights rules.
+rights_policy: policies/open-access-first.yaml
+
+# Retrieval behaviour for this workspace.
+retrieval:
+  profile_id: default
+  lexical_top_k: 20
+  vector_top_k: 20
+  final_top_k: 8
+  reranker_enabled: false
+
+# Embedding profile. Chosen on measured recall for this corpus (ADR-0013), and
+# recorded on every release it produces.
+embedding:
+  profile_id: hashing-v1
+  # profile_id: minilm-l6-v2   # a real profile, once measured
+
+# Secrets by name. The deployment's secret manager supplies the values.
+secret_names:
+  - NCBI_API_KEY
+  - UNPAYWALL_EMAIL
+  - LAB_LLM_API_KEY
+
+# Review policy. Double review is enabled per predicate once a measured correction
+# rate justifies it, not by default (scale §3.2).
+review:
+  require_full_claim_review: true
+  double_review_predicates: []
+  correction_rate_threshold: 0.2
+
+# Retention, by data class. Minimum needed for replay and audit.
+retention_days:
+  source_responses: 730
+  model_envelopes: 180
+  failed_attempts: 365
+  superseded_projections: 30

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lab-assistant"
+version = "0.1.0"
+description = "Lab AI Assistant: versioned, policy-controlled evidence graph for research labs"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+  "pydantic>=2.7",
+  "pydantic-settings>=2.2",
+  "httpx>=0.27",
+  "structlog>=24.1",
+  "tenacity>=8.2",
+  "sqlalchemy>=2.0.30",
+  "alembic>=1.13",
+  "asyncpg>=0.29",
+  "pyyaml>=6.0",
+  "argon2-cffi>=23.1",
+]
+
+[project.optional-dependencies]
+# Everything needed to run the full offline test suite.
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+  "mypy>=1.10",
+  # Lets the SQL adapter run against SQLite offline; PostgreSQL integration tests
+  # still need LAB_TEST_DATABASE_URL.
+  "aiosqlite>=0.20",
+]
+# Optional adapters. The core suite never imports these.
+parsers = ["pypdf>=4.2", "openpyxl>=3.1", "python-docx>=1.1"]
+embeddings = ["sentence-transformers>=2.7"]
+# No `objectstore` extra: the S3 adapter signs with the standard library
+# over httpx, which the package already depends on (ADR-0017).
+anthropic = ["anthropic>=0.40"]
+export = ["pyarrow>=16.0"]
+
+[project.scripts]
+lab = "lab_assistant.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lab_assistant*"]
+
+[tool.setuptools.package-data]
+lab_assistant = ["py.typed"]

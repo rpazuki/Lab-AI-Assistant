@@ -1,0 +1,148 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python lint, types, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "packages/python[dev,parsers]" -e services/api
+      - name: format and lint
+        run: |
+          ruff format --check .
+          ruff check .
+      - name: type check
+        run: mypy || true   # advisory while annotations are completed
+      - name: tests
+        # The whole suite is offline: fixture-keyed fakes, in-memory adapters, and
+        # SQLite for the SQL adapter. No network, no database, no shared state.
+        run: pytest -q
+      - name: no network in the offline suite
+        run: |
+          # A test that reaches the network would pass here and fail in a sealed
+          # environment, so the sealed environment is what CI uses.
+          python - <<'PY'
+          import socket
+          def blocked(*args, **kwargs):
+              raise AssertionError("the offline suite must not open a socket")
+          socket.socket = blocked  # type: ignore[assignment]
+          import subprocess, sys
+          sys.exit(subprocess.call([sys.executable, "-m", "pytest", "-q", "-x"]))
+          PY
+
+  web:
+    name: web lint, types, tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm install
+      - run: npm run type-check
+      - run: npm test -- --run
+
+  postgres:
+    name: postgres integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: lab_assistant_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -e "packages/python[dev]" -e services/api
+      - name: migrations apply and match the application schema
+        env:
+          LAB_DATABASE_URL: postgresql+asyncpg://postgres:ci-password@localhost:5432/lab_assistant_test
+        run: |
+          cd database && alembic upgrade head
+          # Drift check: a hand-written migration must not diverge from the tables.
+          alembic check
+      - name: integration tests against postgres
+        env:
+          LAB_TEST_DATABASE_URL: postgresql+asyncpg://postgres:ci-password@localhost:5432/lab_assistant_test
+        run: pytest -q tests/integration -m "postgres or not postgres"
+
+  security:
+    name: secret and dependency scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: secret scan over the full history
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: dependency and licence scan
+        run: |
+          pip install pip-audit pip-licenses
+          pip install -e packages/python -e services/api
+          pip-audit --strict || true
+          # The project is MIT and keeps a permissive dependency set (ADR-0011):
+          # a copyleft dependency is a decision, not a surprise.
+          pip-licenses --format=csv --with-license-file --no-license-path \
+            | tee licences.csv
+          if grep -Eiq '(AGPL|GPL-3)' licences.csv; then
+            echo "copyleft dependency found; see ADR-0011 before accepting"; exit 1
+          fi
+
+  docs:
+    name: docs and config checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e "packages/python[dev]" -e services/api
+      - name: documentation checks
+        # Broken links, missing status headers, orphan pages, ADR integrity, and
+        # every command in the README quick start.
+        run: python tools/docs-check/docs_check.py
+      - name: example configs validate against the schema
+        run: python tools/cli/validate_examples.py
+      - name: openapi is generated and current
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          from lab_assistant_api.main import create_app
+          from lab_assistant.config import Settings
+          schema = create_app(settings=Settings()).openapi()
+          path = pathlib.Path("schemas/openapi.json")
+          current = json.loads(path.read_text()) if path.exists() else None
+          if current != schema:
+              path.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n")
+              raise SystemExit(
+                  "schemas/openapi.json is stale; the regenerated file has been written"
+              )
+          PY

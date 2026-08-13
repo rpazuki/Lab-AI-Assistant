@@ -1,0 +1,536 @@
+{
+  "$defs": {
+    "NodeKind": {
+      "enum": [
+        "document",
+        "section",
+        "paragraph",
+        "list",
+        "list_item",
+        "table",
+        "table_caption",
+        "table_footnote",
+        "figure",
+        "figure_caption",
+        "reference_list",
+        "reference",
+        "abstract",
+        "title",
+        "sheet",
+        "row",
+        "cell",
+        "page"
+      ],
+      "title": "NodeKind",
+      "type": "string"
+    },
+    "ParseQualityMetrics": {
+      "description": "Metrics the parse gate reads (quality \u00a72.4).",
+      "properties": {
+        "characters": {
+          "default": 0,
+          "title": "Characters",
+          "type": "integer"
+        },
+        "dropped_object_count": {
+          "default": 0,
+          "title": "Dropped Object Count",
+          "type": "integer"
+        },
+        "duplicate_paragraph_ratio": {
+          "default": 0.0,
+          "title": "Duplicate Paragraph Ratio",
+          "type": "number"
+        },
+        "embedded_identifier_match": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Embedded Identifier Match"
+        },
+        "empty_page_ratio": {
+          "default": 0.0,
+          "title": "Empty Page Ratio",
+          "type": "number"
+        },
+        "figure_count": {
+          "default": 0,
+          "title": "Figure Count",
+          "type": "integer"
+        },
+        "low_confidence_pages": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Low Confidence Pages",
+          "type": "array"
+        },
+        "ocr_mean_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ocr Mean Confidence"
+        },
+        "ocr_used": {
+          "default": false,
+          "title": "Ocr Used",
+          "type": "boolean"
+        },
+        "page_count": {
+          "default": 0,
+          "title": "Page Count",
+          "type": "integer"
+        },
+        "pages_represented": {
+          "default": 0,
+          "title": "Pages Represented",
+          "type": "integer"
+        },
+        "reference_separation": {
+          "default": false,
+          "title": "Reference Separation",
+          "type": "boolean"
+        },
+        "replacement_char_rate": {
+          "default": 0.0,
+          "title": "Replacement Char Rate",
+          "type": "number"
+        },
+        "section_count": {
+          "default": 0,
+          "title": "Section Count",
+          "type": "integer"
+        },
+        "table_count": {
+          "default": 0,
+          "title": "Table Count",
+          "type": "integer"
+        },
+        "tables_detected": {
+          "default": 0,
+          "title": "Tables Detected",
+          "type": "integer"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "title": "ParseQualityMetrics",
+      "type": "object"
+    },
+    "RenditionNode": {
+      "description": "One addressable node in the rendition tree.",
+      "properties": {
+        "attributes": {
+          "additionalProperties": true,
+          "title": "Attributes",
+          "type": "object"
+        },
+        "cells": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TableCell"
+          },
+          "title": "Cells",
+          "type": "array"
+        },
+        "children": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RenditionNode"
+          },
+          "title": "Children",
+          "type": "array"
+        },
+        "coordinates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceCoordinates"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "is_focal": {
+          "default": true,
+          "title": "Is Focal",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/NodeKind"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "level": {
+          "default": 0,
+          "title": "Level",
+          "type": "integer"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "node_id",
+        "kind"
+      ],
+      "title": "RenditionNode",
+      "type": "object"
+    },
+    "SourceCoordinates": {
+      "description": "Where a node came from inside the asset.\n\nWhich fields are populated depends on the source format. A PDF node has a\npage and a bounding box; a JATS node has an element path; a workbook cell\nhas a sheet and an A1 reference.",
+      "properties": {
+        "bbox": {
+          "anyOf": [
+            {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bbox"
+        },
+        "cell_range": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cell Range"
+        },
+        "char_end": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Char End"
+        },
+        "char_start": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Char Start"
+        },
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "element_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Element Path"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "ocr_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ocr Confidence"
+        },
+        "ocr_engine": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ocr Engine"
+        },
+        "ocr_language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ocr Language"
+        },
+        "ocr_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ocr Model"
+        },
+        "page": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page"
+        },
+        "sheet": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet"
+        },
+        "source_row_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Row Id"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "SourceCoordinates",
+      "type": "object"
+    },
+    "TableCell": {
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "integer"
+        },
+        "column_span": {
+          "default": 1,
+          "title": "Column Span",
+          "type": "integer"
+        },
+        "coordinates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceCoordinates"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "is_header": {
+          "default": false,
+          "title": "Is Header",
+          "type": "boolean"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "row": {
+          "title": "Row",
+          "type": "integer"
+        },
+        "row_span": {
+          "default": 1,
+          "title": "Row Span",
+          "type": "integer"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "row",
+        "column"
+      ],
+      "title": "TableCell",
+      "type": "object"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/rendition/rendition-document.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The rendition payload stored as an immutable object.",
+  "properties": {
+    "format": {
+      "title": "Format",
+      "type": "string"
+    },
+    "language": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Language"
+    },
+    "metadata_observed": {
+      "additionalProperties": true,
+      "title": "Metadata Observed",
+      "type": "object"
+    },
+    "nodes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RenditionNode"
+      },
+      "title": "Nodes",
+      "type": "array"
+    },
+    "quality": {
+      "$ref": "#/$defs/ParseQualityMetrics",
+      "default": {
+        "characters": 0,
+        "dropped_object_count": 0,
+        "duplicate_paragraph_ratio": 0.0,
+        "embedded_identifier_match": null,
+        "empty_page_ratio": 0.0,
+        "figure_count": 0,
+        "low_confidence_pages": [],
+        "ocr_mean_confidence": null,
+        "ocr_used": false,
+        "page_count": 0,
+        "pages_represented": 0,
+        "reference_separation": false,
+        "replacement_char_rate": 0.0,
+        "section_count": 0,
+        "table_count": 0,
+        "tables_detected": 0,
+        "warnings": []
+      }
+    },
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "format"
+  ],
+  "title": "RenditionDocument",
+  "type": "object",
+  "x-semantic-version": "1.0.0"
+}

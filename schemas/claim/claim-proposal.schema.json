@@ -1,0 +1,231 @@
+{
+  "$defs": {
+    "AbstentionReason": {
+      "description": "Why a template target has no reported value (lifecycle \u00a79 step 5).\n\nOnly ``REPORTED`` and ``NOT_REPORTED_AFTER_COMPLETE_SEARCH`` may support a\npositive or negative statement about source content.",
+      "enum": [
+        "reported",
+        "not_reported_after_complete_search",
+        "not_searched_budget",
+        "not_searched_policy",
+        "source_unavailable",
+        "parse_quality_insufficient",
+        "ambiguous_multiple_values",
+        "conflicting_values",
+        "extractor_abstained",
+        "not_applicable",
+        "policy_redacted"
+      ],
+      "title": "AbstentionReason",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "description": "A pointer into a rendition, plus the quote the extractor believes is there.",
+      "properties": {
+        "end_offset": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Offset"
+        },
+        "locator": {
+          "additionalProperties": true,
+          "title": "Locator",
+          "type": "object"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "quote": {
+          "title": "Quote",
+          "type": "string"
+        },
+        "start_offset": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Offset"
+        }
+      },
+      "required": [
+        "node_id",
+        "quote"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "ProposalSource": {
+      "enum": [
+        "deterministic_parser",
+        "model",
+        "imported_dataset",
+        "human",
+        "legacy_import"
+      ],
+      "title": "ProposalSource",
+      "type": "string"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/claim/claim-proposal.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One proposed claim, before validation and review.",
+  "properties": {
+    "abstention": {
+      "$ref": "#/$defs/AbstentionReason",
+      "default": "reported"
+    },
+    "basis": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Basis"
+    },
+    "confidence_components": {
+      "additionalProperties": true,
+      "title": "Confidence Components",
+      "type": "object"
+    },
+    "evidence": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "experiment_label": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Experiment Label"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "object_kind": {
+      "default": "text",
+      "title": "Object Kind",
+      "type": "string"
+    },
+    "polarity": {
+      "default": "positive",
+      "title": "Polarity",
+      "type": "string"
+    },
+    "predicate": {
+      "title": "Predicate",
+      "type": "string"
+    },
+    "proposal_source": {
+      "$ref": "#/$defs/ProposalSource",
+      "default": "model"
+    },
+    "qualifiers": {
+      "additionalProperties": true,
+      "title": "Qualifiers",
+      "type": "object"
+    },
+    "subject_label": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Subject Label"
+    },
+    "target_id": {
+      "title": "Target Id",
+      "type": "string"
+    },
+    "unit_canonical": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unit Canonical"
+    },
+    "unit_verbatim": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unit Verbatim"
+    },
+    "value_normalised": {
+      "anyOf": [
+        {},
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Value Normalised"
+    },
+    "value_verbatim": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Value Verbatim"
+    }
+  },
+  "required": [
+    "target_id",
+    "predicate"
+  ],
+  "title": "ClaimProposal",
+  "type": "object",
+  "x-semantic-version": "1.0.0"
+}

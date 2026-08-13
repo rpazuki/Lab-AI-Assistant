@@ -1,0 +1,64 @@
+# Production overlay for the deployment VM.
+#
+#   docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml up -d
+#
+# Differences from development: no published database port, restart policies,
+# resource limits, read-only root filesystems where possible, and addresses from
+# .env.server.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "5" }
+
+services:
+  db:
+    ports: []          # never publish the database on the VM
+    restart: unless-stopped
+    logging: *logging
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - log_min_duration_statement=1000
+
+  api:
+    env_file: [.env, .env.server]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+    logging: *logging
+
+  worker-network:
+    env_file: [.env, .env.server]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+    logging: *logging
+
+  worker-compute:
+    env_file: [.env, .env.server]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    # Parsing runs untrusted documents: no outbound network, bounded resources.
+    # A parser that needs the network is a parser doing something it should not.
+    network_mode: none
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 4G }
+    logging: *logging
+
+  web:
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp", "/app/apps/web/.next/cache"]
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+    logging: *logging

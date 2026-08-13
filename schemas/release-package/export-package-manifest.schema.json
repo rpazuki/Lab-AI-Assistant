@@ -1,0 +1,108 @@
+{
+  "$id": "https://lab-ai-assistant.invalid/schemas/release-package/export-package-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`manifest-sha256.txt` plus the metadata that makes a package self-describing.",
+  "properties": {
+    "assets_included": {
+      "default": false,
+      "title": "Assets Included",
+      "type": "boolean"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
+    "exported_by": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Exported By"
+    },
+    "payload_digests": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Payload Digests",
+      "type": "object"
+    },
+    "policy_version_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Policy Version Id"
+    },
+    "profile": {
+      "default": "lab-assistant-export/1.0 (RO-Crate and BagIt inspired)",
+      "title": "Profile",
+      "type": "string"
+    },
+    "purpose": {
+      "default": "",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "release_id": {
+      "format": "uuid",
+      "title": "Release Id",
+      "type": "string"
+    },
+    "rights_summary": {
+      "default": [],
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Rights Summary",
+      "type": "array"
+    },
+    "row_counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Row Counts",
+      "type": "object"
+    },
+    "tag_digests": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Tag Digests",
+      "type": "object"
+    },
+    "workspace_id": {
+      "format": "uuid",
+      "title": "Workspace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "release_id",
+    "workspace_id"
+  ],
+  "title": "ExportPackageManifest",
+  "type": "object",
+  "x-semantic-version": "1.0.0"
+}

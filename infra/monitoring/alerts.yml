@@ -1,0 +1,68 @@
+# Alert rules derived from docs/operations/monitoring.md. Each one names the runbook
+# that answers it: an alert with no runbook becomes an alert nobody acts on.
+groups:
+  - name: lab-assistant
+    rules:
+      - alert: ApiUnhealthy
+        expr: probe_success{job="api-readiness"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "API readiness has failed for two minutes"
+          runbook: docs/operations/deployment.md
+
+      - alert: QueueBacklogGrowing
+        expr: increase(lab_tasks_ready[30m]) > 0 and lab_tasks_ready > 50
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Ready tasks rising for 30 minutes"
+          runbook: docs/operations/runbooks/stuck-task.md
+
+      - alert: OldestReadyTaskStale
+        expr: lab_oldest_ready_task_age_seconds > 3600
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "A task has been ready for over an hour"
+          runbook: docs/operations/runbooks/stuck-task.md
+
+      - alert: DeadLetterAppeared
+        expr: increase(lab_tasks_dead_letter[15m]) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "A task exhausted its retries"
+          runbook: docs/operations/runbooks/dead-letter-triage.md
+
+      - alert: UnsupportedCitationRate
+        expr: rate(lab_answers_unsupported_handles[1h]) > 0.01
+        for: 1h
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Answers are citing handles the server did not supply"
+          runbook: docs/evaluation/release-gates.md
+
+      - alert: DiskPressure
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Under 15 percent disk free; pgdata and objects share this disk"
+          runbook: docs/operations/runbooks/disk-pressure.md
+
+      - alert: AuditChainVerificationFailed
+        expr: lab_audit_chain_verified == 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Audit hash chain does not verify"
+          runbook: docs/operations/runbooks/audit-chain-failure.md
+
+      # Deliberately absent: an alert on awaiting_user. Waiting for a human is not a
+      # failure, and paging on it teaches the operator to ignore the page.
