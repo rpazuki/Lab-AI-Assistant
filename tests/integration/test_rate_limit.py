@@ -34,6 +34,114 @@ async def _pages(count: int) -> AsyncIterator[int]:
         yield index
 
 
+@pytest.fixture
+async def provisioned_two_page(jats_bytes):
+    """A two-page discovery run whose budget allows exactly one page.
+
+    Page one is fetched and stored; the second acquisition finds an empty bucket with
+    a long wait and defers the task. That is the case where "the cursor is preserved"
+    and "the task retries" have to both be true.
+    """
+    from lab_assistant.application.discovery import DiscoveryService, cursor_lineage_key
+    from lab_assistant.application.scopes import ScopeService
+    from lab_assistant.domain.scope import ConnectorPlanEntry
+    from lab_assistant.domain.tasks import RateBudget
+    from lab_assistant.domain.workspace import Role
+    from lab_assistant.testing import build_harness, fake_source, make_actor, record, source_page
+
+    query = "two page query"
+    first = source_page(
+        query=query,
+        records=[
+            record(
+                locator="doi:10.1234/page-one",
+                identifiers=[("doi", "10.1234/page-one")],
+                title="Page one work",
+            )
+        ],
+        cursor_out="page-2",
+        declared_total=2,
+    )
+    second = source_page(
+        query=query,
+        records=[
+            record(
+                locator="doi:10.1234/page-two",
+                identifiers=[("doi", "10.1234/page-two")],
+                title="Page two work",
+            )
+        ],
+        cursor_in="page-2",
+        declared_total=2,
+    )
+    harness = build_harness(
+        connectors={"pubmed-fixture": fake_source("pubmed-fixture", [first, second])}
+    )
+    owner = await harness.accounts.create_user(
+        email="steward@lab.invalid", password="a-long-passphrase"
+    )
+    workspace, _ = await harness.accounts.create_workspace(
+        slug="rla-lab", display_name="RLA Lab", owner_user_id=owner.id
+    )
+    actor = make_actor(user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN)
+
+    key = budget_key(connector_id="pubmed-fixture", host=None)
+    async with harness.context.uow_factory() as uow:
+        await uow.tasks.upsert_rate_budget(
+            RateBudget(
+                key=key,
+                # One token, and a refill so slow the second page cannot wait for it
+                # inline: exactly the shape of a source with a small burst allowance.
+                tokens=1.0,
+                refill_per_second=0.001,
+                burst=1.0,
+                max_concurrent=1,
+                updated_at=harness.context.now(),
+            )
+        )
+        await uow.commit()
+
+    scopes = ScopeService(harness.context)
+    scope = await scopes.create_version(
+        actor,
+        scope_id=None,
+        name="Two page scope",
+        scientific_objective="Paging behaviour under a rate limit.",
+        connector_plan=[
+            ConnectorPlanEntry(
+                connector_id="pubmed-fixture", connector_version="1.0.0", query=query
+            )
+        ],
+        inclusion_criteria=("anything",),
+        intended_uses=("internal literature search",),
+        concepts=("paging",),
+    )
+    approved = await scopes.approve(actor, scope_version_id=scope.id)
+    run, requests = await DiscoveryService(harness.context).start_run(
+        actor, scope_version_id=approved.id
+    )
+    tasks = await harness.orchestrator.submit_requests(
+        requests, workspace_id=workspace.id, actor_id=actor.user_id, run_id=run.id
+    )
+    connector = harness.connectors.get("pubmed-fixture")
+    compiled = await connector.compile_query({"query": query})
+    lineage = cursor_lineage_key(
+        workspace_id=workspace.id,
+        scope_version_id=approved.id,
+        connector_id="pubmed-fixture",
+        connector_version="1.0.0",
+        query_fingerprint=compiled.query_fingerprint,
+        cursor_semantics_version="1",
+    )
+    return {
+        "harness": harness,
+        "workspace": workspace,
+        "run_id": run.id,
+        "task": next(task for task in tasks if task.stage.value == "discovery"),
+        "lineage": lineage,
+    }
+
+
 class TestBudgetKey:
     def test_the_key_is_connector_and_host(self) -> None:
         assert budget_key(connector_id="crossref", host="api.crossref.org") == (
@@ -233,5 +341,207 @@ class TestDiscoveryUsesTheLimiter:
                 budget_key(connector_id="pubmed-fixture", host=None)
             )
         assert budget is not None, "discovery did not go through the rate limiter"
+        assert budget.tokens < budget.burst
+        assert budget.in_flight == 0
+
+
+class TestRateLimitedWorkAlwaysComesBack:
+    """The half of MIT-010 the first pass missed.
+
+    Wrapping the connector was only part of it. A rate-limited discovery task was
+    returned as `StageStatus.BLOCKED`, which the orchestrator stores verbatim: no
+    `not_before`, and a blocked task is not claimable. The cursor survived and the
+    work never resumed, which is the worst of both — it looks like back-pressure and
+    behaves like a stuck queue.
+    """
+
+    async def test_a_rate_limited_discovery_task_becomes_ready_with_a_wait(
+        self, harness, provisioned
+    ) -> None:
+        from lab_assistant.application.discovery import DiscoveryService
+        from lab_assistant.application.scopes import ScopeService
+        from lab_assistant.domain.scope import ConnectorPlanEntry
+        from lab_assistant.domain.states import TaskState
+        from lab_assistant.domain.tasks import RateBudget
+
+        actor = provisioned["steward_actor"]
+        workspace = provisioned["workspace"]
+        key = budget_key(connector_id="pubmed-fixture", host=None)
+
+        # The shared budget says "not before two minutes from now" — the state an
+        # upstream 429 leaves behind for every worker.
+        async with harness.context.uow_factory() as uow:
+            await uow.tasks.upsert_rate_budget(
+                RateBudget(
+                    key=key,
+                    tokens=0.0,
+                    refill_per_second=0.01,
+                    burst=1.0,
+                    max_concurrent=1,
+                    updated_at=harness.context.now(),
+                )
+            )
+            await uow.commit()
+        limiter = RateLimiter(harness.context)
+        await limiter.note_retry_after(key, seconds=120)
+
+        scopes = ScopeService(harness.context)
+        scope = await scopes.create_version(
+            actor,
+            scope_id=None,
+            name="Yarrowia lipid production",
+            scientific_objective="Lipid yields in engineered oleaginous yeast.",
+            connector_plan=[
+                ConnectorPlanEntry(
+                    connector_id="pubmed-fixture",
+                    connector_version="1.0.0",
+                    query="yarrowia lipolytica lipid production",
+                )
+            ],
+            inclusion_criteria=("engineered yeast lipid production",),
+            intended_uses=("internal literature search",),
+            concepts=("lipid production",),
+        )
+        approved = await scopes.approve(actor, scope_version_id=scope.id)
+        run, requests = await DiscoveryService(harness.context).start_run(
+            actor, scope_version_id=approved.id
+        )
+        tasks = await harness.orchestrator.submit_requests(
+            requests, workspace_id=workspace.id, actor_id=actor.user_id, run_id=run.id
+        )
+        discovery_task = next(task for task in tasks if task.stage.value == "discovery")
+        result = await harness.orchestrator.execute(discovery_task)
+
+        async with harness.context.uow_factory() as uow:
+            stored = await uow.tasks.get(workspace.id, discovery_task.id)
+            stored_run = await uow.observations.get_run(workspace.id, run.id)
+
+        assert stored is not None
+        # Claimable again, after the wait the source asked for.
+        assert stored.state is TaskState.READY
+        assert stored.not_before is not None
+        assert stored.not_before > harness.context.now()
+        assert stored.error_class is ErrorClass.RATE_LIMITED
+        assert result.retry_after_seconds and result.retry_after_seconds >= 100
+        # And the run records the retryable outcome rather than a failure.
+        assert stored_run is not None
+        state = stored_run.state_for("pubmed-fixture")
+        assert state is not None and state.outcome.value == "rate_limited_retryable"
+
+    async def test_the_retry_resumes_from_the_stored_cursor(
+        self, provisioned_two_page
+    ) -> None:
+        """Page one is fetched, page two is deferred, and the cursor points at two."""
+        from lab_assistant.domain.states import TaskState
+
+        harness = provisioned_two_page["harness"]
+        workspace = provisioned_two_page["workspace"]
+        task = provisioned_two_page["task"]
+        run_id = provisioned_two_page["run_id"]
+
+        await harness.orchestrator.execute(task)
+
+        async with harness.context.uow_factory() as uow:
+            stored = await uow.tasks.get(workspace.id, task.id)
+            requests = await uow.observations.list_requests(workspace.id, run_id)
+            cursor = await uow.observations.get_cursor(
+                workspace.id, lineage_key=provisioned_two_page["lineage"]
+            )
+
+        assert stored is not None
+        assert stored.state is TaskState.READY, "a rate-limited run must come back"
+        assert stored.not_before is not None
+        # Exactly one page was fetched and stored before the budget ran out…
+        assert len(requests) == 1
+        # …and the cursor is the one the *next* attempt starts from, so the retry
+        # resumes rather than re-fetching page one.
+        assert cursor == "page-2"
+
+    async def test_automatic_acquisition_spends_the_connector_budget(
+        self, harness, provisioned
+    ) -> None:
+        """Acquisition used to call the connector directly, budget untouched."""
+        from lab_assistant.application.acquisition import AcquisitionHandler
+        from lab_assistant.contracts.connector import IdentifierScheme
+        from lab_assistant.contracts.policy import PolicyAction
+        from lab_assistant.contracts.stage import StageCommand, StageName
+        from lab_assistant.domain.assets import (
+            AcquisitionPlan,
+            AcquisitionRoute,
+            Manifestation,
+        )
+        from lab_assistant.domain.identity import Work, WorkIdentifier, WorkKind
+        from lab_assistant.domain.states import RelevanceState
+
+        actor = provisioned["steward_actor"]
+        workspace = provisioned["workspace"]
+        context = harness.context
+
+        async with context.uow_factory() as uow:
+            work = Work(
+                id=context.new_id(),
+                workspace_id=workspace.id,
+                work_kind=WorkKind.ARTICLE,
+                relevance=RelevanceState.INCLUDED,
+                created_at=context.now(),
+            )
+            await uow.works.add(work)
+            await uow.works.add_identifier(
+                WorkIdentifier(
+                    id=context.new_id(),
+                    workspace_id=workspace.id,
+                    work_id=work.id,
+                    scheme=IdentifierScheme.DOI,
+                    value_raw="10.1234/example",
+                    value_normalized="10.1234/example",
+                    value_display="10.1234/example",
+                    is_active=True,
+                    asserted_by=("pubmed-fixture",),
+                )
+            )
+            manifestation = Manifestation(
+                id=context.new_id(),
+                workspace_id=workspace.id,
+                work_id=work.id,
+                manifestation_kind="version_of_record",
+                label="version of record",
+            )
+            await uow.assets.add_manifestation(manifestation)
+            plan = AcquisitionPlan(
+                id=context.new_id(),
+                workspace_id=workspace.id,
+                work_id=work.id,
+                manifestation_ids=(manifestation.id,),
+                requested_actions=frozenset(
+                    {
+                        PolicyAction.STORE_CONTENT,
+                        PolicyAction.PROCESS_LOCAL,
+                        PolicyAction.INDEX,
+                        PolicyAction.QUERY,
+                    }
+                ),
+                route_order=(AcquisitionRoute.OPEN_ACCESS_API,),
+                status="planned",
+                created_at=context.now(),
+            )
+            await uow.assets.add_plan(plan)
+            await uow.commit()
+
+        result = await AcquisitionHandler(context).execute(
+            StageCommand(
+                stage=StageName.ACQUISITION,
+                workspace_id=workspace.id,
+                actor_id=actor.user_id,
+                inputs={"plan_id": str(plan.id)},
+            )
+        )
+
+        async with context.uow_factory() as uow:
+            attempts = await uow.assets.list_attempts(workspace.id, plan_id=plan.id)
+            budget = await uow.tasks.get_rate_budget(
+                budget_key(connector_id="fake-acquire", host=None)
+            )
+        assert attempts, f"no acquisition was attempted ({result.metrics})"
+        assert budget is not None, "acquisition bypassed the shared rate budget"
         assert budget.tokens < budget.burst
         assert budget.in_flight == 0

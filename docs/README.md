@@ -17,7 +17,7 @@ page is a bug.
 | Connector owner | [Connector SDK](connectors/README.md) · [Source matrix](connectors/source-matrix.md) |
 | Operator | [Deployment](operations/deployment.md) · [Monitoring](operations/monitoring.md) · [Support bundles](operations/support-bundles.md) · [Runbooks](operations/runbooks/README.md) |
 | Security or privacy reviewer | [Threat model](security/threat-model.md) · [Data inventory](security/data-inventory.md) · [Model transfer policy](security/model-transfer.md) |
-| Anyone joining mid-migration | [Migration overview](migration/README.md) · [API compatibility map](migration/api-compatibility.md) · [Remaining implementation tasks](migration/remaining-implementation-tasks.md) |
+| Anyone joining mid-migration | [Migration overview](migration/README.md) · [API compatibility map](migration/api-compatibility.md) · [Remaining implementation tasks](migration/remaining-implementation-tasks.md) · [Follow-up implementation issues](migration/follow-up-implementation-issues.md) |
 
 ## Data contracts
 

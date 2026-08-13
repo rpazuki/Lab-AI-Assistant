@@ -142,3 +142,76 @@ def test_parsing_layer_avoids_copyleft_pdf_dependency() -> None:
                 f"{path.name} imports {module}; PyMuPDF is AGPL or commercial and this "
                 "project keeps a permissive dependency set"
             )
+
+
+#: Connector operations that reach an external source and therefore cost a request.
+EXTERNAL_OPERATIONS = frozenset({"discover", "acquire", "resolve", "delta"})
+
+
+def _direct_connector_calls(path: Path) -> list[str]:
+    """Awaited or iterated connector calls that no rate limiter mediates.
+
+    A connector call is budgeted by passing it *to* the limiter — as a lambda for a
+    single request, or as the stream argument of ``throttle``. Awaiting it directly, or
+    iterating it with ``async for``, spends a source's allowance without asking the
+    shared budget, which is how MIT-010 was only half fixed: discovery went through
+    the limiter and acquisition kept calling the connector itself.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders: list[str] = []
+
+    def is_connector_operation(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in EXTERNAL_OPERATIONS
+            and isinstance(node.func.value, ast.Name)
+            and "connector" in node.func.value.id
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Await) and is_connector_operation(node.value):
+            offenders.append(f"await …{node.value.func.attr}() at line {node.lineno}")  # type: ignore[union-attr]
+        if isinstance(node, ast.AsyncFor) and is_connector_operation(node.iter):
+            offenders.append(f"async for …{node.iter.func.attr}() at line {node.lineno}")  # type: ignore[union-attr]
+    return offenders
+
+
+@pytest.mark.parametrize(("layer", "path"), _modules(), ids=lambda value: str(value)[-60:])
+def test_external_connector_calls_go_through_the_rate_limiter(layer: str, path: Path) -> None:
+    if layer != "application" or path.name == "rate_limit.py":
+        return
+    offenders = _direct_connector_calls(path)
+    assert not offenders, (
+        f"{path.relative_to(PACKAGE_ROOT)} calls a connector directly: {offenders}. "
+        "Pass the call to RateLimiter.request(...) or RateLimiter.throttle(...) so it "
+        "spends the shared budget (ADR-0018)."
+    )
+
+
+def test_the_bypass_guard_actually_catches_a_bypass(tmp_path: Path) -> None:
+    """A guard nobody has seen fail is a guard that might match nothing."""
+    bypass = tmp_path / "bypass.py"
+    bypass.write_text(
+        "async def run(connector, request):\n"
+        "    raw = await connector.acquire(request)\n"
+        "    async for page in connector.discover(request):\n"
+        "        print(page)\n"
+        "    return raw\n",
+        encoding="utf-8",
+    )
+    offenders = _direct_connector_calls(bypass)
+    assert len(offenders) == 2
+
+    budgeted = tmp_path / "budgeted.py"
+    budgeted.write_text(
+        "async def run(connector, request, limiter, key, policy):\n"
+        "    raw = await limiter.request(lambda: connector.acquire(request), key=key,"
+        " policy=policy)\n"
+        "    async for page in limiter.throttle(connector.discover(request), key=key,"
+        " policy=policy):\n"
+        "        print(page)\n"
+        "    return raw\n",
+        encoding="utf-8",
+    )
+    assert _direct_connector_calls(budgeted) == []

@@ -9,10 +9,24 @@ A migration audit on 2026-08-13 compared the plan in `RLALab-AI-Assistant/migrat
 against this repository and raised fifteen findings: four cutover blockers, six
 production-readiness items, five hardening and documentation items.
 
-**All fifteen are resolved.** Each row below names what changed and the test that
-fails if it regresses. Where a finding turned out to be a judgement call rather than a
-defect, the decision is recorded in an ADR rather than in this page — a resolution log
-should not become a second source of truth for a decision.
+A follow-up verification then found that the first pass had **overclaimed**: MIT-010
+was complete for discovery and absent for acquisition, a rate-limited task was left
+unclaimable rather than retried, and this page asserted a file count that was already
+wrong. Those are recorded in
+[Follow-up implementation issues](follow-up-implementation-issues.md) and are now
+resolved too.
+
+Each row below names what changed and the test that fails if it regresses. Where a
+finding turned out to be a judgement call rather than a defect, the decision is
+recorded in an ADR rather than in this page — a resolution log should not become a
+second source of truth for a decision.
+
+**A note on how the first version of this page failed.** It said "long waits defer the
+task with its cursor intact" when only the cursor part was true, and it counted files
+once and wrote the number down. Both are the same mistake: describing intent as
+outcome. The rows below now point at tests that execute the path end to end, and the
+verification block below asserts *properties* rather than a count that goes stale on
+the next commit.
 
 Two findings were more serious than they read, and are worth knowing about:
 
@@ -40,7 +54,7 @@ Two findings were more serious than they read, and are worth knowing about:
 | MIT-007 | The vector path joined embeddings to chunks on `chunk_key` alone, so copied chunks matched across releases | The join is on `(workspace_id, release_id, chunk_key)` in both the pgvector and the fallback path | `tests/integration/test_sql_adapter.py` |
 | MIT-008 | `object_store_kind = s3` was a setting with no implementation; the container always built the filesystem store | `S3ObjectStore` over `httpx` with standard-library SigV4, wired by the setting, refusing to construct when unconfigured; readiness pings rather than writing probe objects. [ADR-0017](../architecture/adr/0017-object-storage-adapter.md) | `tests/contract/test_production_container.py` |
 | MIT-009 | Scanning was required by default and the container set `malware_scanner=None`, so an upload enqueued a parse task that could never run | A real scanner is wired whenever either scan gate is on, and parsing is **not** queued for an asset that did not pass — the upload reports itself blocked, with the reason | `tests/contract/test_production_container.py`, `services/api/tests/test_api.py` |
-| MIT-010 | `RateBudget` and `rate_policy` existed; live discovery called `connector.discover()` directly | `RateLimiter` acquires a row-locked slot per page; short waits sleep, long waits defer the task with its cursor intact; an upstream `Retry-After` holds every worker off. [ADR-0018](../architecture/adr/0018-connector-rate-budgets.md) | `tests/integration/test_rate_limit.py` |
+| MIT-010 | `RateBudget` and `rate_policy` existed; live discovery called `connector.discover()` directly | **Every** source operation is budgeted: `discover` through `throttle`, `acquire` through `request`, with an AST test forbidding a direct connector call from the application layer. A rate-limited stage now returns `FAILED` with `rate_limited` rather than `BLOCKED`, so `Task.fail()` sets `not_before` and the task is claimable again — it resumes from the stored cursor instead of sitting unclaimable. Acquisition's terminal outcome maps back onto the retry taxonomy, so a rate limit is no longer reported as `invalid_content` and made permanent. [ADR-0018](../architecture/adr/0018-connector-rate-budgets.md) | `tests/integration/test_rate_limit.py`, `tests/contract/test_module_dependencies.py` |
 
 ## P2 — hardening and documentation alignment
 
@@ -50,7 +64,7 @@ Two findings were more serious than they read, and are worth knowing about:
 | MIT-012 | Production provider and model naming was implicit, and the predecessor documented a model string that does not exist | [ADR-0019](../architecture/adr/0019-model-provider-naming.md): provider `anthropic`, model `claude-sonnet-4-6`, recorded per answer and per extraction; `fake` is local-and-test only and is refused in production | `tests/contract/test_production_container.py` (production blockers) |
 | MIT-013 | The API breaks from the predecessor with no written migration path | [ADR-0020](../architecture/adr/0020-predecessor-api-compatibility.md) plus the [API compatibility map](api-compatibility.md): every predecessor endpoint is mapped, retired with a reason, or covered by dual running | docs check (the map is a linked, status-headed page) |
 | MIT-014 | `RawResponse.body` claimed to be exact upstream bytes and was sometimes a system-built envelope | `body_kind` says which, and an envelope's source bytes are stored as their own object with their own digest | `tests/contract/test_raw_response_provenance.py` |
-| MIT-015 | Artifact hygiene could not be verified because the destination was not a git checkout | The repository is initialised; nothing secret-shaped or generated is tracked (304 files, no `.env`, no caches); `.gitignore` now matches credential *shapes* rather than the one name that caused the predecessor's incident, and `var/*` is used so the placeholder is actually tracked | `git ls-files` in the verification block below |
+| MIT-015 | Artifact hygiene could not be verified because the destination was not a git checkout | The repository is initialised. **Three `.env.*` files are tracked on purpose** — `.env.example`, `.env.compose`, `.env.server` — because they are templates and address files that hold no secrets (ADR-0012). Runtime secret files are not tracked and cannot be: `.env`, `.env.local`, private keys, `*Pass`, `*password*`, `*credentials*`, caches, `.venv`, `node_modules`, and `var/` (with `var/*` so the placeholder is actually tracked). `.gitignore` matches credential *shapes* rather than the single name that caused the predecessor's incident | the commands in the verification block below |
 
 ## Verification
 
@@ -74,7 +88,22 @@ python3 tools/docs-check/docs_check.py
 cd apps/web && npm test -- --run && npm run type-check
 ```
 
-At the time of writing: 608 backend tests, 21 frontend tests, three benchmark suites,
+Artifact hygiene, asserted as properties rather than as a file count that goes stale:
+
+```bash
+git ls-files | grep -E '^\.env'
+```
+
+Expected result: exactly `.env.compose`, `.env.example`, `.env.server` — the tracked
+templates. A tracked `.env` or `.env.local` is a failure.
+
+```bash
+git ls-files | grep -E 'node_modules|\.venv|__pycache__|pytest_cache|ruff_cache|DS_Store|\.pem$|\.key$'
+```
+
+Expected result: no output.
+
+At the time of writing: 716 backend tests, 21 frontend tests, three benchmark suites,
 Ruff and the documentation checks clean, and `lab demo` exiting zero with a citation
 that resolves.
 
@@ -82,4 +111,3 @@ that resolves.
 
 It is not a status board for the remaining milestones. M2 and M3 scope lives in
 [the migration overview](README.md) and [ADR-0015](../architecture/adr/0015-delivery-profile.md).
-EOF

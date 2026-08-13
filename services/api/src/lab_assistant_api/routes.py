@@ -17,7 +17,7 @@ import json
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, File, Form, Query, Response, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -41,6 +41,21 @@ from lab_assistant_api.deps import ApiContainer, CurrentActor, CurrentToken, get
 from lab_assistant_api.security import mint_token
 
 __all__ = ["router"]
+
+
+def _client_signal(request: Request) -> str | None:
+    """The caller's network origin, as far as it can be trusted.
+
+    Behind the supported reverse proxy this is the first hop in
+    ``X-Forwarded-For``; without a proxy it is the socket address. It is a *signal*,
+    not an identity — a shared NAT means several people share a bucket, which is why
+    the per-account bucket exists alongside it.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip() or None
+    client = request.client
+    return client.host if client else None
 
 router = APIRouter(prefix="/api/v1")
 
@@ -133,9 +148,16 @@ class ReleaseRequest(BaseModel):
 
 # ── auth ────────────────────────────────────────────────────────────────────
 @router.post("/auth/login", response_model=LoginResponse)
-async def login(container: Container, payload: LoginRequest = Body(...)) -> LoginResponse:
+async def login(
+    request: Request, container: Container, payload: LoginRequest = Body(...)
+) -> LoginResponse:
     user = await container.accounts.authenticate(
-        email=payload.email, password=payload.password
+        email=payload.email,
+        password=payload.password,
+        # Two buckets: one per account, one per origin. The origin is hashed before
+        # it is stored, so the limiter does not create a log of who signed in from
+        # where.
+        client_signal=_client_signal(request),
     )
     async with container.context.uow_factory() as uow:
         workspaces = await uow.workspaces.list_for_user(user.id)

@@ -61,7 +61,16 @@ These are constraints, tests, or gates — never comments:
 - bytes deduplicate, acquisitions do not: an asset row is unique per (workspace,
   digest, work, manifestation), and each acquisition keeps its own rights decision;
 - every external source request acquires a slot from the stored rate budget
-  (ADR-0018); a declared limit nobody acquires against is documentation;
+  (ADR-0018) — `discover` through `throttle`, `acquire`/`resolve` through `request`; a
+  declared limit nobody acquires against is documentation, and an AST test forbids a
+  direct connector call from the application layer;
+- a retryable failure returns `StageStatus.FAILED` with its error class, never
+  `BLOCKED`. `BLOCKED` means "waiting on a dependency" and is not claimable, so a
+  retryable stage that returns it leaves the work stuck while looking like
+  back-pressure;
+- an unauthenticated endpoint that verifies a secret is rate-limited by a
+  **store-backed** bucket keyed by digest (ADR-0016): argon2id makes each guess
+  expensive for the server too;
 - a projection is joined on its full key, `(workspace_id, release_id, chunk_key)`:
   copied chunks share keys across releases by design;
 - a published release is immutable; a correction is a successor release;

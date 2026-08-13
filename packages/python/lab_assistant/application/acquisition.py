@@ -16,6 +16,7 @@ from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.pagination import collect_pages
+from lab_assistant.application.rate_limit import RateLimiter, budget_key, host_of
 from lab_assistant.contracts.connector import (
     AcquisitionRequest,
     ConnectorOperation,
@@ -657,6 +658,7 @@ class AcquisitionHandler:
             if i.scheme.is_strong
         )
         registry = context.require_connectors()
+        limiter = RateLimiter(context)
         attempts: list[AcquisitionAttempt] = []
         final_outcome = AcquisitionOutcome.FAILED_PERMANENT
         acquired_asset: Asset | None = None
@@ -681,19 +683,30 @@ class AcquisitionHandler:
                         requested_at=context.now(),
                         worker_version=self.implementation_version,
                     )
+                    acquisition_request = AcquisitionRequest(
+                        identifiers=strong,
+                        route=route.value,
+                        preferred_formats=(
+                            ("application/xml", "application/pdf")
+                            if manifestation is None
+                            or manifestation.manifestation_kind is ManifestationKind.PMC_XML
+                            else ("application/pdf",)
+                        ),
+                        request_identity=context.settings.connector_request_identity,
+                    )
                     try:
-                        raw = await connector.acquire(
-                            AcquisitionRequest(
-                                identifiers=strong,
-                                route=route.value,
-                                preferred_formats=(
-                                    ("application/xml", "application/pdf")
-                                    if manifestation is None
-                                    or manifestation.manifestation_kind is ManifestationKind.PMC_XML
-                                    else ("application/pdf",)
-                                ),
-                                request_identity=context.settings.connector_request_identity,
-                            )
+                        # Through the shared budget, exactly as discovery is. Fetching
+                        # a document is an external source request; a limiter only
+                        # discovery respects is not a limit the source experiences.
+                        raw = await limiter.request(
+                            lambda connector=connector, request=acquisition_request: (
+                                connector.acquire(request)
+                            ),
+                            key=budget_key(
+                                connector_id=connector_id,
+                                host=host_of(getattr(connector, "base_url", None)),
+                            ),
+                            policy=connector.capabilities.rate_policy,
                         )
                     except LabAssistantError as exc:
                         attempt = attempt.model_copy(
@@ -841,15 +854,34 @@ class AcquisitionHandler:
             human_action_required=(
                 "assisted acquisition required" if final_outcome.needs_human else None
             ),
+            # The error class decides retry behaviour, so it has to reflect the
+            # outcome. Reporting a rate-limited attempt as `invalid_content` made it
+            # permanent: the task failed for good over a limit that clears itself.
             error_class=(
                 None
                 if status is StageStatus.AWAITING_USER
-                else ErrorClass.NOT_FOUND
-                if final_outcome is AcquisitionOutcome.NOT_FOUND
-                else ErrorClass.INVALID_CONTENT
+                else _error_class_for_outcome(final_outcome)
             ),
             retry_after_seconds=retry_after,
         )
+
+
+def _error_class_for_outcome(outcome: AcquisitionOutcome) -> ErrorClass:
+    """Map a terminal acquisition outcome back onto the retry taxonomy."""
+    mapping = {
+        AcquisitionOutcome.RATE_LIMITED_RETRYABLE: ErrorClass.RATE_LIMITED,
+        AcquisitionOutcome.SOURCE_UNAVAILABLE_RETRYABLE: ErrorClass.SOURCE_UNAVAILABLE,
+        AcquisitionOutcome.NOT_FOUND: ErrorClass.NOT_FOUND,
+        AcquisitionOutcome.LICENCE_NOT_PERMITTED: ErrorClass.POLICY_BLOCKED,
+        AcquisitionOutcome.ROBOTS_OR_POLICY_BLOCKED: ErrorClass.ROBOTS_BLOCKED,
+        AcquisitionOutcome.IDENTITY_MISMATCH: ErrorClass.IDENTITY_MISMATCH,
+        AcquisitionOutcome.MALWARE_QUARANTINED: ErrorClass.MALWARE_DETECTED,
+        AcquisitionOutcome.TOO_LARGE: ErrorClass.TOO_LARGE,
+        AcquisitionOutcome.AUTHENTICATION_REQUIRED: ErrorClass.AUTHENTICATION_REQUIRED,
+        AcquisitionOutcome.ENTITLEMENT_REQUIRED: ErrorClass.ENTITLEMENT_REQUIRED,
+        AcquisitionOutcome.CANCELLED: ErrorClass.CANCELLED,
+    }
+    return mapping.get(outcome, ErrorClass.INVALID_CONTENT)
 
 
 def _acquisition_outcome(error_class: ErrorClass) -> AcquisitionOutcome:

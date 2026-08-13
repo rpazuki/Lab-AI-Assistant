@@ -453,11 +453,21 @@ class DiscoveryHandler:
             await uow.observations.update_run(run)
             await uow.commit()
 
-        status = (
-            StageStatus.SUCCEEDED
-            if outcome.is_acceptable_terminal
-            else (StageStatus.DEGRADED if outcome.is_terminal else StageStatus.BLOCKED)
-        )
+        # A retryable outcome must come back as FAILED with its error class, not as
+        # BLOCKED. `BLOCKED` means "waiting on a dependency": the orchestrator stores
+        # it verbatim, sets no `not_before`, and a blocked task is not claimable — so
+        # a rate-limited run would sit there until an operator noticed. FAILED routes
+        # through `Task.fail()`, which reads the retry table, sets `not_before` from
+        # the stored `Retry-After`, and dead-letters only after the attempts are
+        # spent. The cursor is already durable, so the retry resumes rather than
+        # restarting.
+        if outcome.is_acceptable_terminal:
+            status = StageStatus.SUCCEEDED
+        elif outcome.is_terminal:
+            status = StageStatus.DEGRADED
+        else:
+            status = StageStatus.FAILED
+            error_class = error_class or ErrorClass.SOURCE_UNAVAILABLE
         return StageResult(
             stage=StageName.DISCOVERY,
             status=status,

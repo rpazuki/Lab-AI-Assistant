@@ -21,17 +21,18 @@ Two outcomes when the budget is empty:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
 
 from lab_assistant.application.context import ServiceContext
+from lab_assistant.contracts.canonical import sha256_text
 from lab_assistant.contracts.connector import RatePolicy
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.domain.tasks import RateBudget
 
-__all__ = ["RateLimiter", "budget_key", "host_of"]
+__all__ = ["RateLimiter", "budget_key", "host_of", "login_budget_key"]
 
 #: Longer than this and the task waits in the queue instead of holding a lease. A
 #: worker sleeping for minutes is a worker not draining any other stage.
@@ -44,6 +45,15 @@ _MAX_INLINE_ATTEMPTS = 10
 def budget_key(*, connector_id: str, host: str | None) -> str:
     """One budget per connector and host: the pair the source rate-limits on."""
     return f"{connector_id}|{host or 'default'}"
+
+
+def login_budget_key(value: str, *, kind: str = "login") -> str:
+    """A login bucket keyed by digest, never by the address itself.
+
+    Rate limiting is not a reason to write plaintext emails or client addresses into
+    a shared table that operators read during incidents.
+    """
+    return f"{kind}|{sha256_text(value)[:16]}"
 
 
 def host_of(url: str | None) -> str | None:
@@ -95,6 +105,31 @@ class RateLimiter:
             budget.apply_retry_after(now=self._now(), seconds=seconds)
             await uow.tasks.upsert_rate_budget(budget)
             await uow.commit()
+
+    async def request[T](
+        self,
+        call: Callable[[], Awaitable[T]],
+        *,
+        key: str,
+        policy: RatePolicy,
+    ) -> T:
+        """Spend one budgeted request on a single external call.
+
+        The single-call sibling of ``throttle``. Acquisition fetches one document per
+        attempt rather than a stream of pages, and it hits the same hosts under the
+        same limits — a budget that only discovery respects is a budget the source
+        does not experience.
+        """
+        await self.acquire(key, policy=policy)
+        try:
+            return await call()
+        except LabAssistantError as exc:
+            if exc.error_class is ErrorClass.RATE_LIMITED:
+                seconds = int((exc.context or {}).get("retry_after_seconds") or 30)
+                await self.note_retry_after(key, seconds=seconds)
+            raise
+        finally:
+            await self.release(key)
 
     async def throttle[T](
         self,

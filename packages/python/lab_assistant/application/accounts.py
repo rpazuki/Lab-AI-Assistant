@@ -17,8 +17,11 @@ from datetime import timedelta
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.rate_limit import RateLimiter, login_budget_key
 from lab_assistant.contracts.canonical import sha256_text
+from lab_assistant.contracts.connector import RatePolicy
 from lab_assistant.contracts.errors import (
+    ErrorClass,
     LabAssistantError,
     NotFound,
     PolicyDenied,
@@ -44,16 +47,32 @@ from lab_assistant.domain.workspace import (
     normalise_email,
 )
 
-__all__ = ["AccountService", "AuthenticationFailed", "PasswordHasher", "PasswordVerification"]
+__all__ = [
+    "AccountService",
+    "AuthenticationFailed",
+    "LoginRateLimited",
+    "PasswordHasher",
+    "PasswordVerification",
+]
 
 
 class AuthenticationFailed(LabAssistantError):
     """Login failed. The message never says which half was wrong."""
 
-    from lab_assistant.contracts.errors import ErrorClass as _ErrorClass
-
-    error_class = _ErrorClass.AUTHENTICATION_REQUIRED
+    error_class = ErrorClass.AUTHENTICATION_REQUIRED
     http_status = 401
+
+
+class LoginRateLimited(LabAssistantError):
+    """Too many sign-in attempts for this account or origin.
+
+    Distinct from :class:`AuthenticationFailed` because the caller needs to know to
+    wait rather than to re-check their password — and it still says nothing about
+    whether the account exists.
+    """
+
+    error_class = ErrorClass.RATE_LIMITED
+    http_status = 429
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,9 +203,22 @@ class AccountService:
             await uow.commit()
         return user
 
-    async def authenticate(self, *, email: str, password: str) -> User:
+    async def authenticate(
+        self, *, email: str, password: str, client_signal: str | None = None
+    ) -> User:
+        """Verify credentials, rate-limited and audited.
+
+        Two buckets, both store-backed so they hold across worker processes: one per
+        account and one per client signal (the caller's network origin). An
+        in-process dictionary would reset on deploy and would not be shared, which
+        makes it a speed bump rather than a control.
+
+        The buckets are keyed by **digest**, never by the address itself: a rate
+        limiter is not a reason to write plaintext emails into a shared table.
+        """
         context = self._context
         normalised = normalise_email(email)
+        await self._throttle_login(normalised, client_signal=client_signal)
         async with context.uow_factory() as uow:
             user = await uow.users.get_by_email(normalised)
             verification = (
@@ -209,6 +241,8 @@ class AccountService:
                     )
                 )
                 await uow.commit()
+                # The same message for an unknown account and a wrong password. The
+                # audit row records which it was; the caller learns neither.
                 raise AuthenticationFailed("email or password is incorrect")
 
             if verification.needs_rehash:
@@ -229,7 +263,49 @@ class AccountService:
                 )
             )
             await uow.commit()
+        # A successful sign-in clears the account's bucket, so someone who simply
+        # mistyped their password twice is not locked out of their own account.
+        await self._reset_login_budget(login_budget_key(normalised))
         return user
+
+    async def _throttle_login(self, normalised_email: str, *, client_signal: str | None) -> None:
+        limiter = RateLimiter(self._context)
+        per_minute = max(1, self._context.settings.login_rate_limit_per_minute)
+        policy = RatePolicy(
+            requests_per_second=per_minute / 60.0,
+            burst=per_minute,
+            # Concurrency is not the control here; the rate is.
+            max_concurrent=per_minute,
+        )
+        keys = [login_budget_key(normalised_email)]
+        if client_signal:
+            keys.append(login_budget_key(client_signal, kind="login-origin"))
+        for key in keys:
+            try:
+                await limiter.acquire(key, policy=policy)
+            except LabAssistantError as exc:
+                if exc.error_class is not ErrorClass.RATE_LIMITED:
+                    raise
+                raise LoginRateLimited(
+                    "too many sign-in attempts; try again shortly",
+                    context={
+                        "retry_after_seconds": (exc.context or {}).get("retry_after_seconds", 60)
+                    },
+                ) from exc
+            # The slot is accounting for an attempt that has already happened, not a
+            # long-running call: release it immediately so concurrency is not the cap.
+            await limiter.release(key)
+
+    async def _reset_login_budget(self, key: str) -> None:
+        async with self._context.uow_factory() as uow:
+            budget = await uow.tasks.get_rate_budget(key, for_update=True)
+            if budget is None:
+                return
+            budget.tokens = budget.burst
+            budget.next_permitted_at = None
+            budget.updated_at = self._context.now()
+            await uow.tasks.upsert_rate_budget(budget)
+            await uow.commit()
 
     async def revoke_sessions(self, *, user_id: UUID, actor_id: UUID | None = None) -> User:
         """Bump the auth epoch: every issued token for this user stops working."""
@@ -385,9 +461,22 @@ class AccountService:
         return invitation, token
 
     async def accept_invitation(
-        self, *, token: str, password: str, full_name: str | None = None
+        self,
+        *,
+        token: str,
+        password: str,
+        full_name: str | None = None,
+        client_signal: str | None = None,
     ) -> tuple[User, Membership]:
+        """Redeem an invitation token.
+
+        Throttled per origin like login: this is the other unauthenticated endpoint,
+        and a token guess costs the server an argon2 hash whether or not it is right.
+        """
         context = self._context
+        await self._throttle_login(
+            f"invitation:{sha256_text(token)[:16]}", client_signal=client_signal
+        )
         digest = sha256_text(token)
         async with context.uow_factory() as uow:
             invitation = await uow.workspaces.get_invitation_by_digest(digest)

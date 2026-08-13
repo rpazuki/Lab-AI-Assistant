@@ -141,6 +141,32 @@ class TestHealthAndConfig:
         assert response.headers["X-Request-Id"] == "abc123"
 
 
+class TestLoginThrottling:
+    async def test_the_route_enforces_the_configured_rate(self, api) -> None:
+        """A password endpoint with no limit is an online attack on an offline hash."""
+        client = api["client"]
+        settings = api["harness"].context.settings
+        limit = settings.login_rate_limit_per_minute
+        statuses = []
+        for _ in range(limit + 2):
+            response = await client.post(
+                "/api/v1/auth/login",
+                json={"email": "steward@lab.invalid", "password": "definitely-wrong"},
+            )
+            statuses.append(response.status_code)
+        assert 401 in statuses
+        assert 429 in statuses, f"no throttling after {limit + 2} attempts: {statuses}"
+        throttled = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "steward@lab.invalid", "password": "definitely-wrong"},
+        )
+        body = throttled.json()
+        assert throttled.status_code == 429
+        assert body["error_class"] == "rate_limited"
+        # Still no hint about which half was wrong, or whether the account exists.
+        assert "password" not in body["detail"].lower()
+
+
 class TestAuth:
     async def test_login_returns_a_token_and_the_users_workspaces(self, api) -> None:
         response = await api["client"].post(

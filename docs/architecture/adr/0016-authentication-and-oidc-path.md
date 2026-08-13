@@ -1,6 +1,6 @@
 Status: accepted
 Owner: security owner + product owner
-Last verified: 2026-08-12
+Last verified: 2026-08-13
 Applies to: authentication and sessions
 
 # ADR-0016: Password login now, OIDC-ready identity model
@@ -36,8 +36,17 @@ Logging out bumps the epoch. Clearing a cookie is not a revocation.
 - OIDC becomes an added identity source rather than a migration of the user table.
 - A password change or an incident invalidates issued tokens immediately, with no
   session store to sweep.
-- Login and invitation operations are rate-limited and audited, and a failed login
-  never reveals which half was wrong.
+- Login and invitation acceptance are rate-limited and audited, and a failed login
+  never reveals which half was wrong. Both limiters are **store-backed** token
+  buckets, so they hold across worker processes and survive a deploy — an in-process
+  dictionary would be a speed bump, and argon2id makes each guess expensive for the
+  server too, so an unthrottled login is also a denial-of-service surface. Two
+  buckets: one per account, one per client origin, the second being what makes
+  spraying many accounts from one origin expensive. Keys are digests, because rate
+  limiting is not a reason to write plaintext emails or addresses into a table
+  operators read during incidents. `LAB_LOGIN_RATE_LIMIT_PER_MINUTE` sets the rate; a
+  throttled caller gets `429 rate_limited` and still learns nothing about whether the
+  account exists.
 
 ## Alternatives considered
 

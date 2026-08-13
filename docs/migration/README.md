@@ -77,6 +77,11 @@ The critical migration audit found production-readiness gaps that must close bef
 cutover. Track them in
 [Remaining implementation tasks](remaining-implementation-tasks.md).
 
+A follow-up verification found that the resolution log overstates the current state:
+MIT-010 is only partially implemented, and two documentation claims need correction.
+Track those problems in
+[Follow-up implementation issues](follow-up-implementation-issues.md).
+
 ## Security
 
 The predecessor tracked a credential file. Treat it as exposed and follow

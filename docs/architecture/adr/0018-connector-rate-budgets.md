@@ -37,6 +37,20 @@ from the stored budget keyed `<connector_id>|<host>`.
 - **The policy is config, not state.** Each acquisition refreshes the row's rate,
   burst, and concurrency from the connector's declared policy, so a change takes
   effect without deleting rows.
+- **Every operation that reaches a source is budgeted**, not just discovery:
+  `discover` through `throttle`, and `acquire` — and any future `resolve` or change
+  feed — through `request`. Acquisition hits the same hosts under the same limits, so
+  a budget only discovery respected was not a budget the source experienced. An
+  AST test forbids awaiting or iterating a connector operation directly from the
+  application layer, so a new call site cannot bypass the limiter by omission.
+- **A rate-limited stage returns `FAILED` with `rate_limited`, never `BLOCKED`.**
+  `BLOCKED` means "waiting on a dependency": the orchestrator stores it verbatim,
+  sets no `not_before`, and a blocked task is not claimable — so the run would sit
+  there until an operator noticed. `FAILED` routes through `Task.fail()`, which reads
+  the retry table and sets `not_before` from the stored `Retry-After`. The cursor is
+  already durable, so the retry resumes from the page after the last one fetched.
+- **The same limiter throttles login and invitation acceptance** (ADR-0016). One
+  store-backed bucket mechanism, two very different callers.
 
 ## Consequences
 
