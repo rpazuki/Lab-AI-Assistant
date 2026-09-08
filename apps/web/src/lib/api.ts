@@ -21,6 +21,7 @@ import type {
   Release,
   ReviewItem,
 } from "@/types";
+import { appPath } from "@/lib/config";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -35,7 +36,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/backend${path}`, {
+  const response = await fetch(appPath(`/api/backend${path}`), {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -70,7 +71,7 @@ export async function login(
   password: string,
   workspace?: string,
 ): Promise<{ workspaces: { id: string; slug: string; name: string }[] }> {
-  const response = await fetch("/api/auth/login", {
+  const response = await fetch(appPath("/api/auth/login"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, workspace }),
@@ -89,7 +90,7 @@ export async function login(
 }
 
 export async function logout(): Promise<void> {
-  await fetch("/api/auth/logout", { method: "POST" });
+  await fetch(appPath("/api/auth/logout"), { method: "POST" });
 }
 
 export const getMe = () => request<Me>("/auth/me");
@@ -126,7 +127,7 @@ export async function ask(
   onEvent: (event: AskEvent) => void,
   options: { topK?: number; signal?: AbortSignal } = {},
 ): Promise<void> {
-  const response = await fetch(`/api/backend/chat/sessions/${sessionId}/messages`, {
+  const response = await fetch(appPath(`/api/backend/chat/sessions/${sessionId}/messages`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question, top_k: options.topK }),
@@ -271,7 +272,7 @@ export async function assistedUpload(
   body.set("access_basis", form.accessBasis);
   body.set("attestation", form.attestation);
   body.set("upload", form.file);
-  const response = await fetch(`/api/backend/assisted-acquisitions/${planId}`, {
+  const response = await fetch(appPath(`/api/backend/assisted-acquisitions/${planId}`), {
     method: "POST",
     body,
   });

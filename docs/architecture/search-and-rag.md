@@ -3,7 +3,10 @@ Owner: technical owner
 Last verified: 2026-08-12
 Source of truth: `packages/python/lab_assistant/application/retrieval.py`, `chat.py`
 
-# Search and RAG
+# Search and answering
+
+Also called retrieval-augmented generation (RAG): the model writes from passages
+retrieved out of the collection, never from its own general memory.
 
 ## Order of operations
 

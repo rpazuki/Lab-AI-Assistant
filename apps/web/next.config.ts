@@ -1,11 +1,14 @@
 import type { NextConfig } from "next";
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/assist";
+
 /**
  * The browser never talks to the API directly and never holds a bearer token.
  * Requests go to same-origin routes under /api, which attach the httpOnly
  * session cookie server-side — the pattern the predecessor arrived at, kept.
  */
 const nextConfig: NextConfig = {
+  basePath,
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {

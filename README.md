@@ -1,45 +1,112 @@
 # Lab AI Assistant
 
-**Internal use only.** There is no public query endpoint and no self-registration.
-Every route requires an authenticated member of a workspace.
+**Internal use only.** There is no public page and no sign-up form. Every request
+comes from an authenticated member of the lab.
 
-Lab AI Assistant is an internal research-evidence platform. Lab members discover,
-acquire, parse, extract, review, search, and synthesise external literature and
-internal research material — and every answer cites an immutable evidence span
-rather than a row that might have changed since.
+## What it does
 
-The central object is a **versioned, policy-controlled evidence graph**:
+Lab members ask research questions in plain language. Answers are built only from
+literature and internal documents the lab has collected, and every sentence carries a
+citation that opens the exact passage it came from.
+
+It also records what papers actually reported — a lipid yield, a culture temperature,
+the strain used — as measurements a person has checked, so the lab can compare results
+across dozens of papers without re-reading them.
+
+Three properties separate it from a general-purpose chatbot:
+
+**Answers come only from the lab's collection.** Nothing is answered from a model's
+general memory. When the collection does not contain the answer, the application says
+so — and it distinguishes *"no document mentions this"* from *"we have not looked
+yet"*, which mean very different things to a researcher.
+
+**Citations point at frozen text.** A citation resolves to a specific passage in a
+stored copy of a document that cannot change afterwards. Ask the same question in six
+months and you can still open exactly what the answer was based on.
+
+**A model proposes; a person decides.** The model reads a paper and suggests a
+measurement. A lab member accepts, corrects, or rejects it, and only accepted values
+become part of the record. Corrections are kept rather than overwritten, because the
+disagreement is useful.
+
+## How it works, briefly
+
+A question becomes an answer in four steps:
 
 ```mermaid
 flowchart LR
-  S["Sources<br/>assert"] --> O["Observations<br/>immutable"]
-  O --> W["Works<br/>identity decisions"]
-  W --> A["Assets<br/>content-addressed"]
-  A --> R["Renditions<br/>addressable spans"]
-  R --> C["Claims<br/>proposed, reviewed"]
-  C --> RL["Corpus release<br/>immutable"]
-  RL --> P["Projections<br/>lexical, vector, claim"]
-  P --> AN["Answers<br/>citing verified spans"]
+  Q["A member asks<br/>a question"] --> V["Work out what this<br/>member may see"]
+  V --> R["Search the frozen<br/>collection three ways"]
+  R --> G["Write an answer from<br/>those passages only"]
+  G --> A["Answer with citations<br/>that open the passage"]
 ```
 
-In this vocabulary **ingestion means only the final promotion of an approved
-corpus release into serving indexes**. Discovery, acquisition, parsing, extraction,
-review, and export are separate stages with separate contracts.
+The second step comes first on purpose: what a member is allowed to see is decided
+*before* anything is searched, so a restricted document cannot influence an answer,
+its ranking, or even a total on a chart. The search runs three ways — by keyword, by
+meaning, and across checked measurements — and the results are merged.
+
+Getting a document to the point where it can be cited takes several separate stages,
+each inspectable and re-runnable on its own:
+
+```mermaid
+flowchart LR
+  S["Sources<br/>say what exists"] --> O["Observations<br/>stored as received"]
+  O --> W["Works<br/>one paper, once"]
+  W --> A["Assets<br/>the file itself"]
+  A --> R["Renditions<br/>parsed passages"]
+  R --> C["Claims<br/>reviewed measurements"]
+  C --> RL["Release<br/>a frozen snapshot"]
+  RL --> P["Search indexes"]
+  P --> AN["Answers"]
+```
+
+Each stage is kept separate so that a problem in one is fixed without discarding the
+others: a bug in the code that reads a source is fixed by re-reading stored data, not
+by asking the source again.
+
+One term to be careful with. **"Ingestion" here means only the last step** — loading
+an approved snapshot into the search indexes. Finding, obtaining, parsing, extracting,
+reviewing, and exporting are separate stages with separate rules.
+
+The whole design, stage by stage, is in the
+[documentation index](docs/README.md), which is written to be read start to finish.
 
 ## Where to read next
 
 | You are | Start here |
 |---|---|
 | A researcher | [Asking and citations](docs/product/asking-and-citations.md) |
-| A data steward | [Collections and releases](docs/product/collections-and-releases.md) |
+| Curating a collection | [Collections and releases](docs/product/collections-and-releases.md) |
 | A developer | [Architecture](docs/architecture/system-context.md), [Contributing](CONTRIBUTING.md) |
-| A connector owner | [Connector SDK](docs/connectors/README.md) |
-| An operator | [Deployment](docs/operations/deployment.md), [Runbooks](docs/operations/runbooks/README.md) |
-| A security reviewer | [Threat model](docs/security/threat-model.md) |
+| Adding a literature source | [Connector guide](docs/connectors/README.md) |
+| Running the deployment | [Deployment](docs/operations/deployment.md), [Runbooks](docs/operations/runbooks/README.md) |
+| Reviewing security | [Threat model](docs/security/threat-model.md) |
 | Anyone | [Documentation index](docs/README.md) |
 
-Durable decisions live in [ADRs](docs/architecture/adr/). Plans and READMEs link to
-them rather than restating their reasoning.
+Durable decisions live in
+[architecture decision records](docs/architecture/adr/README.md) — one page per
+decision, with its reasoning and the alternatives that were rejected. Other pages link
+to them rather than restating them.
+
+## Words used throughout
+
+Short definitions, so the rest of this file and the code read the same way.
+
+| Term | Meaning |
+|---|---|
+| **Workspace** | One lab's separate space. Every record belongs to exactly one, and nothing crosses between them. |
+| **Work** | One scholarly item — a paper, a dataset — regardless of how many sources mention it or how many files it has. |
+| **Asset** | An actual file, stored under a fingerprint of its own content so a swapped or corrupted copy is detected. |
+| **Rendition** | A parsed document: sections, paragraphs, and tables that can be pointed at individually. |
+| **Passage** (a "span") | The exact stretch of text a citation resolves to. |
+| **Claim** | A measurement a paper reported, with its units and conditions, and the passage that states it. |
+| **Release** | A frozen, versioned snapshot of the collection. Questions are answered from a release, never from work in progress. |
+| **Collection** (a "scope") | A living definition of what literature the lab wants: queries, sources, date ranges, and rules. |
+| **Steward** | The role that curates collections and publishes releases. |
+| **API** | Application programming interface: the service the web application and command line talk to. All the rules live there. |
+| **Connector** | The adapter for one outside source, such as PubMed or Crossref. |
+| **DOI** | Digital Object Identifier: the permanent identifier printed on most papers, and the strongest signal that two records are the same work. |
 
 ## Prerequisites
 
@@ -47,12 +114,23 @@ them rather than restating their reasoning.
 |---|---|---|
 | Python | 3.12 | 3.13 is not supported yet |
 | Node.js | 22 or newer | web application only |
-| Docker | 24 or newer | PostgreSQL 16 with pgvector |
-| PostgreSQL | 16 with pgvector 0.7+ | supplied by the compose file |
+| Docker | 24 or newer | runs the database for you |
+| PostgreSQL | 16 with pgvector 0.7 or newer | supplied by the Docker Compose file, so there is nothing to install by hand |
+
+**pgvector** is the PostgreSQL extension that stores the numeric representations used
+for similarity search, and searches them. Keeping it inside PostgreSQL means there is
+no second database to operate.
 
 ## Quick start
 
-Every command below runs in CI through the documentation smoke test.
+Every command below is checked automatically on each change, so none of them is
+stale. You can follow them in order.
+
+**You do not need a database, a network connection, or any credentials to run the
+tests or the demo.** That is deliberate: the test suite uses in-memory stand-ins for
+the database and file storage, recorded fixture responses instead of real literature
+sources, and a deterministic stand-in for the language model. Nothing reaches the
+internet, so the suite behaves the same on every machine.
 
 ```bash
 cp .env.example .env
@@ -66,44 +144,64 @@ python3.12 -m venv .venv
 .venv/bin/pip install -e "packages/python[dev,parsers]" -e services/api
 ```
 
-The whole test suite is offline. It uses in-memory adapters, fixture-keyed fake
-connectors, a fake model provider, and SQLite for the SQL adapter — no network, no
-database, no shared state:
+Run every test — around seven hundred of them, in under a minute:
 
 ```bash
 .venv/bin/pytest -q
 ```
 
+Check style and common mistakes:
+
 ```bash
 .venv/bin/ruff check .
 ```
 
-See the stack work end to end without any infrastructure:
+See the whole application work end to end with no infrastructure at all. This
+publishes a small collection, asks a question, and opens the citation in the answer to
+print the evidence behind it. It exits with an error if a citation does not resolve:
 
 ```bash
 .venv/bin/lab demo
 ```
 
-Inspect the effective configuration, with the source of every key and secrets
-reduced to a digest:
+Print the settings actually in effect, where each one came from, and which of them are
+missing for production. Secrets are shown as fingerprints, never as values, so the
+output is safe to paste into a bug report:
 
 ```bash
 .venv/bin/lab config print
 ```
 
-### Running against PostgreSQL
+See which literature sources this deployment can reach, and whether each has a
+credential configured:
+
+```bash
+.venv/bin/lab config connectors
+```
+
+### Running the real thing locally
+
+Start the database (Docker downloads it the first time):
 
 ```bash
 docker compose up -d db
 ```
 
+Create or update its tables:
+
 ```bash
 cd database && alembic upgrade head
 ```
 
+Start the service the web application talks to:
+
 ```bash
 .venv/bin/uvicorn lab_assistant_api.main:app --factory --reload --port 8000
 ```
+
+Start the background workers, in two more terminals. They are split by what they do:
+one talks to the outside world, the other does the heavy local work — including
+reading untrusted documents, which in production runs with no network access:
 
 ```bash
 .venv/bin/lab worker network
@@ -114,6 +212,8 @@ cd database && alembic upgrade head
 ```
 
 ### The web application
+
+Install its dependencies, then start it on <http://localhost:3002/assist>:
 
 ```bash
 cd apps/web && npm install
@@ -149,46 +249,51 @@ LAB_ENV = local | compose | server
 |---|---|---|
 | `.env` | secrets and behaviour. **No hostnames, ports, or URLs.** | no |
 | `.env.compose` | addresses for containers on a dev machine | yes |
-| `.env.server` | addresses for the deployment VM | yes |
+| `.env.server` | addresses for the deployed server | yes |
 | `infra/environments/<env>.yaml` | behaviour per scenario, no secrets | yes |
 
-Loading order, lowest precedence first: compiled defaults, the versioned
-environment file, workspace config records in the database, environment variables
-for endpoints and secrets, then explicit CLI flags for one invocation.
+Settings are read in this order, each overriding the one before: values compiled into
+the code, the versioned file for the chosen scenario, per-workspace settings stored in
+the database, environment variables for addresses and secrets, and finally a
+command-line flag for a single run.
 
 Because `.env` holds no addresses, `source .env` is safe in any shell. **Never add
 a hostname, port, or service URL to `.env`** — that reintroduces the class of bug
 where a host process is handed a Compose service name. Each address has exactly one
-owner, and no password is duplicated into a `DATABASE_URL`. The reasoning is in
-[ADR-0012](docs/architecture/adr/0012-configuration-model.md).
+owner, and no password is written twice. The reasoning is in
+[decision record 0012](docs/architecture/adr/0012-configuration-model.md).
 
 ## Operations
 
-Operating the VM goes through `scripts/`:
+Running the deployed server goes through the scripts in `scripts/`, never through
+hand-typed Docker commands. Start with a dry run, which reports what *would* change:
 
 ```bash
 ./scripts/deploy.sh --dry-run
 ```
 
-`deploy.sh` fast-forwards from GitHub, rebuilds only the services whose paths
-changed, applies migrations, verifies health, and rolls back on failure.
-`status.sh`, `logs.sh`, `restart.sh`, and `collect-logs.sh` cover the rest;
-`collect-logs.sh` produces a redacted support bundle and refuses to hand one over
-if the redaction check fails. Flags and recipes are in
-[`scripts/README.md`](scripts/README.md).
+`deploy.sh` pulls the new code, rebuilds only the parts whose files changed, updates
+the database, checks the application is healthy, and puts the previous version back if
+it is not. `status.sh`, `logs.sh`, and `restart.sh` cover day-to-day work.
+`collect-logs.sh` produces a support bundle for a bug report: it removes anything
+secret, then checks its own output and refuses to hand the bundle over if it finds
+something. Every flag is listed in [`scripts/README.md`](scripts/README.md), and each
+situation an operator might face has a page under
+[runbooks](docs/operations/runbooks/README.md).
 
 ## Project status
 
-Under active development, tracking the migration plan from the predecessor
-repository. Delivery follows the **M1 milestone first**: retrieval and citation over
-verified evidence spans, with the claim graph and datasheet extraction following.
-See [the migration overview](docs/migration/README.md) for what is done, what is
-next, and what is deliberately deferred.
+Under active development, replacing an earlier version of the same idea. The first
+milestone — asking questions and getting answers whose citations resolve to verified
+passages — is complete. Recording reviewed measurements and exporting them is built
+and tested; what remains there is real templates and real reviewer time. See
+[the migration overview](docs/migration/README.md) for what is done, what is next, and
+what is deliberately postponed.
 
-Supported deployment profile: a single VM running the compose stack, one workspace,
-PostgreSQL with pgvector, and no GPU. Tenancy-ready but single-tenant by default —
-the cost of shared multi-workspace operation is real and is
-[costed rather than assumed](docs/architecture/adr/0006-tenancy-model.md).
+What it is designed to run on: one virtual machine, one lab, PostgreSQL, and no
+graphics card. It is built so that several labs *could* share an installation, but it
+runs as one by default, because the cost of sharing is real and is
+[weighed rather than assumed](docs/architecture/adr/0006-tenancy-model.md).
 
 ## Security
 
@@ -197,7 +302,8 @@ open a public issue, and never paste a credential into one.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE). The dependency set is permissive by policy: a
-copyleft dependency is a decision recorded in
-[ADR-0011](docs/architecture/adr/0011-parsing-stack-and-licence.md), not a surprise
-found later, and CI fails on an unreviewed one.
+MIT — see [LICENSE](LICENSE). Every dependency is permissively licensed by policy, so
+the lab can use, adapt, and share this without a licence review each time. Choosing a
+dependency with a more restrictive licence is a recorded decision
+([record 0011](docs/architecture/adr/0011-parsing-stack-and-licence.md)) rather than
+something discovered later, and the automated checks fail on an unreviewed one.

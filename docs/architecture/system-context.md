@@ -66,5 +66,5 @@ before the call.
 
 Further reading: [containers and deployment](containers-and-deployment.md),
 [modules and dependencies](modules-and-dependencies.md),
-[task orchestration](task-orchestration.md), [search and RAG](search-and-rag.md),
+[task orchestration](task-orchestration.md), [search and answering](search-and-rag.md),
 [provenance](provenance.md).

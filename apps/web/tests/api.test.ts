@@ -22,7 +22,7 @@ describe("API client", () => {
     const body = await login("s@lab.invalid", "passphrase");
     expect(body.workspaces[0]?.slug).toBe("lab");
     const [url, init] = vi.mocked(fetch).mock.calls[0]!;
-    expect(url).toBe("/api/auth/login");
+    expect(url).toBe("/assist/api/auth/login");
     expect(init?.method).toBe("POST");
     // The token is never handled here: the route sets an httpOnly cookie.
     expect(JSON.stringify(init?.body)).not.toContain("access_token");
@@ -58,7 +58,7 @@ describe("API client", () => {
   it("routes every call through the same-origin proxy", async () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ results: [], release_id: "r", classification: "evidence", withheld_by_policy: 0 }));
     await search("lipid yield");
-    expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/backend/search");
+    expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/assist/api/backend/search");
   });
 
   describe("server-sent event parsing", () => {

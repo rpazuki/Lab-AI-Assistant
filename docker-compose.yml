@@ -94,10 +94,12 @@ services:
     environment:
       # The frontend owns exactly one address, and it is injected here.
       LAB_API_URL: http://api:8000
+      APP_BASE_PATH: /assist
+      NEXT_PUBLIC_BASE_PATH: /assist
       NODE_ENV: production
     depends_on:
       api: { condition: service_started }
-    ports: ["3000:3000"]
+    ports: ["3002:3002"]
     logging: *logging
 
 volumes:
