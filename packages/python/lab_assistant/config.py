@@ -116,6 +116,7 @@ class Settings(BaseSettings):
     database_statement_timeout_ms: int = 30_000
 
     # ── object store ────────────────────────────────────────────────────────
+    allow_filesystem_in_production: bool = False
     object_store_kind: str = "filesystem"  # filesystem | s3
     object_store_root: Path = Path("./var/objects")
     object_store_bucket: str | None = None
@@ -241,7 +242,7 @@ class Settings(BaseSettings):
             blockers.append("LLM_PROVIDER must be anthropic in server mode")
         elif not self.llm_api_key:
             blockers.append("LLM_API_KEY is missing")
-        if self.object_store_kind == "filesystem":
+        if self.object_store_kind == "filesystem" and not self.allow_filesystem_in_production:
             blockers.append(
                 "object store is a local directory; a directory on the database disk is "
                 "not a durable data plane (quality §9.1)"

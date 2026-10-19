@@ -7,7 +7,7 @@ Source of truth: `scripts/`, `infra/compose/docker-compose.prod.yml`
 
 For the shared Red Hat server (8445), follow the complete
 [fresh installation and update guide](../fresh_install_linux_redhat.md).
-The generic commands below require the same S3, model and scanner prerequisites.
+The generic commands below require the same model and scanner prerequisites.
 
 One VM, compose stack, one workspace. Everything below is idempotent.
 
@@ -63,21 +63,16 @@ prints a secret.
 
 ## Object storage
 
-Production requires an S3-compatible store: a local directory on the database's disk is
-not a durable data plane, and `production_blockers()` says so. Bucket, endpoint, and
-region are addresses and live in `.env.server`; the access key and secret are secrets
-and live in `.env`:
+The shared-VM profile uses a persistent `objects` volume with
+`LAB_OBJECT_STORE_KIND=filesystem` and explicit
+`LAB_ALLOW_FILESYSTEM_IN_PRODUCTION=true`. API and workers share this volume;
+file locks coordinate writes and newly appended records are visible without
+restarting readers. Back up the entire volume with PostgreSQL outside the VM.
 
-```bash
-LAB_OBJECT_STORE_KIND=s3
-```
-
-The store refuses to construct when any of bucket, endpoint, region, or credentials is
-missing, so a misconfiguration fails the deploy rather than the first acquisition run
-hours later. `/ready` reports the object store separately from the database, and uses a
-cheap list rather than writing a readiness object into the bucket every few seconds.
-Any S3-compatible endpoint works — AWS, MinIO, Ceph, an institutional gateway
-(ADR-0017).
+S3 remains optional: set `LAB_OBJECT_STORE_KIND=s3`, bucket, endpoint and region
+in `.env.server`, and credentials in `.env`. Selecting S3 refuses construction
+when these are missing. Changing the adapter does not migrate existing files.
+See [ADR-0022](../architecture/adr/0022-single-vm-filesystem-storage.md).
 
 ## Malware scanning
 
@@ -93,7 +88,7 @@ reports itself unavailable rather than reporting `clean`.
 
 In `server` mode the API refuses a default `SECRET_KEY`, a `localhost` public URL or
 CORS origin, the fake model provider, missing model credentials, or a local-directory
-object store. Each of these has been a production incident somewhere. A stack that
+object store without the explicit single-VM opt-in. Each of these has been a production incident somewhere. A stack that
 starts and quietly serves with a development secret is worse than one that will not
 start.
 

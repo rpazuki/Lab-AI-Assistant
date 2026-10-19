@@ -49,10 +49,11 @@ account membership in the root-equivalent docker group.
 
 ## 3. Configure secrets and external dependencies
 
-**Required before startup:** an existing S3-compatible bucket with list/read/write
-permissions and an approved Anthropic API key. The stack does not create or host an
-S3 service. Server mode rejects filesystem storage and fake/missing model credentials.
-Outbound access is needed for image/package downloads, ClamAV updates, S3 and enabled
+**Required before startup:** an approved Anthropic API key and sufficient VM disk
+space. This profile stores documents in the persistent `objects` Docker volume;
+S3 and its credentials are optional. Server mode still rejects fake/missing model
+credentials. Back up both PostgreSQL and the objects volume outside the VM.
+Outbound access is needed for image/package downloads, ClamAV updates and enabled
 literature/model providers. Configure institutional proxy/CA trust if required.
 
 ```bash
@@ -73,8 +74,6 @@ LAB_ENV=server
 LAB_LLM_PROVIDER=anthropic
 LAB_LLM_API_KEY=<approved-provider-key>
 LAB_EXTERNAL_MODEL_ENABLED=true
-LAB_OBJECT_STORE_ACCESS_KEY=<bucket-access-key>
-LAB_OBJECT_STORE_SECRET_KEY=<bucket-secret-key>
 LAB_CONNECTOR_CONTACT=<your-email-address>
 ```
 
@@ -85,8 +84,11 @@ secrets out of Git. Do not paste `.env` or resolved Compose configuration into l
 sudoedit /opt/lab-assistant/.env.server
 ```
 
-Public URL and CORS already target 8445. Replace the example S3 endpoint, bucket
-and region with real values. CORS is the origin without `/assist`; public URL
+Public URL and CORS already target 8445. Local storage is already configured:
+`LAB_OBJECT_STORE_KIND=filesystem`, `LAB_ALLOW_FILESYSTEM_IN_PRODUCTION=true`,
+and `LAB_OBJECT_STORE_ROOT=/var/lib/lab-assistant/objects`. All API/worker containers
+share that persistent volume. No additional storage service is needed.
+CORS is the origin without `/assist`; public URL
 includes `/assist`. `.env.server` contains addresses, not passwords. Existing
 PostgreSQL credentials/ports and the legacy database must not be reused here.
 
@@ -102,6 +104,7 @@ DC=(sudo docker compose -p lab-assistant -f docker-compose.yml -f infra/compose/
 "${DC[@]}" config --quiet
 "${DC[@]}" build api web worker-network worker-compute scanner
 "${DC[@]}" up -d --wait --wait-timeout 900 db scanner
+"${DC[@]}" run --rm --no-deps --user 0 --entrypoint sh api -c 'chown -R 10001:10001 /var/lib/lab-assistant/objects'
 "${DC[@]}" run --rm --no-deps -w /app/database api alembic upgrade head
 "${DC[@]}" run --rm --no-deps api lab config print
 "${DC[@]}" up -d --wait --wait-timeout 900
@@ -192,7 +195,7 @@ network sandbox is not implemented, as recorded in
 
 ## 8. Update from Git
 
-Back up the database and S3 bucket first; see
+Back up the database and objects volume together first; see
 [backup and restore](operations/backup-and-restore.md). Then, in Bash:
 
 ```bash
@@ -209,6 +212,7 @@ sudo -u labassistant git pull --ff-only
 "${DC[@]}" build api web worker-network worker-compute scanner
 "${DC[@]}" stop web api worker-network worker-compute
 "${DC[@]}" up -d --wait --wait-timeout 900 db scanner
+"${DC[@]}" run --rm --no-deps --user 0 --entrypoint sh api -c 'chown -R 10001:10001 /var/lib/lab-assistant/objects'
 "${DC[@]}" run --rm --no-deps -w /app/database api alembic upgrade head
 "${DC[@]}" up -d --wait --wait-timeout 900
 sudo ./scripts/check-web.sh
@@ -223,6 +227,39 @@ assume an old image can read a migrated schema. Do not use `down -v`: it deletes
 
 Image builds, fresh PostgreSQL/pgvector migrations, administrator creation,
 production password login, Secure cookies, prefixed routes/CSS, worker startup,
-and clean/EICAR scanner checks were exercised locally. Real S3 bucket permissions,
-provider credentials, Red Hat SELinux and Zscaler reachability must be verified
+and clean/EICAR scanner checks were exercised locally. Real provider credentials, optional S3 bucket permissions, Red Hat SELinux
+and Zscaler reachability must be verified
 on the target server using the checks above.
+
+## Local storage and backups
+
+The `lab-assistant_objects` volume survives rebuilds, restarts and ordinary
+`docker compose down`. Never run `down -v`. A VM/disk loss can destroy both the
+database and documents, so a second copy must be held outside this VM. A snapshot
+on the same disk is not that second copy. This profile supports one POSIX VM,
+not a shared volume across several hosts.
+
+For a consistent backup, stop all application writers, dump PostgreSQL, archive
+the objects volume, then restart. Run in the Bash session with `DC` defined above:
+
+```bash
+sudo install -d -m 700 /var/backups/lab-assistant
+set -euo pipefail
+BACKUP_TAG=$(date -u +%Y%m%dT%H%M%SZ)
+"${DC[@]}" stop web api worker-network worker-compute
+"${DC[@]}" exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' | sudo tee "/var/backups/lab-assistant/$BACKUP_TAG.database.dump" >/dev/null
+"${DC[@]}" run --rm --no-deps --user 0 --entrypoint tar api -C /var/lib/lab-assistant/objects -czf - . | sudo tee "/var/backups/lab-assistant/$BACKUP_TAG.objects.tar.gz" >/dev/null
+"${DC[@]}" start api worker-network worker-compute web
+```
+
+If a backup command fails, resolve the error and restart the application with
+the final `start` command; do not treat a failed archive as a usable backup.
+Check both commands succeeded and copy both matching files to approved storage
+outside the VM. Protect `.env` separately. Restore the matching database and full
+objects archive with writers stopped, correct ownership to UID 10001, and run
+`lab db verify-restore --workspace rlalab` before serving. See
+[backup and restore](operations/backup-and-restore.md).
+
+If an installation already uses S3, keep its settings: switching to filesystem
+does not copy existing objects. If upgrading a checkout with old S3 defaults but
+no stored data, ensure `.env.server` contains the three filesystem settings above.

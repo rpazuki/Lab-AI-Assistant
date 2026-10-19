@@ -48,6 +48,13 @@ def test_shared_host_compose_merge(tmp_path: Path) -> None:
     services = json.loads(result.stdout)["services"]
     assert services["api"]["environment"]["LAB_ENV"] == "server"
     assert services["api"]["environment"]["LAB_APP_PUBLIC_URL"].endswith(":8445/assist")
+    assert services["api"]["environment"]["LAB_OBJECT_STORE_KIND"] == "filesystem"
+    assert services["api"]["environment"]["LAB_ALLOW_FILESYSTEM_IN_PRODUCTION"] == "true"
+    for name in ("api", "worker-network", "worker-compute"):
+        assert any(
+            m["source"] == "objects" and m["target"] == "/var/lib/lab-assistant/objects"
+            for m in services[name]["volumes"]
+        )
     assert not services["db"].get("ports")
     assert not services["scanner"].get("ports")
     for name, port in [("api", "8100"), ("web", "3300")]:

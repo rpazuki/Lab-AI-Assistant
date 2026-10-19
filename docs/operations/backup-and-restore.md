@@ -23,6 +23,10 @@ A database row citing an object digest that the restored store does not contain 
 broken citation. Restore the object store to a point **at or after** the database's
 recovery point: an extra object is harmless, a missing one is not.
 
+For the shared VM, the [installation guide](../fresh_install_linux_redhat.md#local-storage-and-backups)
+provides a stopped-writer database dump and objects archive procedure. Copy both
+off the VM; backing up PostgreSQL alone does not preserve document bytes.
+
 ## Restore procedure
 
 ```bash

@@ -37,3 +37,5 @@ names its successor.
 | [0020](0020-predecessor-api-compatibility.md) | The API is a deliberate break, with a written map |
 
 | [0021](0021-worker-network-and-shared-host.md) | Shared-host ports and worker coordinator connectivity |
+
+| [0022](0022-single-vm-filesystem-storage.md) | Optional persistent filesystem storage on one VM |

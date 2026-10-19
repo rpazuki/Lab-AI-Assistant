@@ -52,12 +52,13 @@ inferred. `deploy.sh` waits on both and rolls back if health does not come up.
 
 In `server` mode the API refuses to start with development defaults still in place: a
 default `SECRET_KEY`, a `localhost` public URL or CORS origin, the fake model
-provider, missing model credentials, or a local-directory object store. A local directory on the database's own
-disk is not a durable data plane, and calling it one would be the failure this check
-exists to prevent.
+provider, missing model credentials, or filesystem storage without explicit single-VM opt-in. The VM profile uses
+a persistent shared volume and requires off-VM backups; it shares the database's
+failure domain. See [ADR-0022](adr/0022-single-vm-filesystem-storage.md).
 
 ## Backup
 
 See [backup and restore](../operations/backup-and-restore.md). The short version:
-PostgreSQL with point-in-time recovery, object-store versioning, and a restore that
+PostgreSQL with point-in-time recovery, versioned S3 or an off-VM filesystem backup,
+and a restore that
 someone has actually performed. A backup nobody has restored is not a backup.

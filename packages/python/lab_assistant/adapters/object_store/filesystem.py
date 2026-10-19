@@ -11,20 +11,26 @@ PostgreSQL and points here.
 Objects are immutable. There is no overwrite operation, and deletion is a
 tombstone plus an audited purge, never a file rewrite.
 
-The filesystem backend is a development and single-VM fallback. It is not a
-durable data plane on the database's disk, and ``Settings.production_blockers``
-says so out loud.
+The filesystem backend supports a single POSIX VM with a shared persistent
+volume. File locks coordinate API and worker processes; off-VM backups are
+required because the VM and its database share a failure domain.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
 from uuid import UUID, uuid5
 
 from lab_assistant.contracts.canonical import sha256_bytes
+from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 
 __all__ = ["FilesystemObjectStore", "InMemoryObjectStore", "StoredObjectRecord"]
 
@@ -54,6 +60,16 @@ def _key_for(digest: str) -> str:
     return f"sha256/{digest[:2]}/{digest[2:4]}/{digest}"
 
 
+def _synchronised(method):
+    @wraps(method)
+    async def call(self, *args, **kwargs):
+        with self._locked():
+            self._load_index()
+            return await method(self, *args, **kwargs)
+
+    return call
+
+
 class FilesystemObjectStore:
     """Immutable local object store used by development and single-VM profiles."""
 
@@ -62,7 +78,18 @@ class FilesystemObjectStore:
         self._root.mkdir(parents=True, exist_ok=True)
         self._clock = clock or (lambda: datetime.now(tz=UTC))
         self._index: dict[UUID, StoredObjectRecord] = {}
-        self._load_index()
+        self._index_offset = 0
+        with self._locked():
+            self._load_index()
+
+    @contextmanager
+    def _locked(self):
+        with (self._root / ".store.lock").open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
     @property
     def root(self) -> Path:
@@ -75,22 +102,25 @@ class FilesystemObjectStore:
         path = self._index_path()
         if not path.is_file():
             return
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            record = StoredObjectRecord(
-                id=UUID(row["id"]),
-                workspace_id=UUID(row["workspace_id"]) if row["workspace_id"] else None,
-                sha256=row["sha256"],
-                byte_length=row["byte_length"],
-                media_type=row["media_type"],
-                object_class=row["object_class"],
-                created_at=datetime.fromisoformat(row["created_at"]),
-                key=row["key"],
-                tombstoned=row.get("tombstoned", False),
-            )
-            self._index[record.id] = record
+        with path.open("r", encoding="utf-8") as handle:
+            handle.seek(self._index_offset)
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                record = StoredObjectRecord(
+                    id=UUID(row["id"]),
+                    workspace_id=UUID(row["workspace_id"]) if row["workspace_id"] else None,
+                    sha256=row["sha256"],
+                    byte_length=row["byte_length"],
+                    media_type=row["media_type"],
+                    object_class=row["object_class"],
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                    key=row["key"],
+                    tombstoned=row.get("tombstoned", False),
+                )
+                self._index[record.id] = record
+            self._index_offset = handle.tell()
 
     def _append_index(self, record: StoredObjectRecord) -> None:
         with self._index_path().open("a", encoding="utf-8") as handle:
@@ -112,6 +142,10 @@ class FilesystemObjectStore:
                 + "\n"
             )
 
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    @_synchronised
     async def put(
         self,
         data: bytes,
@@ -130,7 +164,17 @@ class FilesystemObjectStore:
         path = self._root / key
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
-            path.write_bytes(data)
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+                    temporary = Path(handle.name)
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
         record = StoredObjectRecord(
             id=object_id,
             workspace_id=workspace_id,
@@ -145,13 +189,20 @@ class FilesystemObjectStore:
         self._append_index(record)
         return record
 
+    @_synchronised
     async def get(self, object_id: UUID) -> bytes:
         record = self._index.get(object_id)
         if record is None:
             raise FileNotFoundError(f"object {object_id} is not registered")
         if record.tombstoned:
             raise FileNotFoundError(f"object {object_id} has been tombstoned")
-        return (self._root / record.key).read_bytes()
+        payload = (self._root / record.key).read_bytes()
+        if sha256_bytes(payload) != record.sha256:
+            raise LabAssistantError(
+                "stored object does not match its recorded digest",
+                context={"object_id": str(object_id), "key": record.key},
+            ).with_class(ErrorClass.INVALID_CONTENT)
+        return payload
 
     async def get_by_digest(self, sha256: str, *, workspace_id: UUID | None) -> bytes | None:
         object_id = _object_id(workspace_id, sha256)
@@ -160,9 +211,11 @@ class FilesystemObjectStore:
         except FileNotFoundError:
             return None
 
+    @_synchronised
     async def head(self, object_id: UUID) -> StoredObjectRecord | None:
         return self._index.get(object_id)
 
+    @_synchronised
     async def verify(self, object_id: UUID) -> bool:
         record = self._index.get(object_id)
         if record is None:
@@ -172,6 +225,7 @@ class FilesystemObjectStore:
             return False
         return sha256_bytes(path.read_bytes()) == record.sha256
 
+    @_synchronised
     async def signed_url(self, object_id: UUID, *, expires_seconds: int) -> str:
         record = self._index.get(object_id)
         if record is None:
@@ -180,6 +234,7 @@ class FilesystemObjectStore:
         # own authorisation check instead of handing out a filesystem path.
         return f"/api/v1/objects/{object_id}?expires_in={expires_seconds}"
 
+    @_synchronised
     async def tombstone(self, object_id: UUID, *, reason: str) -> None:
         record = self._index.get(object_id)
         if record is None:

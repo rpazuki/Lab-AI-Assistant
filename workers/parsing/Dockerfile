@@ -17,7 +17,9 @@ COPY workers/parsing /app/workers/parsing
 RUN pip install -e "/app/packages/python[parsers,anthropic]" -e /app/services/api
 
 # Non-root: a parser runs untrusted documents.
-RUN useradd --create-home --uid 10001 worker
+RUN useradd --create-home --uid 10001 worker \
+ && mkdir -p /var/lib/lab-assistant/objects /var/lib/lab-assistant/model-cache \
+ && chown -R worker /var/lib/lab-assistant
 USER worker
 
 ENV LAB_ENV=server
