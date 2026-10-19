@@ -9,8 +9,9 @@ WORKDIR /app
 
 COPY packages/python /app/packages/python
 COPY services/api /app/services/api
+COPY infra/environments /app/infra/environments
 COPY workers/discovery /app/workers/discovery
-RUN pip install -e /app/packages/python -e /app/services/api
+RUN pip install -e "/app/packages/python[anthropic]" -e /app/services/api
 
 # Non-root: a parser runs untrusted documents.
 RUN useradd --create-home --uid 10001 worker

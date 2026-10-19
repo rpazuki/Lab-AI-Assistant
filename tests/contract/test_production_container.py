@@ -129,3 +129,22 @@ class TestScannerWiring:
             )
         )
         assert container.context.malware_scanner is None
+
+
+@pytest.mark.parametrize("provider,key", [("anthropic", None), ("typo", "example-key")])
+def test_server_rejects_missing_or_unknown_provider(provider, key):
+    settings = _settings(
+        env=LabEnv.SERVER,
+        secret_key="a" * 64,
+        app_public_url="https://lab.example.ac.uk",
+        cors_origins=("https://lab.example.ac.uk",),
+        object_store_kind="s3",
+        llm_provider=provider,
+        llm_api_key=key,
+    )
+    assert any("LLM_" in blocker for blocker in settings.production_blockers())
+
+
+def test_effective_config_does_not_disclose_database_password():
+    settings = _settings(database_url="postgresql+asyncpg://lab:private-password@db/lab")
+    assert "private-password" not in repr(settings.redacted())

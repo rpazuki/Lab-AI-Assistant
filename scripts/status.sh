@@ -11,7 +11,7 @@ log "containers"
 compose ps
 
 log "health"
-if health_check http://localhost:8000/health 1; then
+if health_check 1; then
   curl -fsS http://localhost:8000/health; echo
   curl -fsS http://localhost:8000/ready; echo
 else

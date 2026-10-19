@@ -1,3 +1,7 @@
+Status: proposed
+Owner: technical owner
+Last verified: 2026-10-19
+
 # Multi-Path App Porting Guide For Agents
 
 This guide is for a coding agent updating this repo or another lab app so it can run as a good tenant behind the shared RLA Lab Apps Gateway.
@@ -310,7 +314,7 @@ For gateway-level SSO, standardize a tiny identity contract. Example:
 X-Authenticated-Email: user@ic.ac.uk
 X-Authenticated-Issuer: imperial-entra
 X-Authenticated-Session: opaque-session-id
-X-App-Proxy-Secret: shared-random-secret
+X-App-Proxy-Secret: <shared-secret>
 ```
 
 Rules:

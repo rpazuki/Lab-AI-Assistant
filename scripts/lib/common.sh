@@ -42,16 +42,16 @@ services_for_paths() {
       workers/*)                        affected[worker-network]=1; affected[worker-compute]=1 ;;
       apps/web/*)                       affected[web]=1 ;;
       database/*)                       affected[api]=1 ;;
-      docker-compose.yml|infra/*)       affected[api]=1; affected[web]=1; affected[worker-network]=1; affected[worker-compute]=1 ;;
+      docker-compose.yml|infra/*)       affected[api]=1; affected[web]=1; affected[worker-network]=1; affected[worker-compute]=1; affected[scanner]=1 ;;
     esac
   done
   printf '%s\n' "${!affected[@]}"
 }
 
 health_check() {
-  local url="${1:-http://localhost:8000/health}" attempts="${2:-30}"
+  local attempts="${1:-30}"
   for ((i = 1; i <= attempts; i++)); do
-    if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
+    if compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" >/dev/null 2>&1; then
       return 0
     fi
     sleep 2
@@ -61,10 +61,33 @@ health_check() {
 
 readiness_check() {
   local body
-  body="$(curl -fsS --max-time 5 http://localhost:8000/ready 2>/dev/null || true)"
+  body="$(compose exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5).read().decode())" 2>/dev/null || true)"
   [[ "$body" == *'"status": "ok"'* || "$body" == *'"status":"ok"'* ]]
 }
 
 deployed_commit() {
   git -C "$REPO_ROOT" rev-parse --short HEAD
+}
+
+# Check the actual prefixed page and its CSS; a running Next process can still
+# serve 404 everywhere when its runtime configuration was omitted from the image.
+web_check() {
+  compose exec -T web node - <<'JS'
+(async () => {
+  const base = (process.env.APP_BASE_PATH || '/assist').replace(/\/$/, '');
+  const origin = 'http://127.0.0.1:3002';
+  const page = await fetch(`${origin}${base}/login`, { signal: AbortSignal.timeout(15000) });
+  if (!page.ok) throw new Error(`login returned ${page.status}`);
+  const html = await page.text();
+  const styles = [...html.matchAll(/href="([^"]+\.css[^\"]*)"/g)];
+  if (!styles.length) throw new Error('login page has no stylesheet');
+  for (const [, path] of styles) {
+    const css = await fetch(new URL(path.replaceAll('&amp;', '&'), origin), { signal: AbortSignal.timeout(15000) });
+    if (!css.ok || !css.headers.get('content-type')?.includes('text/css')) {
+      throw new Error(`stylesheet failed: ${path} (${css.status})`);
+    }
+  }
+  console.log('Web login page and stylesheets are healthy');
+})().catch(error => { console.error(error.message); process.exit(1); });
+JS
 }

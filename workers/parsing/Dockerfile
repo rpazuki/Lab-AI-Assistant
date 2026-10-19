@@ -7,12 +7,14 @@ WORKDIR /app
 # Parsing needs the optional parser extras and a malware scanner; the others do
 # not, so they stay smaller.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends clamav clamav-daemon \
+ && apt-get install -y --no-install-recommends clamav clamdscan \
  && rm -rf /var/lib/apt/lists/*
+COPY infra/compose/clamd-client.conf /etc/clamav/clamd.conf
 COPY packages/python /app/packages/python
 COPY services/api /app/services/api
+COPY infra/environments /app/infra/environments
 COPY workers/parsing /app/workers/parsing
-RUN pip install -e "/app/packages/python[parsers]" -e /app/services/api
+RUN pip install -e "/app/packages/python[parsers,anthropic]" -e /app/services/api
 
 # Non-root: a parser runs untrusted documents.
 RUN useradd --create-home --uid 10001 worker

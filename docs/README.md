@@ -148,9 +148,9 @@ flowchart TB
   fingerprint of its content, so a corrupted or swapped file is detected rather than
   read.
 - **Background workers** do the slow and risky work: contacting outside sources,
-  reading untrusted documents, building indexes. In production the worker that reads
-  documents has **no network access at all**, which is a deliberate safety measure
-  rather than a side effect.
+  reading untrusted documents, building indexes. The compute coordinator requires network access to the database and object store;
+  per-document network isolation is not implemented (see
+  [ADR-0021](architecture/adr/0021-worker-network-and-shared-host.md)).
 
 Long jobs are rows in the database, not messages in flight. A job records what it is
 waiting for, how many times it has been tried, and who asked for it — so "why is this
@@ -184,6 +184,8 @@ never expires into a failure.
 ---
 
 ## 6. Where to read more
+
+[Shared Red Hat installation](fresh_install_linux_redhat.md) — TLS 8445, separate Compose stack.
 
 ### By audience
 
@@ -237,3 +239,7 @@ A template defines what to look for in a paper and what counts as evidence:
 
 - [Review ownership](contributing/review-ownership.md) — who reviews what, and what to look for
 - [Root CONTRIBUTING.md](../CONTRIBUTING.md) — the definition of done
+
+Gateway proposals (distinct from the current port-based deployment):
+[multi-app gateway](multi-app-gateway-solution.md) ·
+[path porting](multi-path-app-porting-guide.md).

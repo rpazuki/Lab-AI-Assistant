@@ -5,6 +5,10 @@ Source of truth: `scripts/`, `infra/compose/docker-compose.prod.yml`
 
 # Deployment
 
+For the shared Red Hat server (8445), follow the complete
+[fresh installation and update guide](../fresh_install_linux_redhat.md).
+The generic commands below require the same S3, model and scanner prerequisites.
+
 One VM, compose stack, one workspace. Everything below is idempotent.
 
 ## First install
@@ -27,7 +31,7 @@ docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml up
 ```
 
 ```bash
-docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml run --rm api alembic upgrade head
+docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml run --rm -w /app/database api alembic upgrade head
 ```
 
 ```bash
@@ -80,13 +84,15 @@ Any S3-compatible endpoint works — AWS, MinIO, Ceph, an institutional gateway
 Uploads are scanned by default. The container wires a real scanner whenever either scan
 gate is on, and the parse task is **not queued** for an asset that did not pass: the
 upload reports itself blocked, with the reason, instead of leaving a task that can
-never run. `clamdscan` must be present in the worker image; if it is not, the scanner
+never run. The production stack starts a ClamAV daemon with signature updates and shares its
+Unix socket with the API and compute worker. `clamdscan` streams bytes through
+that socket. If the client or daemon is unavailable, the scanner
 reports itself unavailable rather than reporting `clean`.
 
 ## What refuses to start, and why that is the feature
 
 In `server` mode the API refuses a default `SECRET_KEY`, a `localhost` public URL or
-CORS origin, the fake model provider, a disabled malware scanner, or a local-directory
+CORS origin, the fake model provider, missing model credentials, or a local-directory
 object store. Each of these has been a production incident somewhere. A stack that
 starts and quietly serves with a development secret is worse than one that will not
 start.

@@ -1,5 +1,3 @@
-import type { NextConfig } from "next";
-
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/assist";
 
 /**
@@ -7,7 +5,8 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/assist";
  * Requests go to same-origin routes under /api, which attach the httpOnly
  * session cookie server-side — the pattern the predecessor arrived at, kept.
  */
-const nextConfig: NextConfig = {
+/** @type {import("next").NextConfig} */
+const nextConfig = {
   basePath,
   reactStrictMode: true,
   poweredByHeader: false,

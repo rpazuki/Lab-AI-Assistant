@@ -51,3 +51,6 @@ too, because an operator sharing a screenshot is the most common way a token esc
 - run a migration without the deploy path having verified health afterwards;
 - treat a passing health check as proof the release is correct — that is what the
   release gates and the evaluation run are for.
+
+`sudo ./scripts/check-web.sh` checks the deployed login route and CSS without
+credentials. It catches a healthy Node process serving broken prefixed routes.

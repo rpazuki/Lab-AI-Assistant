@@ -11,7 +11,7 @@ x-logging: &logging
 
 services:
   db:
-    ports: []          # never publish the database on the VM
+    ports: !reset []          # never publish the database on the VM
     restart: unless-stopped
     logging: *logging
     command:
@@ -22,6 +22,12 @@ services:
       - log_min_duration_statement=1000
 
   api:
+    ports: !override ["127.0.0.1:${LAB_API_HOST_PORT:-8100}:8000"]
+    volumes:
+      - clamav-socket:/run/clamav:ro
+      - clamav-signatures:/var/lib/clamav:ro
+    depends_on:
+      scanner: { condition: service_healthy }
     env_file: [.env, .env.server]
     restart: unless-stopped
     read_only: true
@@ -45,15 +51,20 @@ services:
     env_file: [.env, .env.server]
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
-    # Parsing runs untrusted documents: no outbound network, bounded resources.
-    # A parser that needs the network is a parser doing something it should not.
-    network_mode: none
+    # The queue coordinator needs PostgreSQL, S3, and model-provider access.
+    # This is not a per-document network sandbox; see ADR-0021.
+    volumes:
+      - clamav-socket:/run/clamav:ro
+      - clamav-signatures:/var/lib/clamav:ro
+    depends_on:
+      scanner: { condition: service_healthy }
     deploy:
       resources:
         limits: { cpus: "2.0", memory: 4G }
     logging: *logging
 
   web:
+    ports: !override ["127.0.0.1:${LAB_WEB_HOST_PORT:-3300}:3002"]
     restart: unless-stopped
     read_only: true
     tmpfs: ["/tmp", "/app/apps/web/.next/cache"]
@@ -62,3 +73,26 @@ services:
       resources:
         limits: { cpus: "1.0", memory: 1G }
     logging: *logging
+
+  scanner:
+    build:
+      context: .
+      dockerfile: infra/compose/scanner.Dockerfile
+    restart: unless-stopped
+    volumes:
+      - clamav-signatures:/var/lib/clamav
+      - clamav-socket:/run/clamav
+    healthcheck:
+      test: ["CMD", "clamdscan", "--ping", "3"]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 3G }
+    logging: *logging
+
+volumes:
+  clamav-signatures:
+  clamav-socket:

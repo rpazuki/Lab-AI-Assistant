@@ -7,11 +7,14 @@ WORKDIR /app
 # worker. Without it the scanner reports itself unavailable and the upload is
 # visibly blocked — correct, but useless to the person holding the PDF.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends clamav clamav-daemon \
+ && apt-get install -y --no-install-recommends clamav clamdscan \
  && rm -rf /var/lib/apt/lists/*
+COPY infra/compose/clamd-client.conf /etc/clamav/clamd.conf
 COPY packages/python /app/packages/python
 COPY services/api /app/services/api
-RUN pip install -e /app/packages/python -e /app/services/api
+COPY database /app/database
+COPY infra/environments /app/infra/environments
+RUN pip install -e "/app/packages/python[anthropic]" -e /app/services/api
 
 RUN useradd --create-home --uid 10001 api \
  && mkdir -p /var/lib/lab-assistant/objects /var/lib/lab-assistant/model-cache \

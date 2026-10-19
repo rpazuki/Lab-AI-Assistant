@@ -21,8 +21,9 @@ docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml up
 - read-only root filesystems with explicit `tmpfs` where a process must write;
 - `no-new-privileges` on every service;
 - resource limits, so one runaway parse cannot take the VM;
-- **`network_mode: none` on the compute worker** — parsing untrusted documents with no
-  network is a control, not a precaution;
+- **compute coordinator connectivity** — PostgreSQL and S3 access remain available;
+  per-document network isolation is not implemented (see
+  [ADR-0021](adr/0021-worker-network-and-shared-host.md));
 - log rotation, 20 MB × 5 per service. Docker's default `json-file` driver never
   rotates, and an unbounded backend log fills the disk and takes PostgreSQL with it.
 
@@ -38,6 +39,8 @@ itself *unavailable* rather than *clean*, and the upload is visibly blocked.
 | `pgdata` | the control plane | obvious |
 | `objects` | immutable assets, renditions, packages | citation targets live here |
 | `modelcache` | embedding weights | a rebuild must not re-download them |
+| `clamav-signatures` | updated virus definitions | avoid a full download on restart |
+| `clamav-socket` | daemon socket | shared runtime connection, not backup data |
 
 ## Health and readiness
 
@@ -49,7 +52,7 @@ inferred. `deploy.sh` waits on both and rolls back if health does not come up.
 
 In `server` mode the API refuses to start with development defaults still in place: a
 default `SECRET_KEY`, a `localhost` public URL or CORS origin, the fake model
-provider, or a local-directory object store. A local directory on the database's own
+provider, missing model credentials, or a local-directory object store. A local directory on the database's own
 disk is not a durable data plane, and calling it one would be the failure this check
 exists to prevent.
 

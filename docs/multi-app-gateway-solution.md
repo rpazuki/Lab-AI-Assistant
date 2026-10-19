@@ -1,3 +1,7 @@
+Status: proposed
+Owner: technical owner
+Last verified: 2026-10-19
+
 # Multi-App Gateway Solution
 
 ## Recommendation
@@ -100,7 +104,7 @@ A wildcard certificate is not needed for the path-routing plan. It becomes usefu
 
 If ICT says a wildcard or SAN certificate is easy, keep the scope narrow. A certificate for `*.rlalab-assist.dept.ic.ac.uk` is a reasonable future-flexibility request if that subdomain can be delegated. A broad wildcard for a whole department domain would be unnecessarily wide for this project.
 
-The Imperial-specific certificate request details are in [TLS Certificate Request Notes](../ict-sso/tls-certificate-request.md).
+Request Imperial-specific certificate guidance from ICT.
 
 ## Reverse Proxy Shape
 

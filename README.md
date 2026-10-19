@@ -201,7 +201,7 @@ Start the service the web application talks to:
 
 Start the background workers, in two more terminals. They are split by what they do:
 one talks to the outside world, the other does the heavy local work — including
-reading untrusted documents, which in production runs with no network access:
+reading documents. The coordinator needs database and storage network access:
 
 ```bash
 .venv/bin/lab worker network

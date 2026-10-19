@@ -40,8 +40,9 @@ attach the session cookie server-side (ADR-0016).
 
 **Only workers reach outward.** The API makes no scholarly-source request and no
 model call on a user's request path except answer generation; everything else is a
-durable task. A parsing worker has *no* network at all in production, because a
-parser that needs the network is doing something it should not.
+durable task. The compute coordinator also needs database and object-storage connectivity.
+Per-document network isolation is not implemented; see
+[ADR-0021](adr/0021-worker-network-and-shared-host.md).
 
 **Object storage holds bytes; PostgreSQL holds meaning.** Raw source responses,
 acquired assets, rendition payloads, model envelopes, and export packages are

@@ -58,6 +58,7 @@ __all__ = [
 _SECRET_KEYS = frozenset(
     {
         "secret_key",
+        "database_url",
         "postgres_password",
         "llm_api_key",
         "object_store_secret_key",
@@ -236,6 +237,10 @@ class Settings(BaseSettings):
             blockers.append("CORS_ORIGINS still contains localhost")
         if self.llm_provider == "fake":
             blockers.append("LLM_PROVIDER is the deterministic fake")
+        if self.llm_provider != "anthropic":
+            blockers.append("LLM_PROVIDER must be anthropic in server mode")
+        elif not self.llm_api_key:
+            blockers.append("LLM_API_KEY is missing")
         if self.object_store_kind == "filesystem":
             blockers.append(
                 "object store is a local directory; a directory on the database disk is "

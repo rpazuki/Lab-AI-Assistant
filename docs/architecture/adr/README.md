@@ -35,3 +35,5 @@ names its successor.
 | [0018](0018-connector-rate-budgets.md) | Rate budgets stored, and enforced per request |
 | [0019](0019-model-provider-naming.md) | Provider and model naming, and what the defaults mean |
 | [0020](0020-predecessor-api-compatibility.md) | The API is a deliberate break, with a written map |
+
+| [0021](0021-worker-network-and-shared-host.md) | Shared-host ports and worker coordinator connectivity |

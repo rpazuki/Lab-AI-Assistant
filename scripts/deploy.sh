@@ -39,7 +39,7 @@ if [[ -z "$CHANGED" ]]; then
 fi
 
 if [[ "$REBUILD_ALL" == 1 ]]; then
-  SERVICES=(api web worker-network worker-compute)
+  SERVICES=(api web worker-network worker-compute scanner)
 else
   mapfile -t SERVICES < <(printf '%s\n' "$CHANGED" | services_for_paths)
 fi
@@ -72,10 +72,11 @@ if printf '%s\n' "$CHANGED" | grep -q '^database/'; then
 fi
 
 log "starting services"
-compose up -d "${SERVICES[@]}" || rollback
+compose up -d --wait --wait-timeout 900 "${SERVICES[@]}" || rollback
 
 log "waiting for health"
 health_check || rollback
-readiness_check || warn "the API is healthy but not fully ready; check /ready"
+readiness_check || rollback
+web_check || rollback
 
 log "deployed ${NEW} (services: ${SERVICES[*]})"
