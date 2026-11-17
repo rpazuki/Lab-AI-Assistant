@@ -633,9 +633,15 @@ records architecture and an implementation-ready plan only.
             it no longer proves the object store works by writing to it once per probe.
             A check that cannot measure something reports "unknown" and does not block:
             a probe that fails closed on its own blindness is an outage.
-            **Role-specific checks are not included** and are not possible yet: they
-            need the installation role of F07, which is not in this phase. Adding the
-            setting without the enforcement would repeat F18 exactly.
+            **Role-specific checks are now included**, once F07 made them possible: a
+            reader fetches the manifest of the release it serves instead of listing the
+            bucket, because the credential it should have cannot list; and a reader with
+            nothing servable refuses traffic while a publisher in the same state stays
+            ready, since a publisher without a release yet is still being set up.
+            A publisher's write preflight is deliberately *not* on the probe — readiness
+            runs on a timer, and a write on a timer is the defect this removed — and the
+            policy-age check has nothing to measure until phase 3 writes policy
+            checkpoints.
       - [x] Upload limits. The ceiling was enforced only while streaming, so anything
             holding a whole payload — the upload route does — went straight past it.
             `put` now enforces it on all three stores, and the filesystem store, which

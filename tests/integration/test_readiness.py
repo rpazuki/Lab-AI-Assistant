@@ -51,7 +51,7 @@ class TestAHealthyProcess:
         """A probe that reports a single boolean cannot tell an operator which
         dependency to go and look at."""
         checks = _by_name(await ReadinessService(harness.context).check())
-        assert set(checks) == {"database", "schema", "object_store"}
+        assert set(checks) == {"database", "schema", "object_store", "corpus"}
 
 
 class TestADependencyThatStoppedAnswering:
@@ -261,3 +261,131 @@ class TestTheRevisionReader:
         # The whole point of the check: what the database reports and what this
         # build expects are the same kind of string, and comparable.
         assert revision == expected_revision()
+
+
+class TestTheChecksAreRoleSpecific:
+    """The half of F15 that had to wait for the installation role to exist.
+
+    A tightly scoped reader credential has GET on the objects it serves and no
+    bucket-wide LIST. Probing it with a LIST reports an installation unfit while
+    every object it actually needs is readable — so the probe has to differ by
+    role, not just the thing being probed.
+    """
+
+    @pytest.fixture
+    async def served(self, tmp_path):
+        """A publisher that has published, so there is something to serve."""
+        from lab_assistant.contracts.policy import (
+            Effect,
+            PolicyAction,
+            ResourceType,
+            SubjectType,
+        )
+        from lab_assistant.domain.workspace import Role
+        from lab_assistant.testing import make_actor, publish_demo_corpus
+
+        harness = build_harness(object_store=FilesystemObjectStore(tmp_path / "objects"))
+        user = await harness.accounts.create_user(
+            email="steward@lab.invalid", password="correct horse battery"
+        )
+        workspace, _ = await harness.accounts.create_workspace(
+            slug="rla-lab", display_name="RLA Lab", owner_user_id=user.id
+        )
+        admin = make_actor(user_id=user.id, workspace_id=workspace.id, role=Role.ADMIN)
+        grants = [
+            await harness.accounts.grant(
+                admin,
+                subject_type=SubjectType.WORKSPACE,
+                subject_id=workspace.id,
+                resource_type=ResourceType.WORKSPACE,
+                resource_id=workspace.id,
+                action=action,
+                effect=Effect.ALLOW,
+                policy_basis="readiness_role_test",
+            )
+            for action in (
+                PolicyAction.QUERY,
+                PolicyAction.VIEW_CONTENT,
+                PolicyAction.INDEX,
+                PolicyAction.DISPLAY_EXCERPT,
+            )
+        ]
+        actor = make_actor(
+            user_id=user.id, workspace_id=workspace.id, role=Role.ADMIN, grants=tuple(grants)
+        )
+        await publish_demo_corpus(harness, actor)
+        return harness
+
+    def _as_reader(self, harness):
+        from lab_assistant.domain.installation import InstallationRole, InstanceCapabilities
+
+        return replace(
+            harness.context,
+            installation=InstanceCapabilities(role=InstallationRole.READER),
+        )
+
+    async def test_a_reader_fetches_a_manifest_rather_than_listing(self, served) -> None:
+        """The narrowest request that proves the thing in question."""
+
+        class ListingRefused(FilesystemObjectStore):
+            """A store whose LIST is denied, as a reader's credential would be."""
+
+            async def ping(self) -> None:
+                raise PermissionError("this credential may not list the bucket")
+
+        store = ListingRefused(served.object_store.root)
+        context = replace(self._as_reader(served), object_store=store)
+
+        report = await ReadinessService(context).check()
+        assert report.ready, [c.detail for c in report.checks if c.blocking_failure]
+        assert "manifest" in _by_name(report)["object_store"].detail
+
+    async def test_a_publisher_with_the_same_store_is_not_ready(self, served) -> None:
+        """The same denial, the other role: a publisher's credential is supposed
+        to be able to list, so a refusal is a real finding."""
+
+        class ListingRefused(FilesystemObjectStore):
+            async def ping(self) -> None:
+                raise PermissionError("denied")
+
+        context = replace(served.context, object_store=ListingRefused(served.object_store.root))
+        report = await ReadinessService(context).check()
+        assert not report.ready
+        assert _by_name(report)["object_store"].ok is False
+
+    async def test_a_reader_whose_manifest_is_missing_refuses_traffic(self, served) -> None:
+        """A reader that cannot fetch what it serves has nothing to answer with."""
+
+        class Empty(FilesystemObjectStore):
+            async def head(self, object_id):
+                return None
+
+        context = replace(self._as_reader(served), object_store=Empty(served.object_store.root))
+        report = await ReadinessService(context).check()
+        assert not report.ready
+        assert report.http_status == 503
+        assert "manifest object" in _by_name(report)["object_store"].detail
+
+    async def test_a_reader_with_nothing_servable_refuses_traffic(self, harness) -> None:
+        """An import that has not landed: every question answered with nothing."""
+        report = await ReadinessService(self._as_reader(harness)).check()
+        assert not report.ready
+        assert report.http_status == 503
+        corpus = _by_name(report)["corpus"]
+        assert corpus.ok is False
+        assert "nothing to answer with" in corpus.detail
+
+    async def test_a_publisher_with_nothing_servable_is_still_ready(self, harness) -> None:
+        """The same state, and for a publisher it is a normal one: stewards are
+        still building the first corpus. Blocking here would mean a fresh
+        installation never comes into service."""
+        report = await ReadinessService(harness.context).check()
+        assert report.ready
+        corpus = _by_name(report)["corpus"]
+        assert corpus.blocks_serving is False
+        assert "still being set up" in corpus.detail
+
+    async def test_a_served_corpus_is_named(self, served) -> None:
+        report = await ReadinessService(served.context).check()
+        assert report.ready
+        assert "serving release" in _by_name(report)["corpus"].detail

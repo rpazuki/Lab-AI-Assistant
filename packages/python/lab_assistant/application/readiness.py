@@ -32,6 +32,23 @@ blip that made every container report unhealthy would have an orchestrator
 restart all of them, which is the opposite of what the situation needs.
 `/ready` asks whether this process should receive a request, and that one does
 depend on the things a request needs.
+
+The checks are **role-specific**, which was the half of F15 that had to wait for
+the installation role to exist:
+
+- a **reader** proves the store by fetching a manifest it is expected to serve.
+  The bucket-wide LIST a publisher uses is exactly the permission a narrowly
+  scoped reader credential is not given, so a reader probed that way reports
+  itself unfit while being perfectly able to serve every object it needs;
+- a **reader** with nothing servable is not ready. An import that has not landed
+  leaves an installation that answers every question with nothing;
+- a **publisher** with no release yet is a normal, working installation that
+  stewards are still building a corpus on, so the same condition is advisory
+  there. The asymmetry is the point: the two roles fail differently.
+
+Writing remains outside this module. A publisher's ability to write is not
+probed on a timer, because a probe that writes on a timer is the defect this
+module was opened to remove; it belongs to an operator command run deliberately.
 """
 
 from __future__ import annotations
@@ -39,6 +56,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from uuid import UUID
 
 from lab_assistant.application.context import ServiceContext
 
@@ -49,6 +67,21 @@ __all__ = [
     "ReadinessState",
     "SchemaRevisionReader",
 ]
+
+#: How many workspaces a probe will look through for something servable. A
+#: readiness check runs on a timer, so its cost must not grow with the corpus.
+_WORKSPACE_PROBE_LIMIT = 50
+
+
+@dataclass(frozen=True, slots=True)
+class _Servable:
+    """The release this installation is currently serving, if any."""
+
+    workspace_id: UUID
+    release_id: UUID
+    alias: str
+    manifest_object_id: UUID | None
+
 
 #: Returns the migration revision the database is stamped at, or ``None`` when
 #: there is no such record. A narrow seam on purpose: readiness needs one string
@@ -136,11 +169,13 @@ class ReadinessService:
         self._expected_revision = expected_revision
 
     async def check(self) -> ReadinessReport:
+        servable = await self._servable_release()
         return ReadinessReport(
             checks=(
                 await self._database(),
                 await self._schema(),
-                await self._object_store(),
+                await self._object_store(servable),
+                self._corpus(servable),
             )
         )
 
@@ -200,15 +235,21 @@ class ReadinessService:
             )
         return ReadinessCheck(name="schema", ok=True, detail=actual)
 
-    async def _object_store(self) -> ReadinessCheck:
-        """Can the store be reached, without changing it?
+    async def _object_store(self, servable: _Servable | None) -> ReadinessCheck:
+        """Can the store be reached, without changing it — and as whom?
 
-        `ping` is the store's own cheapest honest answer. A store that does not
-        offer one is reported as unchecked rather than probed with a write: the
-        previous implementation stored a payload per probe, and a readiness
-        check that mutates the thing it measures is not a readiness check.
+        A publisher asks the store for its cheapest reachability answer, which
+        for a bucket is a LIST. A reader must not: a credential scoped to GET
+        the objects it serves is a credential that cannot LIST the bucket, and
+        probing it that way reports an installation unfit while every object it
+        actually needs is readable. So a reader fetches a manifest it is
+        expected to serve, which is the narrowest request that proves the thing
+        in question.
         """
         store = self._context.object_store
+        if not self._context.installation.is_publisher:
+            return await self._reader_probe(store, servable)
+
         ping = getattr(store, "ping", None)
         if ping is None:
             return ReadinessCheck(
@@ -226,3 +267,101 @@ class ReadinessService:
                 detail=f"the object store did not answer ({type(exc).__name__})",
             )
         return ReadinessCheck(name="object_store", ok=True)
+
+    async def _reader_probe(self, store, servable: _Servable | None) -> ReadinessCheck:
+        """A GET of one object this installation is expected to serve."""
+        if servable is None or servable.manifest_object_id is None:
+            return ReadinessCheck(
+                name="object_store",
+                ok=True,
+                detail=(
+                    "not checked: no servable release names a manifest object to fetch, "
+                    "so there is no sentinel a reader credential is guaranteed to hold"
+                ),
+                blocks_serving=False,
+            )
+        try:
+            found = await store.head(servable.manifest_object_id)
+        except Exception as exc:
+            return ReadinessCheck(
+                name="object_store",
+                ok=False,
+                detail=(
+                    f"cannot fetch the manifest of the release this installation serves "
+                    f"({type(exc).__name__})"
+                ),
+            )
+        if found is None:
+            return ReadinessCheck(
+                name="object_store",
+                ok=False,
+                detail=(
+                    f"the store has no manifest object for release {servable.release_id}, "
+                    "which this installation is serving"
+                ),
+            )
+        return ReadinessCheck(
+            name="object_store",
+            ok=True,
+            detail=f"fetched the manifest of release {servable.release_id}",
+        )
+
+    def _corpus(self, servable: _Servable | None) -> ReadinessCheck:
+        """Is there anything to serve?
+
+        Blocking for a reader and advisory for a publisher, because the same
+        state means different things. A reader whose import has not landed
+        answers every question with nothing and should not be in rotation; a
+        publisher with no release yet is a working installation that stewards
+        are still building a corpus on.
+        """
+        publisher = self._context.installation.is_publisher
+        if servable is not None:
+            return ReadinessCheck(
+                name="corpus",
+                ok=True,
+                detail=f"serving release {servable.release_id} as {servable.alias!r}",
+            )
+        return ReadinessCheck(
+            name="corpus",
+            ok=publisher,
+            detail=(
+                "no alias points at a servable release"
+                + (
+                    "; a publisher with no release yet is still being set up"
+                    if publisher
+                    else ", so this installation has nothing to answer with"
+                )
+            ),
+            blocks_serving=not publisher,
+        )
+
+    async def _servable_release(self) -> _Servable | None:
+        """The first alias anywhere that points at a servable release.
+
+        Readiness is not workspace-scoped, and in v1 a library maps to one
+        workspace, so the first match is the corpus this installation serves.
+        It stops at the first one: this runs on a timer, and a probe whose cost
+        grows with the number of workspaces is a probe that gets turned off.
+        """
+        try:
+            async with self._context.uow_factory() as uow:
+                workspaces = await uow.workspaces.list_workspaces(limit=_WORKSPACE_PROBE_LIMIT)
+                for workspace in workspaces:
+                    for alias in await uow.releases.list_aliases(workspace.id):
+                        if alias.release_id is None:
+                            continue
+                        release = await uow.releases.get(workspace.id, alias.release_id)
+                        if release is None or not release.status.is_servable:
+                            continue
+                        return _Servable(
+                            workspace_id=workspace.id,
+                            release_id=release.id,
+                            alias=alias.alias,
+                            manifest_object_id=release.release_manifest_object_id,
+                        )
+        except Exception:
+            # The database check reports this; it must not be reported twice,
+            # and it must not mask itself as a storage failure.
+            return None
+        return None

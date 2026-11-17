@@ -130,6 +130,7 @@ class TestHealthAndConfig:
             context=SimpleNamespace(
                 uow_factory=_raises("the database is down"),
                 object_store=container.context.object_store,
+                installation=container.context.installation,
             ),
             schema_revision=None,
         )
@@ -162,6 +163,7 @@ class TestHealthAndConfig:
             context=SimpleNamespace(
                 uow_factory=_raises("the database is down"),
                 object_store=container.context.object_store,
+                installation=container.context.installation,
             ),
             schema_revision=None,
         )

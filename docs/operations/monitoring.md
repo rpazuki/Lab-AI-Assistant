@@ -29,6 +29,18 @@ kept routing to a process that had just said it could not reach its database.
 A not-ready body names the failing check and why, so an alert can carry the
 reason instead of sending someone to the logs for it.
 
+The checks differ by installation role, so the same alert means different things
+on the two deployments:
+
+| Check | Publisher | Reader |
+|---|---|---|
+| `object_store` | lists the bucket | fetches the manifest of the release it serves |
+| `corpus` | advisory — no release yet is a normal state while one is being built | **blocks** — nothing servable means nothing to answer with |
+
+A reader is probed with a GET rather than a LIST because the credential it ought
+to have cannot list: scope a reader to the objects it serves and a LIST-based
+probe reports it unfit while every object it needs is readable.
+
 | Unsupported-handle rate | message rows | near zero | any sustained rise — a generation regression |
 | Abstention rate | message rows | stable | a jump usually means retrieval or a release, not the model |
 | Provider 429s | logs | occasional | sustained; raise the delay or the budget |

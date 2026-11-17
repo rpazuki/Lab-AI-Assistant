@@ -379,7 +379,7 @@ migration work must address historical-schema stability rather than hide drift.
 schema/archive commit, keep previous compatible image and snapshot activation available.
 Migration history and the deployed-version record must not be inferred just from Git HEAD.
 
-### F15 — Readiness is not a sufficient import/role check (**partly resolved**)
+### F15 — Readiness is not a sufficient import/role check (**resolved**)
 
 `/ready` checks DB access and S3 zero-key LIST; filesystem readiness performs a PUT. It
 returns a degraded JSON body without an HTTP 503. A tightly scoped reader may have GET
@@ -399,9 +399,23 @@ read-only `ping`, and a store without one is reported unchecked rather than writ
 A check that cannot measure something is non-blocking, because a probe that fails closed
 on its own blindness is an outage.
 
-**Still owed:** the role-specific half — a reader's sentinel GET instead of a bucket
-LIST, and a publisher's write preflight — which needs the installation role of F07.
-Adding a role setting that nothing enforces would be this table's fourth row.
+**The role-specific half, once F07 made it possible.** A reader proves the store by
+fetching the manifest of the release it serves rather than by listing the bucket: a
+credential scoped to GET the objects it needs is exactly a credential that cannot LIST,
+so the old probe reported a perfectly serviceable reader as unfit. A reader with nothing
+servable now refuses traffic — an import that has not landed answers every question with
+nothing — while a publisher in the same state stays ready, because that one is a working
+installation whose stewards are still building the first corpus. The asymmetry is the
+check: the two roles fail differently.
+
+**A publisher's write preflight is deliberately not on the probe.** Readiness runs on a
+timer, and a write on a timer is the defect this work removed. Proving a publisher can
+write belongs to an operator command run on purpose, not to something polled every few
+seconds.
+
+**Not implemented:** the policy-age check. Policy checkpoints and revocation freshness
+are phase 3 and do not exist yet, so there is nothing to measure; a check written now
+would report on a field nobody writes.
 
 ### F16 — the PostgreSQL integration suite had never run (found while verifying F02)
 
