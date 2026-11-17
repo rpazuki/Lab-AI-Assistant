@@ -69,6 +69,8 @@ __all__ = [
     "EvaluationRepository",
     "IdFactory",
     "ObjectRecord",
+    "ObjectReference",
+    "ObjectReferenceSource",
     "ObjectRegistryRepository",
     "ObjectStore",
     "ObservationRepository",
@@ -139,6 +141,33 @@ class ObjectStore(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class ObjectReferenceSource:
+    """One column that points at ``objects.id``.
+
+    ``required`` is the column's nullability: a null ``assets.object_id`` is not
+    a thing that can exist, so a dangling one there is a broken asset, while a
+    null ``parse_runs.log_object_id`` is an ordinary absent log. Reporting both
+    the same way would bury the first in the second.
+    """
+
+    table: str
+    column: str
+    required: bool = False
+
+    def __str__(self) -> str:
+        return f"{self.table}.{self.column}"
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectReference:
+    """One row's pointer at an object, with the row that holds it."""
+
+    source: ObjectReferenceSource
+    row_id: UUID
+    object_id: UUID
+
+
 @runtime_checkable
 class ObjectRegistryRepository(Protocol):
     """The database's record of what the object store holds.
@@ -175,6 +204,26 @@ class ObjectRegistryRepository(Protocol):
         ...
 
     async def count_objects(self, workspace_id: UUID) -> int: ...
+
+    def reference_sources(self) -> tuple[ObjectReferenceSource, ...]:
+        """Every column in the schema that points at ``objects.id``.
+
+        Read from the schema rather than from a hand-written list, so a column
+        added next year is checked by every sweep that walks these without
+        anybody remembering to add it here.
+        """
+        ...
+
+    async def list_references(
+        self,
+        workspace_id: UUID,
+        source: ObjectReferenceSource,
+        *,
+        limit: int = 500,
+        after_id: UUID | None = None,
+    ) -> list[ObjectReference]:
+        """One keyset page of non-null references from ``source``."""
+        ...
 
 
 @runtime_checkable
@@ -441,6 +490,17 @@ class ReleaseRepository(Protocol):
     async def list_releases(
         self, workspace_id: UUID, *, limit: int = 50
     ) -> list[CorpusRelease]: ...
+
+    async def list_all_releases(
+        self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[CorpusRelease]:
+        """One keyset page, ordered by id, for paths that must see every release.
+
+        Separate from ``list_releases`` because the two want different orders and
+        conflating them is how a lifecycle sweep ends up reading the newest fifty
+        rows and reporting on the corpus.
+        """
+        ...
     async def add_items(self, items: Sequence[ReleaseItem]) -> None: ...
     async def list_items(self, workspace_id: UUID, release_id: UUID) -> list[ReleaseItem]: ...
     async def get_alias(self, workspace_id: UUID, alias: str) -> SearchAlias | None: ...

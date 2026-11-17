@@ -540,11 +540,16 @@ records architecture and an implementation-ready plan only.
       - [x] Real PostgreSQL evidence on 16.13 + pgvector 0.8.2: 780 passed (761 offline),
             `alembic upgrade head` on empty and populated databases, and the lifecycle
             against the Alembic-built schema. Recorded in the audit's section 5.
-      - [ ] F17 `alembic check` drift: the documented CI guard fails against any migrated
-            database because three `op.execute` indexes are not declared in `tables.py`.
-            Fix before phase 2 starts adding tables.
-      - [ ] Backfill of historical `objects` rows in a deployed database, and orphan
-            reconciliation.
+      - [x] F17 `alembic check` drift fixed: the three expression indexes are declared
+            with `.ddl_if(dialect="postgresql")`, the check is clean against a fresh and
+            an already-migrated database, and a contract test fails if a later migration
+            adds a raw-SQL index the metadata does not describe.
+      - [x] Backfill and orphan reconciliation: `lab storage scan` / `lab storage
+            backfill`. **Correction:** dangling references cannot exist on PostgreSQL —
+            the foreign key refuses the insert — so a deployed database has not been
+            writing them, it has been failing those writes. Backfill is for a restore
+            without constraints; orphan payloads are the state a deployed store may
+            actually hold.
       - [x] F03/F04/F05 S3 adapter replaced with the maintained SDK
             ([ADR-0023](../architecture/adr/0023-object-storage-sdk.md)): error taxonomy,
             credential chain, conditional create and compare-and-swap, shared-bucket
@@ -552,9 +557,11 @@ records architecture and an implementation-ready plan only.
             `tests/integration/test_s3_live_endpoint.py` is written and unrun, because
             this machine's Docker could not pull a MinIO image. Run it before any
             deployment depends on presigned URLs or conditional writes.
-      - [ ] F12 `verify-restore` reachability, pagination and strict manifest round trips.
-            Measured: it reports `objects_checked: 1` where the registry holds four.
-      - [ ] Golden portable archive fixture.
+      - [x] F12 `verify-restore` reachability, pagination and strict manifest round
+            trips. Keyset-paged, sweeps all 12 reference sources and re-digests every
+            object; a manifest that will not parse is a finding, not an escape. The
+            non-default-chunker round-trip defect this predicted was real and is fixed.
+      - [ ] Golden portable archive fixture — the last phase 0 item.
 - [ ] Phase 1 backend(s) and portable single-installation recovery accepted.
 - [ ] Phase 2 complete archival format and crash-safe publication accepted.
 - [ ] Phase 3 independent reader end-to-end accepted with GET-only cloud identity.

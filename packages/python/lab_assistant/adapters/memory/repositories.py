@@ -18,7 +18,11 @@ from types import TracebackType
 from typing import Any, TypeVar
 from uuid import UUID
 
-from lab_assistant.application.ports import WorkVisibilityRow
+from lab_assistant.application.ports import (
+    ObjectReference,
+    ObjectReferenceSource,
+    WorkVisibilityRow,
+)
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
 from lab_assistant.contracts.stage import StageName
@@ -320,6 +324,42 @@ class _Configs:
         return sorted(configs, key=lambda c: (c.logical_id, c.semantic_version))
 
 
+
+#: ``(table, column) -> the MemoryDatabase attribute holding those rows``. Built
+#: from the domain models themselves, so a new ``*_object_id`` field is covered
+#: here the moment it exists rather than when somebody remembers this mapping.
+_REFERENCE_MODELS: tuple[tuple[str, str, Any], ...] = (
+    ("assets", "assets", Asset),
+    ("renditions", "renditions", Rendition),
+    ("parse_runs", "parse_runs", ParseRun),
+    ("acquisition_attempts", "attempts", AcquisitionAttempt),
+    ("source_requests", "source_requests", SourceRequest),
+    ("source_observations", "observations", SourceObservation),
+    ("evidence_spans", "spans", EvidenceSpan),
+    ("corpus_releases", "releases", CorpusRelease),
+)
+
+_REFERENCE_STORES: dict[tuple[str, str], str] = {}
+
+
+def _memory_reference_sources() -> tuple[ObjectReferenceSource, ...]:
+    if not _REFERENCE_STORES:
+        for table, store, model in _REFERENCE_MODELS:
+            for name, field_info in model.model_fields.items():
+                if name == "object_id" or name.endswith("_object_id"):
+                    _REFERENCE_STORES[(table, name)] = store
+                    _MEMORY_SOURCES.append(
+                        ObjectReferenceSource(
+                            table=table, column=name, required=field_info.is_required()
+                        )
+                    )
+        _MEMORY_SOURCES.sort(key=lambda source: (source.table, source.column))
+    return tuple(_MEMORY_SOURCES)
+
+
+_MEMORY_SOURCES: list[ObjectReferenceSource] = []
+
+
 class _Objects:
     """The in-memory object registry.
 
@@ -375,6 +415,46 @@ class _Objects:
         return sum(
             1 for record in self._db.objects.values() if record.workspace_id == workspace_id
         )
+
+    def reference_sources(self) -> tuple[ObjectReferenceSource, ...]:
+        """Only the sources this store can actually serve.
+
+        Fewer than the SQL adapter's, because this store holds fewer kinds of
+        row. Declaring the full schema list and answering the rest with an empty
+        page would let a sweep report a clean graph while covering a fraction of
+        it — the same shape as the bug this whole sweep exists to find.
+        """
+        return _memory_reference_sources()
+
+    async def list_references(
+        self,
+        workspace_id: UUID,
+        source: ObjectReferenceSource,
+        *,
+        limit: int = 500,
+        after_id: UUID | None = None,
+    ) -> list[ObjectReference]:
+        store = _REFERENCE_STORES.get((source.table, source.column))
+        if store is None:
+            raise KeyError(
+                f"the in-memory object registry does not model {source}; "
+                "use the SQL adapter for a sweep that covers it"
+            )
+        rows = [
+            row
+            for row in getattr(self._db, store).values()
+            if getattr(row, "workspace_id", None) == workspace_id
+            and getattr(row, source.column, None) is not None
+        ]
+        rows.sort(key=lambda row: row.id)
+        if after_id is not None:
+            rows = [row for row in rows if row.id > after_id]
+        return [
+            ObjectReference(
+                source=source, row_id=row.id, object_id=getattr(row, source.column)
+            )
+            for row in rows[:limit]
+        ]
 
 
 class _Observations:
@@ -904,6 +984,17 @@ class _Releases:
     async def list_releases(self, workspace_id: UUID, *, limit: int = 50) -> list[CorpusRelease]:
         releases = [r for r in self._db.releases.values() if r.workspace_id == workspace_id]
         return sorted(releases, key=lambda r: r.created_at or datetime.min, reverse=True)[:limit]
+
+    async def list_all_releases(
+        self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[CorpusRelease]:
+        releases = sorted(
+            (r for r in self._db.releases.values() if r.workspace_id == workspace_id),
+            key=lambda r: r.id,
+        )
+        if after_id is not None:
+            releases = [r for r in releases if r.id > after_id]
+        return releases[:limit]
 
     async def add_items(self, items: Sequence[ReleaseItem]) -> None:
         for item in items:

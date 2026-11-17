@@ -44,9 +44,43 @@ docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml ru
 ```
 
 `verify-restore` checks the audit hash chain per workspace, that every published
-release's manifest digest recomputes, that every referenced object exists and matches
-its digest, and that the alias points at a servable release. **A restore that has not
-been verified is not a restore.**
+release's manifest digest recomputes and parses, that the alias points at a servable
+release, and — through the same sweep `lab storage scan` runs — that every row
+pointing at an object has one, and that every registered object's bytes are present
+and digest to what was recorded. **A restore that has not been verified is not a
+restore.**
+
+Everything pages with a keyset cursor. Until 2026-11 this read the newest thousand
+releases and checked one object per release, then printed `restore verified`; the
+sentence above described what it was supposed to do rather than what it did.
+
+To sweep storage without the release and audit checks — or more cheaply, during
+routine operation rather than after a restore:
+
+```bash
+lab storage scan --workspace <slug> --verify exists    # metadata only, cheap
+lab storage scan --workspace <slug> --verify digest    # reads every object
+```
+
+`--verify digest` reads every byte in the store, so it is a maintenance-window
+operation on a large corpus. `--verify exists` still catches a restore that brought
+the database and not the objects, which is the common failure. Add `--skip-orphans`
+to stop it holding referenced ids in memory; that is the only part of the sweep whose
+cost grows with the corpus.
+
+Findings that block serving are separated from findings that do not. A payload that
+is missing, denied, corrupt or still being restored from a cold class blocks. A
+registered object nothing references — usually a transaction that rolled back after
+its upload — is reported and does not. Reclaiming those is a separate, privileged
+decision that has to account for retention and legal holds.
+
+If a sweep reports dangling references, `lab storage backfill --workspace <slug>`
+reports what it could rebuild from the store's own metadata, and `--apply` writes the
+rows. Note that PostgreSQL's foreign keys make dangling references impossible to
+create in the first place: seeing them means the database was restored without its
+constraints, or predates them. Where the store cannot account for a reference either,
+backfill says so rather than inventing a row that would make the next sweep look
+clean.
 
 6. bring up the API, workers, and web; check `/ready` and `status.sh`.
 

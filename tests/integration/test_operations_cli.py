@@ -12,6 +12,7 @@ and a demo that quietly stops proving anything is a broken promise nobody notice
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -173,8 +174,53 @@ class TestVerifyRestore:
         assert code == 0
         assert '"audit_chain": "ok"' in captured.out
         assert '"problems": []' in captured.out
-        assert '"objects_checked": 1' in captured.out
         assert "restore verified" in captured.err
+
+        report = json.loads(captured.out)
+        # Every object was read and re-digested, not merely counted. The check
+        # this replaced reported `objects_checked: 1` against a store holding
+        # four, which is how a restore missing its asset bytes passed.
+        storage = report["storage"]
+        assert storage["payload_check"] == "digest"
+        assert storage["payloads_checked"] >= 4
+        assert storage["blocking"] == 0
+        assert storage["sources_unswept"] == []
+        assert "assets.object_id" in storage["sources_swept"]
+        assert report["manifests_checked"] == 1
+
+    async def test_a_missing_payload_is_a_problem(self, deployment, capsys) -> None:
+        """A restore that brought the database and not the bucket."""
+        harness = deployment["harness"]
+        workspace_id = deployment["workspace"].id
+        async with harness.context.uow_factory() as uow:
+            records = await uow.objects.list_objects(workspace_id, limit=10)
+        assert records
+        # Drop the bytes the way an incomplete object-volume copy would.
+        harness.object_store._objects.pop(records[0].id)
+        harness.object_store._records.pop(records[0].id)
+
+        code = await _verify_restore(deployment["container"], workspace_id)
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "storage:" in captured.out
+        assert "do not serve this restore" in captured.err
+
+    async def test_a_dangling_reference_is_a_problem(self, deployment, capsys) -> None:
+        """What every installation older than the object registry looks like."""
+        harness = deployment["harness"]
+        workspace_id = deployment["workspace"].id
+        async with harness.context.uow_factory() as uow:
+            records = await uow.objects.list_objects(workspace_id, limit=50)
+        assets = [record for record in records if record.object_class == "asset"]
+        assert assets, "the fixture should have registered an asset"
+        # Remove the registry row, leaving the asset pointing at nothing.
+        harness.db.objects.pop(assets[0].id)
+
+        code = await _verify_restore(deployment["container"], workspace_id)
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "is not registered" in captured.out
+        assert "do not serve this restore" in captured.err
 
     async def test_a_manifest_digest_that_does_not_recompute_fails(
         self, deployment, capsys

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime, timedelta
+from functools import lru_cache
 from types import TracebackType
 from typing import Any
 from uuid import UUID
@@ -19,7 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from lab_assistant.adapters.db import tables as t
 from lab_assistant.adapters.db.mapper import Mapper, uuid_list, uuid_or_none
-from lab_assistant.application.ports import WorkVisibilityRow
+from lab_assistant.application.ports import (
+    ObjectReference,
+    ObjectReferenceSource,
+    WorkVisibilityRow,
+)
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
 from lab_assistant.contracts.release import ReleaseItemRecord
@@ -454,6 +459,31 @@ class _Configs(_Base):
         )
 
 
+
+@lru_cache(maxsize=1)
+def _object_reference_sources() -> tuple[ObjectReferenceSource, ...]:
+    """Columns pointing at ``objects.id``, read from the schema itself.
+
+    A hand-written list would be correct until the next column, and a sweep that
+    silently stops covering a column is worse than no sweep: it reports a clean
+    bill of health over a shrinking fraction of the graph.
+    """
+    found: list[ObjectReferenceSource] = []
+    for table in t.METADATA.tables.values():
+        if "id" not in table.c:
+            continue
+        for column in table.columns:
+            if any(key.column is t.objects.c.id for key in column.foreign_keys):
+                found.append(
+                    ObjectReferenceSource(
+                        table=table.name,
+                        column=column.name,
+                        required=not column.nullable,
+                    )
+                )
+    return tuple(sorted(found, key=lambda source: (source.table, source.column)))
+
+
 class _Objects(_Base):
     """The ``objects`` registry: one row per stored payload.
 
@@ -508,6 +538,36 @@ class _Objects(_Base):
             select(func.count()).select_from(t.objects).where(self._scope(OBJECTS, workspace_id))
         )
         return int(result.scalar_one())
+
+    def reference_sources(self) -> tuple[ObjectReferenceSource, ...]:
+        return _object_reference_sources()
+
+    async def list_references(
+        self,
+        workspace_id: UUID,
+        source: ObjectReferenceSource,
+        *,
+        limit: int = 500,
+        after_id: UUID | None = None,
+    ) -> list[ObjectReference]:
+        table = t.METADATA.tables[source.table]
+        column = table.c[source.column]
+        conditions = [column.is_not(None)]
+        if "workspace_id" in table.c:
+            conditions.append(table.c.workspace_id == workspace_id)
+        if after_id is not None:
+            conditions.append(table.c.id > after_id)
+        rows = await self._c.execute(
+            select(table.c.id, column).where(*conditions).order_by(table.c.id).limit(limit)
+        )
+        return [
+            ObjectReference(
+                source=source,
+                row_id=uuid_or_none(row[0]),  # type: ignore[arg-type]
+                object_id=uuid_or_none(row[1]),  # type: ignore[arg-type]
+            )
+            for row in rows.fetchall()
+        ]
 
 
 class _Observations(_Base):
@@ -1058,6 +1118,16 @@ class _Releases(_Base):
             self._scope(RELEASES, workspace_id),
             order=t.corpus_releases.c.created_at.desc(),
             limit=limit,
+        )
+
+    async def list_all_releases(
+        self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[CorpusRelease]:
+        conditions = [self._scope(RELEASES, workspace_id)]
+        if after_id is not None:
+            conditions.append(t.corpus_releases.c.id > after_id)
+        return await self._many(
+            RELEASES, *conditions, order=t.corpus_releases.c.id, limit=limit
         )
 
     async def add_items(self, items: Sequence[ReleaseItem]) -> None:

@@ -266,7 +266,42 @@ assume every costly response can already be recovered or revalidated without ano
 **Change:** policy-controlled request/result persistence with explicit redaction/retention;
 never store provider credentials or assume all prompts/outputs may be retained indefinitely.
 
-### F12 — Restore verification covers only part of the graph
+### F12 — Restore verification covers only part of the graph (**resolved**)
+
+**Resolved 2026-11-17.** `verify-restore` now keyset-pages every release instead of
+reading a thousand, treats a manifest that will not parse as a finding instead of an
+exception that hid every finding after it, and runs the sweep below over the whole graph.
+Measured on the same seeded corpus that previously reported `objects_checked: 1` of four:
+12 reference sources swept, 3 references checked, 4 payloads re-digested. Corrupting one
+payload now produces two independent findings and exit 1, where it previously printed
+`restore verified`.
+
+New: [`StorageInventoryService`](../../packages/python/lab_assistant/application/storage_inventory.py),
+behind `lab storage scan` and `lab storage backfill`. It walks both directions — every
+column that points at `objects.id`, read from the schema rather than a hand-written list,
+and every registered object's bytes — because a check that answered only one of those
+would pass on a restore with an empty bucket. Findings are typed and separated into those
+that block serving and those that do not; missing, denied, cold and corrupt stay distinct,
+using the error classes [ADR-0023](../architecture/adr/0023-object-storage-sdk.md) added.
+
+The round-trip defect this finding predicted was real: `canonical_bytes` writes a nested
+`chunker` object while the model keeps `chunker_id`/`chunker_version` flat, so parsing a
+stored manifest dropped both and substituted the defaults. Any release with a non-default
+chunker re-digested to a different value, and the restore check reported a mismatch of its
+own making. Fixed by accepting the canonical shape on the way in — not by changing
+`canonical_bytes`, which every stored `manifest_sha256` was computed over.
+
+**Correction to this document's earlier framing.** It said historical references would need
+backfilling on a deployed database. On PostgreSQL they cannot exist: the foreign key refuses
+the insert, verified here by `DELETE FROM objects` being rejected with "still referenced from
+table assets". So a PostgreSQL deployment of this code has not been writing dangling rows —
+it has been *failing* to write assets, renditions and source responses at all. Backfill
+remains for a restore that did not recreate its constraints. What a deployed object store
+may well hold is the other side: payloads uploaded by transactions that then failed, which
+the sweep reports as orphans.
+
+The original finding follows.
+
 
 `cli/main.py::_verify_restore` lists at most 1,000 releases, checks servable release manifests
 and their rendition digests plus aliases and audit. Measured on PostgreSQL against a seeded
@@ -344,7 +379,17 @@ full suite is 780 passed against PostgreSQL versus 761 offline.
 
 **Still to do:** make the PostgreSQL run part of CI rather than an opt-in nobody exercised.
 
-### F17 — `alembic check` fails against any migrated database
+### F17 — `alembic check` fails against any migrated database (**resolved**)
+
+**Resolved 2026-11-17.** The three expression and partial indexes are declared in
+`tables.py` with `.ddl_if(dialect="postgresql")`, so autogenerate compares them instead of
+proposing to drop them. `alembic check` now reports "No new upgrade operations detected"
+against both a freshly migrated database and one migrated before the change, and SQLite is
+untouched. `tests/contract/test_schema_declarations.py` fails if a later migration creates
+an index in raw SQL that the metadata does not describe.
+
+The original finding follows.
+
 
 `env.py` states that CI runs `alembic check` as the drift guard. Against a database built by
 `alembic upgrade head` it reports three removed indexes — `ix_search_chunks_fts`,

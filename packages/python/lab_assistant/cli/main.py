@@ -67,6 +67,33 @@ def _parser() -> argparse.ArgumentParser:
     )
     revoke_sessions.add_argument("--user", required=True, help="user id")
 
+    storage = subparsers.add_parser("storage", help="object store and registry operations")
+    storage_sub = storage.add_subparsers(dest="storage_command", required=True)
+    scan = storage_sub.add_parser(
+        "scan", help="walk every object reference and every registered object"
+    )
+    scan.add_argument("--workspace", required=True, help="workspace slug")
+    scan.add_argument(
+        "--verify",
+        choices=["none", "exists", "digest"],
+        default="exists",
+        help="how hard to look at the bytes; 'digest' reads every object",
+    )
+    scan.add_argument(
+        "--skip-orphans",
+        action="store_true",
+        help="do not hold referenced ids in memory to find unreferenced objects",
+    )
+    backfill = storage_sub.add_parser(
+        "backfill", help="register objects the store knows and the database does not"
+    )
+    backfill.add_argument("--workspace", required=True, help="workspace slug")
+    backfill.add_argument(
+        "--apply",
+        action="store_true",
+        help="write the rows; without it this reports what it would do",
+    )
+
     task = subparsers.add_parser("task", help="inspect and steer queued work")
     task_sub = task.add_subparsers(dest="task_command", required=True)
     for name, help_text in (
@@ -152,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
             return _config_print(settings, provenance, as_json=args.json)
         case "db":
             return asyncio.run(_db(args, settings))
+        case "storage":
+            return asyncio.run(_storage(args, settings))
         case "task":
             return asyncio.run(_task(args, settings))
         case "worker":
@@ -329,26 +358,46 @@ async def _verify_audit(container: Any, workspace_id: UUID) -> tuple[bool, tuple
 async def _verify_restore(container: Any, workspace_id: UUID) -> int:
     """Confirm a restored deployment is coherent before it serves anything.
 
-    Four independent checks, because a restore can fail in four ways: the audit
-    chain can be truncated, a stored manifest can disagree with the digest the
-    release records, an object a release cites can be missing, and an alias can
-    point at a release that is not servable. A restore nobody has verified is not
-    a restore.
+    A restore fails in more ways than one, and each needs its own answer:
+
+    - the audit chain can be truncated;
+    - a row can point at an object nothing registered, which is what every
+      installation that predates the object registry looks like;
+    - a registered object's bytes can be absent, denied, cold or corrupt — four
+      different next moves, and reporting them as one loses the distinction;
+    - a stored manifest can disagree with the digest the release records, or be
+      unparseable, which is itself the finding rather than a traceback;
+    - an alias can point at a release that is not servable.
+
+    Everything pages with a keyset cursor. The previous implementation read a
+    thousand releases and declared the restore verified, which is the failure the
+    corpus was already large enough to hit.
     """
+    from lab_assistant.application.pagination import iter_pages
+    from lab_assistant.application.storage_inventory import (
+        PayloadCheck,
+        StorageInventoryService,
+    )
     from lab_assistant.contracts.release import ReleaseManifest
 
     problems: list[str] = []
-    releases_checked = objects_checked = aliases_checked = 0
+    releases_checked = manifests_checked = aliases_checked = 0
 
     chain_ok, chain_problems = await _verify_audit(container, workspace_id)
     problems.extend(f"audit: {problem}" for problem in chain_problems)
 
     context = container.context
-    async with context.uow_factory() as uow:
-        releases = await uow.releases.list_releases(workspace_id, limit=1_000)
-        aliases = await uow.releases.list_aliases(workspace_id)
+    inventory = await StorageInventoryService(context).sweep(
+        workspace_id, payload_check=PayloadCheck.DIGEST
+    )
+    problems.extend(f"storage: {finding.detail}" for finding in inventory.blocking)
 
-        for release in releases:
+    async with context.uow_factory() as uow:
+        async for release in iter_pages(
+            lambda after, size: uow.releases.list_all_releases(
+                workspace_id, limit=size, after_id=after
+            )
+        ):
             if not release.status.is_servable:
                 continue
             releases_checked += 1
@@ -360,7 +409,14 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
             except Exception as exc:  # a missing or corrupt object is the finding
                 problems.append(f"release {release.id}: manifest object unreadable ({exc})")
                 continue
-            manifest = ReleaseManifest.model_validate(json.loads(payload))
+            try:
+                manifest = ReleaseManifest.model_validate(json.loads(payload))
+            except Exception as exc:
+                # A manifest that will not parse used to raise out of the whole
+                # check, so one bad release hid every finding after it.
+                problems.append(f"release {release.id}: manifest does not parse ({exc})")
+                continue
+            manifests_checked += 1
             if release.manifest_sha256 and manifest.manifest_sha256 != release.manifest_sha256:
                 problems.append(
                     f"release {release.id}: stored manifest digests to "
@@ -370,7 +426,6 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
             for record in manifest.items:
                 if record.rendition_digest is None:
                     continue
-                objects_checked += 1
                 stored = await context.object_store.get_by_digest(
                     record.rendition_digest, workspace_id=workspace_id
                 )
@@ -380,7 +435,7 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
                         f"for work {record.work_id} is not in the store"
                     )
 
-        for alias in aliases:
+        for alias in await uow.releases.list_aliases(workspace_id):
             aliases_checked += 1
             if alias.release_id is None:
                 problems.append(f"alias {alias.alias}: points at nothing")
@@ -394,13 +449,16 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
                     f"{target.status.value}, which is not servable"
                 )
 
+    advisory = [finding.as_dict() for finding in inventory.findings if not finding.blocks_serving]
     print(
         json.dumps(
             {
                 "audit_chain": "ok" if chain_ok else "failed",
                 "releases_checked": releases_checked,
-                "objects_checked": objects_checked,
+                "manifests_checked": manifests_checked,
                 "aliases_checked": aliases_checked,
+                "storage": inventory.as_dict(),
+                "advisory": advisory,
                 "problems": problems,
             },
             indent=2,
@@ -415,6 +473,72 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
         return 1
     print("restore verified", file=sys.stderr)
     return 0
+
+
+async def _storage(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """Sweep the join between the database and the object store, or repair it.
+
+    ``container`` is injectable so a test drives the same code an operator does.
+    """
+    from lab_assistant.application.storage_inventory import (
+        PayloadCheck,
+        StorageInventoryService,
+    )
+
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        workspace_id = await _workspace_id(container, args.workspace)
+        if workspace_id is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+        service = StorageInventoryService(container.context)
+
+        if args.storage_command == "scan":
+            report = await service.sweep(
+                workspace_id,
+                payload_check=PayloadCheck(args.verify),
+                report_orphans=not args.skip_orphans,
+            )
+            print(json.dumps(report.as_dict(), indent=2))
+            if report.blocking:
+                print(
+                    f"{len(report.blocking)} blocking finding(s): do not serve this "
+                    "installation until each one is explained",
+                    file=sys.stderr,
+                )
+                return 1
+            if report.findings:
+                print(
+                    f"{len(report.findings)} finding(s), none blocking serving",
+                    file=sys.stderr,
+                )
+            else:
+                print("storage and database agree", file=sys.stderr)
+            return 0
+
+        report = await service.backfill(workspace_id, dry_run=not args.apply)
+        print(json.dumps(report.as_dict(), indent=2))
+        if report.unrecoverable:
+            print(
+                f"{len(report.unrecoverable)} reference(s) the store cannot account for "
+                "either: those payloads are gone, and no registry row can be invented "
+                "for them",
+                file=sys.stderr,
+            )
+            return 1
+        verb = "would register" if report.dry_run else "registered"
+        print(f"{verb} {report.registered} object(s)", file=sys.stderr)
+        return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
 
 
 async def _task(

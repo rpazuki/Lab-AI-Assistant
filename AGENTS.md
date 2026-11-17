@@ -87,6 +87,7 @@ These are constraints, tests, or gates — never comments:
 .venv/bin/lab demo                   # publish a corpus, ask, open the citation
 .venv/bin/lab task queue --workspace <slug>     # durable queue state
 .venv/bin/lab db verify-restore --workspace <slug>   # post-restore integrity
+.venv/bin/lab storage scan --workspace <slug>        # database and store agree?
 cd apps/web && npm test -- --run && npm run type-check
 python tools/docs-check/docs_check.py
 ```

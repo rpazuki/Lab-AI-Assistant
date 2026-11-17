@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
 
@@ -84,6 +84,32 @@ class ReleaseManifest(BaseModel):
     chunker_version: str = "1"
     items: tuple[ReleaseItemRecord, ...] = ()
     created_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_canonical_chunker(cls, data: Any) -> Any:
+        """Read back the nested ``chunker`` shape ``canonical_bytes`` writes.
+
+        The canonical form groups the chunker as ``{"id": ..., "version": ...}``
+        while the model keeps two flat fields, so parsing a stored manifest
+        dropped both and silently substituted the defaults. A release built with
+        anything but ``structural-v1`` then re-digested to a different value, and
+        the restore check reported a manifest mismatch that was its own doing.
+
+        Accepted on the way in rather than changed on the way out: the canonical
+        bytes are what every stored ``manifest_sha256`` was computed over, and
+        rewriting them would invalidate the digest of every release ever
+        published.
+        """
+        if not isinstance(data, dict):
+            return data
+        chunker = data.get("chunker")
+        if isinstance(chunker, dict):
+            data = dict(data)
+            data.setdefault("chunker_id", chunker.get("id", "structural-v1"))
+            data.setdefault("chunker_version", chunker.get("version", "1"))
+            data.pop("chunker", None)
+        return data
 
     def canonical_bytes(self) -> bytes:
         return canonical_json(

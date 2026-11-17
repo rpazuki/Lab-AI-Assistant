@@ -1119,6 +1119,44 @@ legacy_object_map = Table(
     UniqueConstraint("legacy_system", "legacy_type", "legacy_id", name="legacy_key"),
 )
 
+# ── expression and partial indexes ──────────────────────────────────────────
+#
+# Declared here rather than only in the migration's raw SQL, because `alembic
+# check` compares the database against *this* metadata: three indexes the
+# migration created and the metadata did not describe meant autogenerate wanted
+# to drop them on every run, and the drift guard CI advertises reported a
+# standing false positive against any migrated database. A guard that always
+# fails is a guard nobody reads.
+#
+# `ddl_if` keeps them out of SQLite, where the expressions do not exist.
+
+#: Lexical retrieval. The index expression must match the query expression
+#: exactly or PostgreSQL will not use it.
+Index(
+    "ix_search_chunks_fts",
+    func.to_tsvector(text("'english'"), search_chunks.c.content),
+    postgresql_using="gin",
+).ddl_if(dialect="postgresql")
+
+#: Claim projections are queried by predicate and by subject, case-folded.
+Index(
+    "ix_claim_projections_subject",
+    claim_projections.c.workspace_id,
+    claim_projections.c.release_id,
+    func.lower(claim_projections.c.subject),
+).ddl_if(dialect="postgresql")
+
+#: The claim query scans by state and stage; a partial index keeps it cheap as
+#: completed rows accumulate.
+Index(
+    "ix_tasks_claimable",
+    tasks.c.stage,
+    tasks.c.priority,
+    tasks.c.created_at,
+    postgresql_where=text("state in ('ready','leased')"),
+).ddl_if(dialect="postgresql")
+
+
 #: Embedding projections, one table per dimension. Registered lazily so a new
 #: profile with a different dimension never alters an existing column.
 _EMBEDDING_TABLES: dict[int, Table] = {}
