@@ -30,6 +30,7 @@ from lab_assistant.domain.claims import (
     Review,
     ReviewDecision,
 )
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.states import ReviewState
 from lab_assistant.domain.workspace import Capability
 
@@ -127,6 +128,7 @@ class ReviewService:
         reviewer_interpretation: bool = False,
     ) -> tuple[ClaimRevision, Review]:
         """Accept, correct, reject, defer, dispute, or request a reparse."""
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
         actor.require(Capability.REVIEW_CLAIMS)
         context = self._context
         async with context.uow_factory() as uow:

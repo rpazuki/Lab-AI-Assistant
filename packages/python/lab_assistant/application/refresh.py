@@ -25,6 +25,7 @@ from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.contracts.stage import StageName, TaskRequest
 from lab_assistant.domain.chat import CitationStatus
 from lab_assistant.domain.identity import RelationKind, WorkRelation
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.states import ReleaseState
 from lab_assistant.domain.workspace import Capability
 
@@ -66,6 +67,7 @@ class RefreshService:
         reason_code: str = "source_retraction_feed",
     ) -> RecomputationPlan:
         """Mark a work retracted and plan the successor release."""
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         actor.require(Capability.DECIDE_IDENTITY)
         context = self._context
         plan = RecomputationPlan(reason=f"retraction:{reason_code}")
@@ -227,6 +229,7 @@ class RefreshService:
         reason_code: str = "licence_revoked",
     ) -> RecomputationPlan:
         """Emergency path: stop serving affected material immediately."""
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         actor.require(Capability.DECIDE_RIGHTS)
         context = self._context
         plan = RecomputationPlan(reason=f"rights_revocation:{reason_code}")

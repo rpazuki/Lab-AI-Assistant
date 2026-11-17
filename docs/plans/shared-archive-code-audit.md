@@ -203,7 +203,7 @@ regardless of the web application's user-policy checks.
 retain app policy as a second layer. Plan migration of old keys, shared references and
 current citations. Do not claim independent encryption or tenant isolation without tests.
 
-### F07 — No installation-level read-only mode
+### F07 — No installation-level read-only mode (**resolved**)
 
 [Settings](../../packages/python/lab_assistant/config.py) and the composition root select
 storage/model providers but no reader/publisher capability. Every container builds
@@ -213,6 +213,28 @@ leaves mutation routes/CLI available. A user role is not an installation role.
 **Change:** capability checks at API, application services, CLI and task claims; role-aware
 composition and least-privilege DB/cloud credentials. Reader should not require source
 API keys or a malware scanner just to serve already approved content.
+
+**Resolved.** `LAB_INSTALLATION_ROLE` with capabilities in `domain/installation.py`,
+enforced at four layers: composition (a reader builds no connectors, parsers, extractor
+or scanner, so the acquisition path has nothing to call), the application services (so
+the CLI and a worker are covered by the same rule as a route), every mutating route
+(declared, and `tests/contract/test_installation_role.py` fails when a new one is not),
+and task claims (a reader restored from a publisher's backup inherits a queue of ready
+work and must not start running it). `lab worker` refuses to start on a reader; the
+effective role and capabilities appear in `lab config print` and `/api/v1/config`.
+
+The refusal is a distinct error — `InstallationDenied`, HTTP 501, not `PolicyDenied`/403
+— because no grant and no promotion turns a reader into the publisher, and a client that
+conflated them would offer a permissions dialog for something permissions cannot fix.
+
+**The reader set is an allow-list, and the model is not read-only.** A reader writes
+logins, rate buckets, audit, chat sessions, messages and feedback, and search is a POST
+(F08). Capabilities therefore name operations rather than HTTP verbs or database access,
+and a capability added later is denied to readers until somebody decides otherwise.
+
+**Still owed, and out of this phase:** least-privilege database and cloud credentials per
+role. The application now refuses the operations; the SQL role a reader connects as is
+still the publisher's, so this is defence in depth rather than isolation.
 
 ### F08 — Reader interactions require writes (confirmed from code)
 

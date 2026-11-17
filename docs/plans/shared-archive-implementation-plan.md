@@ -640,6 +640,16 @@ records architecture and an implementation-ready plan only.
             holding a whole payload — the upload route does — went straight past it.
             `put` now enforces it on all three stores, and the filesystem store, which
             is the deployed profile, had no ceiling at all.
+      - [x] F07 installation role. `LAB_INSTALLATION_ROLE=publisher|reader`, enforced
+            at composition, the application services, every mutating route and task
+            claims, with a contract test that fails when a new mutating route declares
+            no capability. A reader needs no source API keys and no scanner, refuses to
+            start a worker, and still searches, chats, records feedback and exports —
+            the role is about changing the corpus, not about writing to a database.
+            This also unblocks the role-specific half of F15.
+            **Still owed:** least-privilege SQL and cloud credentials per role. The
+            application refuses the operations; the database role a reader connects as
+            is still the publisher's.
       - [ ] GCS adapter. **Deliberately not started.** There is no GCS credential or
             emulator here to test against, and the plan permits delivering S3 first
             while documenting that only tested providers are supported. An adapter

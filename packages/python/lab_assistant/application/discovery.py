@@ -47,6 +47,7 @@ from lab_assistant.contracts.stage import (
     StageStatus,
     TaskRequest,
 )
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.observation import (
     ConnectorRunState,
     DiscoveryRun,
@@ -108,6 +109,7 @@ class DiscoveryService:
     async def start_run(
         self, actor: ActorContext, *, scope_version_id: UUID
     ) -> tuple[DiscoveryRun, tuple[TaskRequest, ...]]:
+        self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
         actor.require(Capability.RUN_DISCOVERY)
         context = self._context
         registry = context.require_connectors()
@@ -218,6 +220,7 @@ class DiscoveryService:
         Returns the frozen run and the reconciliation task it authorises. A run
         that cannot freeze authorises nothing.
         """
+        self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
         actor.require(Capability.RUN_DISCOVERY)
         context = self._context
         async with context.uow_factory() as uow:

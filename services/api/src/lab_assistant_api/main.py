@@ -173,6 +173,10 @@ def create_app(
         container = request.app.state.container
         return {
             "environment": container.settings.env.value,
+            # What this deployment is for, and what that permits. The plan asks
+            # for the effective role and capabilities to be visible through the
+            # existing operator view rather than inferred from behaviour.
+            "installation": container.context.installation.as_dict(),
             "config": container.settings.redacted(),
             "read_by": str(actor.user_id),
             "staged_controls": {

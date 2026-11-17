@@ -32,6 +32,7 @@ from lab_assistant.contracts.release import (
 )
 from lab_assistant.contracts.stage import StageName, TaskRequest
 from lab_assistant.domain.claims import claim_release_blockers
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.release import (
     CorpusRelease,
     ReleaseItem,
@@ -68,6 +69,7 @@ class ReleaseService:
         self, actor: ActorContext, request: ReleaseDraftRequest
     ) -> tuple[CorpusRelease, ReleaseManifest, ReleaseDiff]:
         """Assemble a draft release and its deterministic manifest."""
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         actor.require(Capability.MANAGE_RELEASE)
         context = self._context
         async with context.uow_factory() as uow:
@@ -388,6 +390,7 @@ class ReleaseService:
         self, actor: ActorContext, *, release_id: UUID, evaluation_run_id: UUID | None = None
     ) -> tuple[CorpusRelease, tuple[TaskRequest, ...]]:
         """Record the approver and queue the projection build."""
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         actor.require(Capability.APPROVE_RELEASE)
         context = self._context
         async with context.uow_factory() as uow:
@@ -430,6 +433,7 @@ class ReleaseService:
         self, actor: ActorContext, *, release_id: UUID, alias: str = DEFAULT_ALIAS
     ) -> SearchAlias:
         """Switch the alias atomically, or refuse with the blockers."""
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         actor.require(Capability.APPROVE_RELEASE)
         context = self._context
         async with context.uow_factory() as uow:
@@ -499,6 +503,7 @@ class ReleaseService:
         self, actor: ActorContext, *, alias: str = DEFAULT_ALIAS, reason: str = "operator_rollback"
     ) -> SearchAlias:
         """Point the alias back at the previous release. No reindex, no rewrite."""
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         actor.require(Capability.APPROVE_RELEASE)
         context = self._context
         async with context.uow_factory() as uow:
@@ -544,6 +549,7 @@ class ReleaseService:
         alias still points at the release: withdrawing what is being served would
         leave readers on a release nobody may publish. Roll the alias back first.
         """
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         actor.require(Capability.APPROVE_RELEASE)
         context = self._context
         async with context.uow_factory() as uow:

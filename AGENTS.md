@@ -74,6 +74,11 @@ These are constraints, tests, or gates — never comments:
 - a projection is joined on its full key, `(workspace_id, release_id, chunk_key)`:
   copied chunks share keys across releases by design;
 - a published release is immutable; a correction is a successor release;
+- an **installation role** is not a user role: a reader may serve, record
+  interactions and export, and may not acquire, process, curate or publish, whoever
+  is asking (`domain/installation.py`). Enforcement is at four layers — composition,
+  the application services, every mutating route, and task claims — and a contract
+  test fails when a new mutating route declares no capability;
 - restoring a backup does not confer the right to publish: a restore is a clone with a
   new installation identity unless the operator declares the origin fenced
   (`domain/recovery.py`), because two publishers on one library do not fail — they both
@@ -124,6 +129,7 @@ python tools/docs-check/docs_check.py
 - `provenance/fingerprints.py` — every input that invalidates a cache entry
 - `adapters/connectors/fake.py` — the rule that makes the test suite meaningful
 - `domain/recovery.py` — which restores are refused, and the reason attached to each
+- `domain/installation.py` — what a deployment may do, and why that is not read-only
 
 ## Tool-specific guidance
 

@@ -15,6 +15,7 @@ from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.contracts.connector import ConnectorOperation
 from lab_assistant.contracts.errors import NotFound, StateTransitionError, ValidationFailure
 from lab_assistant.contracts.events import ActorType, AuditAction
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.scope import ApprovalState, ConnectorPlanEntry, ScopeVersion
 from lab_assistant.domain.workspace import Capability
 
@@ -51,6 +52,7 @@ class ScopeService:
         **fields: object,
     ) -> ScopeVersion:
         """Create the next immutable version of a scope."""
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
         actor.require(Capability.MANAGE_SCOPE)
         context = self._context
         async with context.uow_factory() as uow:
@@ -156,6 +158,7 @@ class ScopeService:
         gold_seed_hits: int | None = None,
     ) -> ScopeVersion:
         """Freeze and approve a scope version after its gate passes."""
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
         actor.require(Capability.MANAGE_SCOPE)
         report = await self.evaluate_gate(
             actor, scope_version_id=scope_version_id, gold_seed_hits=gold_seed_hits

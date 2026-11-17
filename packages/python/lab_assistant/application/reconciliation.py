@@ -45,6 +45,7 @@ from lab_assistant.domain.identity import (
     propose_duplicates,
     resolve_canonical_field,
 )
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.observation import Predicate, SourceAssertion
 from lab_assistant.domain.states import IdentityState, RelevanceState
 from lab_assistant.domain.workspace import Capability
@@ -530,6 +531,7 @@ class IdentityService:
         note: str | None = None,
     ) -> IdentityDecision:
         """Human merge. Records the assessment even when it overrides it."""
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
         actor.require(Capability.DECIDE_IDENTITY)
         context = self._context
         async with context.uow_factory() as uow:
@@ -602,6 +604,7 @@ class IdentityService:
         reason_code: str = "preprint_of_version_of_record",
     ) -> WorkRelation:
         """Link a preprint to its version of record *without* merging them."""
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
         actor.require(Capability.DECIDE_IDENTITY)
         context = self._context
         async with context.uow_factory() as uow:
@@ -644,6 +647,7 @@ class IdentityService:
         reason_code: str,
         note: str | None = None,
     ) -> Work:
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
         actor.require(Capability.DECIDE_IDENTITY)
         context = self._context
         async with context.uow_factory() as uow:
@@ -695,6 +699,7 @@ class IdentityService:
         note: str | None = None,
     ) -> Work:
         """Resolve an identity conflict by retiring the losing identifier."""
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
         actor.require(Capability.DECIDE_IDENTITY)
         context = self._context
         async with context.uow_factory() as uow:

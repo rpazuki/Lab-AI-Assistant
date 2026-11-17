@@ -20,7 +20,11 @@ from uuid import UUID, uuid4
 
 from lab_assistant import __version__
 from lab_assistant.config import ConfigProvenance, Settings, load_settings
-from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
+from lab_assistant.contracts.errors import (
+    ErrorClass,
+    InstallationDenied,
+    LabAssistantError,
+)
 
 __all__ = ["main"]
 
@@ -266,7 +270,23 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     settings, provenance = load_settings()
+    try:
+        return _dispatch(args, settings, provenance)
+    except InstallationDenied as denied:
+        # Expected and actionable: this host is not the one that does this. A
+        # traceback would read as a crash and send somebody looking for a bug
+        # in code that is working exactly as configured.
+        print(f"refused: {denied.detail}", file=sys.stderr)
+        print(
+            f"this installation is configured as "
+            f"{denied.context.get('installation_role')}; the capability belongs to "
+            "the publisher, and no grant or promotion changes that.",
+            file=sys.stderr,
+        )
+        return 3
 
+
+def _dispatch(args: argparse.Namespace, settings: Settings, provenance: ConfigProvenance) -> int:
     match args.command:
         case "config":
             if args.config_command == "connectors":
@@ -295,9 +315,14 @@ def main(argv: list[str] | None = None) -> int:
 
 def _config_print(settings: Settings, provenance: ConfigProvenance, *, as_json: bool) -> int:
     """Print effective configuration, redacted, with the source of each key."""
+    from lab_assistant.domain.installation import InstanceCapabilities
+
     redacted = settings.redacted()
     sources = provenance.as_dict()
     blockers = settings.production_blockers()
+    # "Why can this host not publish?" is the first question the installation
+    # role produces, and the answer should not require reading the source.
+    role = InstanceCapabilities(role=settings.installation_role).as_dict()
     if as_json:
         print(
             json.dumps(
@@ -305,6 +330,7 @@ def _config_print(settings: Settings, provenance: ConfigProvenance, *, as_json: 
                     "environment": settings.env.value,
                     "config": redacted,
                     "sources": sources,
+                    "installation": role,
                     "production_blockers": list(blockers),
                 },
                 indent=2,
@@ -314,6 +340,8 @@ def _config_print(settings: Settings, provenance: ConfigProvenance, *, as_json: 
         )
     else:
         print(f"environment: {settings.env.value}")
+        print(f"installation role: {role['role']}")
+        print(f"  may: {', '.join(role['capabilities'])}")
         width = max(len(key) for key in redacted)
         for key in sorted(redacted):
             source = sources.get(key, "compiled default")
@@ -998,7 +1026,23 @@ async def _task(
 async def _worker(args: argparse.Namespace, settings: Settings) -> int:
     import socket
 
+    from lab_assistant.domain.installation import InstanceCapabilities
     from lab_assistant_api.deps import build_container  # composition root reuse
+
+    # Whether workers run is a deployment decision rather than a setting, so the
+    # refusal lives where one actually starts. It matters most in the case that
+    # looks harmless: a reader restored from a publisher's backup inherits a
+    # queue full of ready work and would begin acquiring and publishing as the
+    # installation it was copied from.
+    refusal = InstanceCapabilities(role=settings.installation_role).refuse_worker_startup()
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        print(
+            "set LAB_INSTALLATION_ROLE=publisher if this host is meant to be the "
+            "publisher, and make sure the original one is not.",
+            file=sys.stderr,
+        )
+        return 2
 
     owner = args.owner or f"{socket.gethostname()}/{args.worker_class}"
     container = build_container(settings)

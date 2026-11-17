@@ -52,6 +52,7 @@ from lab_assistant.domain.assets import (
     asset_parse_blockers,
 )
 from lab_assistant.domain.identity import normalise_identifier
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.states import RightsState
 from lab_assistant.domain.workspace import Capability
 from lab_assistant.policy.rights import RightsRequest
@@ -149,6 +150,7 @@ class AcquisitionService:
         restricted_to_group_ids: tuple[UUID, ...] = (),
     ) -> RightsDecision:
         """Evaluate the rights policy and persist the decision."""
+        self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
         context = self._context
         verdict = context.rights_policy.evaluate(
             RightsRequest(
@@ -231,6 +233,7 @@ class AcquisitionService:
         automatic acquisition, attaches the asset to the original plan, and lets
         the caller resume downstream tasks.
         """
+        self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
         actor.require(Capability.UPLOAD_ASSET)
         context = self._context
         async with context.uow_factory() as uow:
@@ -315,6 +318,7 @@ class AcquisitionService:
         attempt: AcquisitionAttempt | None = None,
     ) -> Asset:
         """Quarantine, validate, scan, verify identity, then register."""
+        self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
         context = self._context
         # The raise used to carry no error class, so it defaulted to INTERNAL —
         # which is retryable. A payload that is too large is too large every

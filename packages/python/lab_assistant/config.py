@@ -48,6 +48,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lab_assistant.contracts.canonical import sha256_text
+from lab_assistant.domain.installation import InstallationRole
 
 __all__ = [
     "ConfigProvenance",
@@ -124,6 +125,14 @@ class Settings(BaseSettings):
     # but it cannot survive a deliberate address change, so a deployment that
     # means to keep its identity across a move sets this before moving.
     installation_id: UUID | None = None
+    #: What this deployment is for: `publisher` curates and publishes the
+    #: corpus, `reader` serves an already-approved one. It is not a user role
+    #: and it is not read-only — a reader writes logins, chat, feedback and
+    #: audit constantly. What it must not do is change the corpus.
+    #:
+    #: Defaults to `publisher` so an installation that predates the setting
+    #: keeps every capability it had. See `domain/installation.py`.
+    installation_role: InstallationRole = InstallationRole.PUBLISHER
     #: Incremented when a fenced handover transfers the right to publish. Phase 4
     #: makes it durable; today it is configuration, recorded so a backup taken
     #: now is readable by the implementation that does.

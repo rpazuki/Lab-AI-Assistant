@@ -16,6 +16,7 @@ __all__ = [
     "AbstentionReason",
     "AcquisitionOutcome",
     "ErrorClass",
+    "InstallationDenied",
     "LabAssistantError",
     "PolicyDenied",
     "ProblemDetails",
@@ -246,6 +247,24 @@ class PolicyDenied(LabAssistantError):
 
     error_class = ErrorClass.POLICY_BLOCKED
     http_status = 403
+
+
+class InstallationDenied(LabAssistantError):
+    """This *deployment* may not perform the operation, whoever asked.
+
+    Separate from `PolicyDenied`, which is about the caller. The distinction is
+    the whole point: an admin on a reader installation is not short of a grant
+    and will not get one by being promoted, because the machine is not the
+    publisher. A client that could not tell these apart would offer the user a
+    permissions dialog for something no permission can fix.
+
+    501 rather than 403: the operation is not implemented *here*. The capability
+    lives on another installation, and that is a property of the deployment
+    rather than of the request.
+    """
+
+    error_class = ErrorClass.POLICY_BLOCKED
+    http_status = 501
 
 
 class StateTransitionError(LabAssistantError):

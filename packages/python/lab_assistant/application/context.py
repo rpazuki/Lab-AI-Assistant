@@ -27,11 +27,12 @@ from lab_assistant.application.registries import (
     ParserRegistry,
 )
 from lab_assistant.config import Settings
-from lab_assistant.contracts.errors import PolicyDenied
+from lab_assistant.contracts.errors import InstallationDenied, PolicyDenied
 from lab_assistant.contracts.extraction import Extractor
 from lab_assistant.contracts.models import EmbeddingProvider, LLMProvider
 from lab_assistant.contracts.policy import GrantSpec, PolicyAction, SubjectRef, SubjectType
 from lab_assistant.contracts.runtime import Clock, IdFactory
+from lab_assistant.domain.installation import InstallationCapability, InstanceCapabilities
 from lab_assistant.domain.workspace import Capability, Membership
 from lab_assistant.policy.engine import PolicyEngine, PolicyInput
 from lab_assistant.policy.model_transfer import ModelTransferPolicy
@@ -77,6 +78,28 @@ class ServiceContext:
     embedding_provider: EmbeddingProvider | None = None
     extractor: Extractor | None = None
     malware_scanner: MalwareScanner | None = None
+    #: What this *deployment* may do, as distinct from what the caller may do.
+    #: Defaults to a publisher so an installation that predates the setting
+    #: keeps every capability it had, rather than silently losing one.
+    installation: InstanceCapabilities = field(default_factory=InstanceCapabilities)
+
+    def require_installation(self, capability: InstallationCapability) -> None:
+        """Refuse an operation this deployment is not for.
+
+        Raised as `InstallationDenied`, never `PolicyDenied`: no grant fixes it
+        and no promotion fixes it, because the limit is the machine rather than
+        the caller. A client that confused the two would offer somebody a
+        permissions dialog for something permissions cannot change.
+        """
+        if not self.installation.has(capability):
+            raise InstallationDenied(
+                f"this installation does not {capability.value.replace('_', ' ')}",
+                context={
+                    "installation_role": self.installation.role.value,
+                    "required_capability": capability.value,
+                    "hint": "the capability belongs to the publisher installation",
+                },
+            )
 
     @property
     def audit(self) -> AuditTrail:

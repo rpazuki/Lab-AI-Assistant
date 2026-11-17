@@ -38,6 +38,7 @@ from lab_assistant.application.objects import register_object
 from lab_assistant.application.tasks import HandlerRegistry, TaskOrchestrator
 from lab_assistant.config import LabEnv, Settings
 from lab_assistant.contracts.runtime import FixedClock, SequentialIds
+from lab_assistant.domain.installation import InstallationRole, InstanceCapabilities
 from lab_assistant.domain.workspace import Capability, Membership, MembershipStatus, Role
 from lab_assistant.policy.engine import PolicyEngine
 from lab_assistant.policy.model_transfer import ModelTransferPolicy
@@ -143,6 +144,7 @@ def build_harness(
     uow_factory: Any | None = None,
     object_store: Any | None = None,
     search_index: Any | None = None,
+    installation_role: InstallationRole = InstallationRole.PUBLISHER,
 ) -> Harness:
     """Wire a complete application, in memory by default.
 
@@ -155,6 +157,7 @@ def build_harness(
     """
     settings = Settings(
         env=LabEnv.LOCAL,
+        installation_role=installation_role,
         llm_provider="fake",
         external_model_enabled=False,
         embedding_profile="hashing-v1",
@@ -189,6 +192,7 @@ def build_harness(
         embedding_provider=embedder,
         extractor=extractor or FakeExtractor(),
         malware_scanner=scanner,
+        installation=InstanceCapabilities(role=installation_role),
     )
     handlers = build_handler_registry(context)
     return Harness(

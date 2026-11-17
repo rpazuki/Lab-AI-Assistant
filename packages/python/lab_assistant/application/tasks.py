@@ -27,6 +27,7 @@ from lab_assistant.contracts.stage import (
     StageStatus,
     TaskRequest,
 )
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.states import TaskState
 from lab_assistant.domain.tasks import Task
 from lab_assistant.provenance.fingerprints import task_fingerprint
@@ -162,8 +163,17 @@ class TaskOrchestrator:
     async def run_once(
         self, *, owner: str, worker_class: str, lease_seconds: int | None = None
     ) -> WorkerLoopResult:
-        """Claim and execute at most one task. The worker loop calls this."""
+        """Claim and execute at most one task. The worker loop calls this.
+
+        A reader claims nothing. That matters most in the case that looks
+        harmless: a reader restored from a publisher's backup inherits a queue
+        full of ready work, and without this it would begin acquiring sources
+        and publishing as though it were the installation it was copied from.
+        Startup refuses the combination too; this is the layer that holds if
+        somebody starts a worker by hand.
+        """
         context = self._context
+        context.require_installation(InstallationCapability.RUN_WORKERS)
         lease = lease_seconds or context.settings.worker_lease_seconds
         stage_caps = {
             stage: context.settings.stage_concurrency.get(stage.value, 1)

@@ -34,10 +34,17 @@ from lab_assistant.application.review import ReviewService
 from lab_assistant.application.scopes import ScopeService
 from lab_assistant.contracts.errors import NotFound
 from lab_assistant.domain.claims import ReviewDecision
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.scope import ConnectorPlanEntry
 from lab_assistant.domain.states import RelevanceState
 from lab_assistant.domain.workspace import Capability
-from lab_assistant_api.deps import ApiContainer, CurrentActor, CurrentToken, get_container
+from lab_assistant_api.deps import (
+    ApiContainer,
+    CurrentActor,
+    CurrentToken,
+    get_container,
+    requires,
+)
 from lab_assistant_api.security import mint_token
 
 __all__ = ["router"]
@@ -148,7 +155,11 @@ class ReleaseRequest(BaseModel):
 
 
 # ── auth ────────────────────────────────────────────────────────────────────
-@router.post("/auth/login", response_model=LoginResponse)
+@router.post(
+    "/auth/login",
+    response_model=LoginResponse,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
 async def login(
     request: Request, container: Container, payload: LoginRequest = Body(...)
 ) -> LoginResponse:
@@ -182,7 +193,11 @@ async def login(
     )
 
 
-@router.post("/auth/logout", status_code=204)
+@router.post(
+    "/auth/logout",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
 async def logout(token: CurrentToken, container: Container) -> Response:
     """Revoke every token for this user.
 
@@ -217,7 +232,7 @@ async def me(actor: CurrentActor, container: Container) -> dict[str, Any]:
 
 
 # ── ask ─────────────────────────────────────────────────────────────────────
-@router.post("/chat/sessions")
+@router.post("/chat/sessions", dependencies=[requires(InstallationCapability.RECORD_INTERACTION)])
 async def create_session(actor: CurrentActor, container: Container) -> dict[str, Any]:
     session = await ChatService(container.context).create_session(actor)
     return _session_json(session)
@@ -246,7 +261,10 @@ async def get_session(
     }
 
 
-@router.patch("/chat/sessions/{session_id}")
+@router.patch(
+    "/chat/sessions/{session_id}",
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
 async def rename_session(
     session_id: UUID,
     actor: CurrentActor,
@@ -259,13 +277,20 @@ async def rename_session(
     return _session_json(session)
 
 
-@router.delete("/chat/sessions/{session_id}", status_code=204)
+@router.delete(
+    "/chat/sessions/{session_id}",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
 async def delete_session(session_id: UUID, actor: CurrentActor, container: Container) -> Response:
     await ChatService(container.context).delete_session(actor, session_id=session_id)
     return Response(status_code=204)
 
 
-@router.post("/chat/sessions/{session_id}/messages")
+@router.post(
+    "/chat/sessions/{session_id}/messages",
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
 async def ask(
     session_id: UUID,
     actor: CurrentActor,
@@ -314,7 +339,11 @@ async def resolve_citation(
     )
 
 
-@router.post("/feedback", status_code=201)
+@router.post(
+    "/feedback",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
 async def add_feedback(
     actor: CurrentActor, container: Container, payload: FeedbackRequest = Body(...)
 ) -> dict[str, str]:
@@ -329,7 +358,7 @@ async def add_feedback(
 
 
 # ── search ──────────────────────────────────────────────────────────────────
-@router.post("/search")
+@router.post("/search", dependencies=[requires(InstallationCapability.SERVE_CORPUS)])
 async def search(
     actor: CurrentActor, container: Container, payload: SearchRequest = Body(...)
 ) -> dict[str, Any]:
@@ -371,7 +400,11 @@ async def search(
 
 
 # ── collections: scope and discovery ────────────────────────────────────────
-@router.post("/scopes", status_code=201)
+@router.post(
+    "/scopes",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
 async def create_scope(
     actor: CurrentActor, container: Container, payload: ScopeRequest = Body(...)
 ) -> dict[str, Any]:
@@ -416,7 +449,10 @@ async def list_scopes(actor: CurrentActor, container: Container) -> dict[str, An
     }
 
 
-@router.post("/scopes/{scope_version_id}/gate")
+@router.post(
+    "/scopes/{scope_version_id}/gate",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
 async def scope_gate(
     scope_version_id: UUID,
     actor: CurrentActor,
@@ -435,7 +471,10 @@ async def scope_gate(
     }
 
 
-@router.post("/scopes/{scope_version_id}/approve")
+@router.post(
+    "/scopes/{scope_version_id}/approve",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
 async def approve_scope(
     scope_version_id: UUID,
     actor: CurrentActor,
@@ -448,7 +487,11 @@ async def approve_scope(
     return {"id": str(scope.id), "approval_state": scope.approval_state.value}
 
 
-@router.post("/discovery-runs", status_code=202)
+@router.post(
+    "/discovery-runs",
+    status_code=202,
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
 async def start_discovery(
     actor: CurrentActor,
     container: Container,
@@ -498,7 +541,10 @@ async def list_discovery_runs(actor: CurrentActor, container: Container) -> dict
     }
 
 
-@router.post("/discovery-runs/{run_id}/freeze")
+@router.post(
+    "/discovery-runs/{run_id}/freeze",
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
 async def freeze_discovery(
     run_id: UUID,
     actor: CurrentActor,
@@ -576,7 +622,10 @@ async def list_conflicts(actor: CurrentActor, container: Container) -> dict[str,
     }
 
 
-@router.post("/candidates/{work_id}/relevance")
+@router.post(
+    "/candidates/{work_id}/relevance",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
 async def set_relevance(
     work_id: UUID,
     actor: CurrentActor,
@@ -593,7 +642,7 @@ async def set_relevance(
     return {"work_id": str(work.id), "relevance": work.relevance.value}
 
 
-@router.post("/decisions/merge")
+@router.post("/decisions/merge", dependencies=[requires(InstallationCapability.CURATE_CORPUS)])
 async def merge_works(
     actor: CurrentActor, container: Container, payload: MergeRequest = Body(...)
 ) -> dict[str, Any]:
@@ -607,7 +656,10 @@ async def merge_works(
     return {"decision_id": str(decision.id), "after": decision.after}
 
 
-@router.post("/decisions/link-versions")
+@router.post(
+    "/decisions/link-versions",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
 async def link_versions(
     actor: CurrentActor,
     container: Container,
@@ -656,7 +708,11 @@ async def list_plans(
     return {"items": items}
 
 
-@router.post("/assisted-acquisitions/{plan_id}", status_code=201)
+@router.post(
+    "/assisted-acquisitions/{plan_id}",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
 async def assisted_upload(
     plan_id: UUID,
     actor: CurrentActor,
@@ -748,7 +804,10 @@ async def review_queue(
     }
 
 
-@router.post("/reviews/{revision_id}")
+@router.post(
+    "/reviews/{revision_id}",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
 async def decide_review(
     revision_id: UUID,
     actor: CurrentActor,
@@ -779,7 +838,11 @@ async def correction_rate(actor: CurrentActor, container: Container) -> dict[str
 
 
 # ── releases ────────────────────────────────────────────────────────────────
-@router.post("/corpus-releases", status_code=201)
+@router.post(
+    "/corpus-releases",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
 async def draft_release(
     actor: CurrentActor, container: Container, payload: ReleaseRequest = Body(...)
 ) -> dict[str, Any]:
@@ -844,7 +907,10 @@ async def list_releases(actor: CurrentActor, container: Container) -> dict[str, 
     }
 
 
-@router.post("/corpus-releases/{release_id}/validate")
+@router.post(
+    "/corpus-releases/{release_id}/validate",
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
 async def validate_release(
     release_id: UUID, actor: CurrentActor, container: Container
 ) -> dict[str, Any]:
@@ -857,7 +923,11 @@ async def validate_release(
     }
 
 
-@router.post("/corpus-releases/{release_id}/approve", status_code=202)
+@router.post(
+    "/corpus-releases/{release_id}/approve",
+    status_code=202,
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
 async def approve_release(
     release_id: UUID,
     actor: CurrentActor,
@@ -877,7 +947,10 @@ async def approve_release(
     }
 
 
-@router.post("/corpus-releases/{release_id}/publish")
+@router.post(
+    "/corpus-releases/{release_id}/publish",
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
 async def publish_release(
     release_id: UUID,
     actor: CurrentActor,
@@ -896,7 +969,10 @@ async def publish_release(
     }
 
 
-@router.post("/corpus-releases/rollback")
+@router.post(
+    "/corpus-releases/rollback",
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
 async def rollback_release(
     actor: CurrentActor,
     container: Container,
@@ -907,7 +983,10 @@ async def rollback_release(
     return {"alias": switched.alias, "release_id": str(switched.release_id)}
 
 
-@router.post("/exports/{release_id}")
+@router.post(
+    "/exports/{release_id}",
+    dependencies=[requires(InstallationCapability.PRIVATE_EXPORT)],
+)
 async def build_export(
     release_id: UUID,
     actor: CurrentActor,
@@ -1000,7 +1079,10 @@ async def task_snapshot(actor: CurrentActor, container: Container) -> dict[str, 
     return await container.orchestrator.queue_snapshot(workspace_id=actor.workspace_id)
 
 
-@router.post("/operations/tasks/{task_id}/retry")
+@router.post(
+    "/operations/tasks/{task_id}/retry",
+    dependencies=[requires(InstallationCapability.RUN_WORKERS)],
+)
 async def retry_task(task_id: UUID, actor: CurrentActor, container: Container) -> dict[str, Any]:
     actor.require(Capability.VIEW_OPERATIONS)
     task = await container.orchestrator.retry_dead_letter(
@@ -1036,7 +1118,10 @@ async def audit_events(
     }
 
 
-@router.post("/refresh/retractions")
+@router.post(
+    "/refresh/retractions",
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
 async def record_retraction(
     actor: CurrentActor,
     container: Container,

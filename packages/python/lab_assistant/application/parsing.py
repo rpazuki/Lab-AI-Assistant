@@ -28,6 +28,7 @@ from lab_assistant.contracts.stage import (
     TaskRequest,
 )
 from lab_assistant.domain.assets import AcquisitionRoute
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.renditions import (
     ParseRun,
     Rendition,
@@ -278,6 +279,7 @@ class ParsingService:
         expected_version: int | None = None,
     ) -> Rendition:
         """Accept a degraded rendition for extraction, on the record."""
+        self._context.require_installation(InstallationCapability.PROCESS_CONTENT)
         from lab_assistant.contracts.errors import ConcurrencyConflict
         from lab_assistant.domain.workspace import Capability
 
