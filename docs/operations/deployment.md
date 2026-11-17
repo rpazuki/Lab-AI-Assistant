@@ -61,6 +61,13 @@ those, applies migrations, waits on `/health` and `/ready`, and **rolls back to 
 previous image and commit if either fails**. It never pushes, never commits, and never
 prints a secret.
 
+The readiness gate reads the HTTP status rather than matching a string in the body —
+200 proceeds, 503 rolls back — and prints the check that failed, so a rolled-back
+deploy says *why* on the way out. `/ready` refuses when the control plane is
+unreachable, when the object store does not answer, and when **the database is not at
+the migration revision this build expects**: an API container that starts before its
+migrations have run used to pass every check and then fail on the first real query.
+
 ## Object storage
 
 The shared-VM profile uses a persistent `objects` volume with

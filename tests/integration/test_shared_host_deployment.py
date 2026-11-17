@@ -78,12 +78,25 @@ def test_operator_health_checks_use_own_container(tmp_path: Path) -> None:
     import os
 
     binary = tmp_path / "docker"
+    # Records the arguments *and* anything piped in, because the readiness probe
+    # now sends its script on stdin — so the URL it targets is invisible to a
+    # fake that only looks at argv.
     binary.write_text(
-        '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$CHECK_CALLS"\nprintf \'{"status":"ok"}\\n\'\n'
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "$*" >> "$CHECK_CALLS"\n'
+        'if [ ! -t 0 ]; then cat >> "$CHECK_STDIN"; fi\n'
+        'printf \'{"status":"ok"}\\n\'\n'
     )
     binary.chmod(0o755)
     calls = tmp_path / "calls"
-    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", CHECK_CALLS=str(calls))
+    piped = tmp_path / "stdin"
+    piped.touch()
+    env = dict(
+        os.environ,
+        PATH=f"{tmp_path}:{os.environ['PATH']}",
+        CHECK_CALLS=str(calls),
+        CHECK_STDIN=str(piped),
+    )
     subprocess.run(
         [
             "bash",
@@ -99,6 +112,18 @@ def test_operator_health_checks_use_own_container(tmp_path: Path) -> None:
     )
     requests = calls.read_text().splitlines()
     assert len(requests) == 2
-    assert all("exec -T api python -c" in request for request in requests)
+    # Both probes run *inside* the api container. A healthy unrelated
+    # application on the host's port 8000 must not be able to answer for this
+    # one, which is the failure this test exists for.
+    assert all("exec -T api python" in request for request in requests)
     assert "/health" in requests[0]
-    assert "/ready" in requests[1]
+    # Readiness reads the status code, so its script arrives on stdin rather
+    # than as `-c`: 200 means serve and 503 means do not, and a body match
+    # would miss the distinction the status code now carries.
+    assert "python -c" in requests[0]
+    assert "python -" in requests[1]
+    # The readiness script itself: it must target this app's /ready and decide
+    # on the status code, not on a string in the body.
+    script = piped.read_text()
+    assert "127.0.0.1:8000/ready" in script
+    assert "code == 200" in script

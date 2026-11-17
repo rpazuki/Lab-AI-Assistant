@@ -8,6 +8,7 @@ in-memory. No route is monkeypatched.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -89,6 +90,10 @@ async def api() -> dict[str, Any]:
             "workspace": workspace,
             "steward": steward,
             "researcher": researcher,
+            # The readiness tests swap the container to simulate a dependency
+            # that has stopped answering, then put the real one back.
+            "app": app,
+            "container": container,
         }
 
 
@@ -102,17 +107,106 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _raises(message: str):
+    """A unit-of-work factory that fails the way an unreachable database does."""
+
+    def factory():
+        raise RuntimeError(message)
+
+    return factory
+
+
 class TestHealthAndConfig:
     async def test_health_needs_no_credentials(self, api) -> None:
         response = await api["client"].get("/health")
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
 
+    async def test_liveness_does_not_touch_a_dependency(self, api) -> None:
+        """A database blip must not make every container report unhealthy: an
+        orchestrator would restart all of them, which fixes nothing."""
+        container = api["container"]
+        broken = SimpleNamespace(
+            context=SimpleNamespace(
+                uow_factory=_raises("the database is down"),
+                object_store=container.context.object_store,
+            ),
+            schema_revision=None,
+        )
+        api["app"].state.container = broken
+        try:
+            response = await api["client"].get("/health")
+            assert response.status_code == 200
+        finally:
+            api["app"].state.container = container
+
     async def test_readiness_reports_each_dependency(self, api) -> None:
         response = await api["client"].get("/ready")
+        assert response.status_code == 200
         body = response.json()
-        assert body["checks"]["database"] is True
-        assert body["checks"]["object_store"] is True
+        assert body["status"] == "ok"
+        by_name = {check["name"]: check for check in body["checks"]}
+        assert by_name["database"]["ok"] is True
+        assert by_name["object_store"]["ok"] is True
+
+    async def test_readiness_answers_503_when_it_cannot_serve(self, api) -> None:
+        """The status code is the contract.
+
+        This answered 200 with `"status": "degraded"` in the body, so every
+        load balancer and container healthcheck — anything reading the code and
+        not the JSON — sent traffic to a process that had just said it could
+        not reach its database.
+        """
+        container = api["container"]
+        broken = SimpleNamespace(
+            context=SimpleNamespace(
+                uow_factory=_raises("the database is down"),
+                object_store=container.context.object_store,
+            ),
+            schema_revision=None,
+        )
+        api["app"].state.container = broken
+        try:
+            response = await api["client"].get("/ready")
+            assert response.status_code == 503
+            body = response.json()
+            assert body["status"] == "not_ready"
+            database = next(c for c in body["checks"] if c["name"] == "database")
+            assert database["ok"] is False
+        finally:
+            api["app"].state.container = container
+
+    async def test_readiness_refuses_when_the_migration_has_not_run(self, api) -> None:
+        """An API container that starts before its migrations is the most common
+        way a deploy goes wrong, and it was the one thing not checked."""
+        container = api["container"]
+
+        async def stale() -> str:
+            return "0000_an_older_release"
+
+        behind = SimpleNamespace(
+            context=container.context,
+            schema_revision=stale,
+        )
+        api["app"].state.container = behind
+        try:
+            response = await api["client"].get("/ready")
+            assert response.status_code == 503
+            schema = next(c for c in response.json()["checks"] if c["name"] == "schema")
+            assert schema["ok"] is False
+            assert "run the migration" in schema["detail"]
+        finally:
+            api["app"].state.container = container
+
+    async def test_readiness_does_not_write_to_the_object_store(self, api) -> None:
+        """The probe this replaces stored a payload every time it ran, into the
+        store that holds the evidence."""
+        store = api["container"].context.object_store
+        before = {record.id async for record in store.inventory()}
+        for _ in range(3):
+            assert (await api["client"].get("/ready")).status_code == 200
+        after = {record.id async for record in store.inventory()}
+        assert after == before
 
     async def test_effective_config_needs_an_operator(self, api) -> None:
         """Redaction is not a reason to publish deployment topology."""

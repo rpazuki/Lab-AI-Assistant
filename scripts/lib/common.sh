@@ -59,10 +59,39 @@ health_check() {
   return 1
 }
 
+# Readiness decides whether a deploy proceeds or rolls back, so it reads the
+# status code rather than matching a string in the body: 200 means serve, 503
+# means do not. It also prints which check failed, because "not ready" on its
+# own sends an operator to the logs to find out what this already knows.
 readiness_check() {
-  local body
-  body="$(compose exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5).read().decode())" 2>/dev/null || true)"
-  [[ "$body" == *'"status": "ok"'* || "$body" == *'"status":"ok"'* ]]
+  compose exec -T api python - <<'READY' 2>&1 >/dev/null
+import json
+import sys
+import urllib.error
+import urllib.request
+
+try:
+    with urllib.request.urlopen("http://127.0.0.1:8000/ready", timeout=5) as response:
+        body = json.loads(response.read().decode())
+        code = response.status
+except urllib.error.HTTPError as error:  # 503: running, and not fit to serve
+    code = error.code
+    try:
+        body = json.loads(error.read().decode())
+    except Exception:
+        body = {}
+except Exception as error:  # no answer at all
+    print(f"not ready: {type(error).__name__}", file=sys.stderr)
+    raise SystemExit(1)
+
+if code == 200:
+    raise SystemExit(0)
+
+for check in body.get("checks", []):
+    if not check.get("ok") and check.get("blocks_serving", True):
+        print(f"not ready: {check['name']}: {check.get('detail')}", file=sys.stderr)
+raise SystemExit(1)
+READY
 }
 
 deployed_commit() {

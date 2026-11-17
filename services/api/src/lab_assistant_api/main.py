@@ -15,11 +15,13 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from lab_assistant import __version__
+from lab_assistant.adapters.db.migrations import expected_revision
+from lab_assistant.application.readiness import ReadinessService
 from lab_assistant.config import Settings, load_settings
 from lab_assistant.contracts.errors import LabAssistantError, PolicyDenied, ProblemDetails
 from lab_assistant.domain.workspace import Capability
@@ -122,34 +124,38 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
+        """Liveness: is this process running?
+
+        It deliberately touches no dependency. A database blip that made every
+        container report unhealthy would have an orchestrator restart all of
+        them at once, which is the opposite of what that situation needs.
+        Whether this process should be sent a request is `/ready`.
+        """
         return {"status": "ok", "version": __version__}
 
     @app.get("/ready")
-    async def ready(request: Request) -> dict[str, Any]:
-        """Readiness: can we reach the control plane and the object store?"""
+    async def ready(request: Request, response: Response) -> dict[str, Any]:
+        """Readiness: should this process be sent a request?
+
+        Answers **503** when it should not. The previous version answered 200
+        with `"status": "degraded"` in the body, so everything that reads the
+        status code — a load balancer, a Compose healthcheck, a Kubernetes probe
+        — sent traffic to a process that had just reported it could not reach
+        the object store.
+        """
         container = request.app.state.container
-        checks: dict[str, bool] = {}
-        try:
-            async with container.context.uow_factory() as uow:
-                await uow.users.list_all(limit=1)
-            checks["database"] = True
-        except Exception:  # pragma: no cover - reported, not raised
-            checks["database"] = False
-        store = container.context.object_store
-        try:
-            ping = getattr(store, "ping", None)
-            if ping is not None:
-                # A remote store answers a cheap list; writing an object per probe
-                # would put a readiness artefact in the bucket every few seconds.
-                await ping()
-                checks["object_store"] = True
-            else:
-                stored = await store.put(b"readiness", workspace_id=None, object_class="readiness")
-                checks["object_store"] = await store.verify(stored.id)
-        except Exception:  # pragma: no cover - reported, not raised
-            checks["object_store"] = False
-        status = "ok" if all(checks.values()) else "degraded"
-        return {"status": status, "checks": checks}
+        report = await ReadinessService(
+            container.context,
+            schema_revision=getattr(container, "schema_revision", None),
+            expected_revision=expected_revision(),
+        ).check()
+        response.status_code = report.http_status
+        if not report.ready:
+            logger.warning(
+                "api.not_ready",
+                checks=[check.name for check in report.checks if check.blocking_failure],
+            )
+        return report.as_dict()
 
     @app.get("/api/v1/config")
     async def effective_config(request: Request, actor: CurrentActor) -> dict[str, Any]:

@@ -35,6 +35,7 @@ from uuid import UUID, uuid5
 from lab_assistant.adapters.object_store._streaming import (
     STREAM_CHUNK_BYTES,
     SpooledPayload,
+    enforce_limit,
     spool_stream,
 )
 from lab_assistant.contracts.canonical import sha256_bytes
@@ -81,10 +82,14 @@ def _synchronised(method):
 class FilesystemObjectStore:
     """Immutable local object store used by development and single-VM profiles."""
 
-    def __init__(self, root: Path, *, clock=None) -> None:
+    def __init__(self, root: Path, *, clock=None, max_object_bytes: int | None = None) -> None:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
         self._clock = clock or (lambda: datetime.now(tz=UTC))
+        #: Configured ceiling, applied to both `put` and `put_stream`. The S3
+        #: store has had one since the streaming work; this one had none at all,
+        #: so the single-VM profile — the deployed one — enforced no limit.
+        self._max_object_bytes = max_object_bytes or None
         self._index: dict[UUID, StoredObjectRecord] = {}
         self._index_offset = 0
         with self._locked():
@@ -162,6 +167,7 @@ class FilesystemObjectStore:
         object_class: str,
         media_type: str = "application/octet-stream",
     ) -> StoredObjectRecord:
+        enforce_limit(len(data), self._max_object_bytes)
         digest = sha256_bytes(data)
         object_id = _object_id(workspace_id, digest)
         existing = self._index.get(object_id)
@@ -213,7 +219,8 @@ class FilesystemObjectStore:
         touches nothing shared, and holding an exclusive lock across a long
         upload would serialise every writer on the VM behind it.
         """
-        with await spool_stream(source, max_bytes=max_bytes) as payload:
+        limit = max_bytes if max_bytes is not None else self._max_object_bytes
+        with await spool_stream(source, max_bytes=limit) as payload:
             return await self._register_spooled(
                 payload,
                 workspace_id=workspace_id,
@@ -358,14 +365,44 @@ class FilesystemObjectStore:
         self._append_index(tombstoned)
         (self._root / f"{record.key}.tombstone").write_text(reason, encoding="utf-8")
 
+    # ── readiness ──────────────────────────────────────────────────────────
+
+    async def ping(self) -> None:
+        """Confirm the store's root is present and usable. Writes nothing.
+
+        The readiness probe this replaces proved the store worked by storing a
+        payload in it, once per probe, forever. A check that mutates what it
+        measures is not a check — so this asks the filesystem about permissions
+        instead of demonstrating them.
+
+        It therefore cannot detect a full disk, which a successful write would
+        have. That is the right trade: disk pressure is a monitored condition
+        with its own runbook, and it does not need the evidence store treated
+        as scratch space to be noticed.
+        """
+        if not self._root.is_dir():
+            raise LabAssistantError(
+                "the object store root does not exist",
+                context={"root": str(self._root)},
+            ).with_class(ErrorClass.NOT_FOUND)
+        if not os.access(self._root, os.R_OK | os.W_OK | os.X_OK):
+            raise LabAssistantError(
+                "the object store root is not readable and writable by this process",
+                context={"root": str(self._root)},
+            ).with_class(ErrorClass.STORAGE_DENIED)
+
 
 class InMemoryObjectStore:
     """Object store for tests. Same immutability rules, no filesystem."""
 
-    def __init__(self, *, clock=None) -> None:
+    def __init__(self, *, clock=None, max_object_bytes: int | None = None) -> None:
         self._clock = clock or (lambda: datetime.now(tz=UTC))
         self._objects: dict[UUID, bytes] = {}
         self._records: dict[UUID, StoredObjectRecord] = {}
+        #: Here only so the two local stores enforce the same rule. A test
+        #: double that accepted what production refuses would make the contract
+        #: tests prove something about the double.
+        self._max_object_bytes = max_object_bytes or None
 
     async def put(
         self,
@@ -375,6 +412,7 @@ class InMemoryObjectStore:
         object_class: str,
         media_type: str = "application/octet-stream",
     ) -> StoredObjectRecord:
+        enforce_limit(len(data), self._max_object_bytes)
         digest = sha256_bytes(data)
         object_id = _object_id(workspace_id, digest)
         if object_id in self._records:
@@ -403,7 +441,8 @@ class InMemoryObjectStore:
         max_bytes: int | None = None,
         created_at: datetime | None = None,
     ) -> StoredObjectRecord:
-        with await spool_stream(source, max_bytes=max_bytes) as payload:
+        limit = max_bytes if max_bytes is not None else self._max_object_bytes
+        with await spool_stream(source, max_bytes=limit) as payload:
             stored = await self.put(
                 payload.read_all(),
                 workspace_id=workspace_id,
@@ -466,6 +505,15 @@ class InMemoryObjectStore:
         if record is None:
             return
         self._records[object_id] = replace(record, tombstoned=True)
+
+    async def ping(self) -> None:
+        """Always reachable: it is this process's own memory.
+
+        Present so the readiness report says `object_store: ok` under the
+        offline profile rather than `not checked`. A test that exercises the
+        probe against a store with no probe would be exercising the fallback.
+        """
+        return None
 
     def corrupt_for_test(self, object_id: UUID, data: bytes) -> None:
         """Deliberately break stored bytes so integrity detection can be tested."""

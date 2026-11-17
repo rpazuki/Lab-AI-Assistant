@@ -624,14 +624,45 @@ records architecture and an implementation-ready plan only.
             installation's own addresses when unset so a restore onto a new host
             correctly derives a different one. The manifest records which case applies,
             because a derived identity does not survive a deliberate address change.
-      - [ ] GCS adapter.
-      - [ ] Upload limits and role-specific readiness (F15).
-      - [ ] Provider version tokens surfaced on the port.
+      - [x] F15 readiness. `/ready` now answers **503** when it should not be sent
+            traffic; it returned 200 with `"status": "degraded"` in the body, so every
+            load balancer and container healthcheck kept routing to a process that had
+            just reported its dependencies down. It also checks the migration revision
+            against the one this build expects — an API container that starts before
+            its migrations passed every check and failed on the first real query — and
+            it no longer proves the object store works by writing to it once per probe.
+            A check that cannot measure something reports "unknown" and does not block:
+            a probe that fails closed on its own blindness is an outage.
+            **Role-specific checks are not included** and are not possible yet: they
+            need the installation role of F07, which is not in this phase. Adding the
+            setting without the enforcement would repeat F18 exactly.
+      - [x] Upload limits. The ceiling was enforced only while streaming, so anything
+            holding a whole payload — the upload route does — went straight past it.
+            `put` now enforces it on all three stores, and the filesystem store, which
+            is the deployed profile, had no ceiling at all.
+      - [ ] GCS adapter. **Deliberately not started.** There is no GCS credential or
+            emulator here to test against, and the plan permits delivering S3 first
+            while documenting that only tested providers are supported. An adapter
+            written blind would be the third entry in F18's table.
+      - [ ] Provider version tokens surfaced on the port. **Deferred to phase 2 on
+            purpose.** They are read for compare-and-swap today and nothing consumes
+            them; the publication protocol is the only caller there will be. Adding
+            unexercised surface now is the staged control that rots.
       - [ ] A recovery drill: restore into a scratch VM and record date, duration and
             what went wrong. The commands are exercised end to end against real
             PostgreSQL, on one machine, into scratch databases — which is not the same
             as a VM rebuild, and the RTO remains unmeasured.
       - [ ] A backup with S3 at either end, and tested encryption-key recovery.
+      - [x] First live-endpoint evidence for the S3 adapter. Seven of the nine
+            behaviours in `tests/integration/test_s3_live_endpoint.py` now have a real
+            provider behind them, including a presigned URL that actually fetches its
+            bytes — the defect class that broke the predecessor's hand-written signer,
+            and the one no stub can catch — and `If-None-Match` honoured on a
+            conditional create. **The two that assert a refusal are skipped, not
+            passed:** the emulator available here accepts any signature and any
+            credential, so it cannot demonstrate a rejection. They name what went
+            unproven and run as soon as the endpoint enforces signatures. Run them
+            against the institutional gateway before S3 carries production evidence.
 - [ ] Phase 2 complete archival format and crash-safe publication accepted.
 - [ ] Phase 3 independent reader end-to-end accepted with GET-only cloud identity.
 - [ ] Phase 4 role handover/workhorse tests accepted.

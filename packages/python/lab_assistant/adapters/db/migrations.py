@@ -14,9 +14,11 @@ scope in some codebases, and a preflight check must not have side effects.
 from __future__ import annotations
 
 import ast
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
-__all__ = ["DEFAULT_VERSIONS_DIR", "migration_order"]
+__all__ = ["DEFAULT_VERSIONS_DIR", "expected_revision", "migration_order", "schema_revision_reader"]
 
 #: `database/migrations/versions`, relative to the repository root. Resolved
 #: from this file so it works from a checkout and from an installed package in
@@ -92,3 +94,54 @@ def _revisions(path: Path) -> tuple[str | None, str | None]:
         elif target.id == "down_revision":
             parent = literal if isinstance(literal, str) else None
     return revision, parent
+
+
+def expected_revision(versions_dir: Path | None = None) -> str | None:
+    """The revision this build expects a database to be at: the migration head.
+
+    ``None`` when the scripts are unreadable or the history has branched into
+    more than one head. Both are reported by the caller as "not checked" rather
+    than as a mismatch — a readiness probe that fails because it could not
+    measure something takes down a deployment that was working.
+    """
+    order = migration_order(versions_dir)
+    if not order:
+        return None
+    directory = Path(versions_dir) if versions_dir is not None else DEFAULT_VERSIONS_DIR
+    parents = {parent for _, parent in (_revisions(path) for path in directory.glob("*.py"))}
+    heads = [revision for revision in order if revision not in parents]
+    return heads[0] if len(heads) == 1 else None
+
+
+def schema_revision_reader(engine: Any) -> Callable[[], Awaitable[str | None]]:
+    """A `SchemaRevisionReader` over an async engine.
+
+    Deliberately not the dump-and-restore adapter, which can answer the same
+    question: a web process should not carry a `pg_dump` runner, nor the
+    credentials one implies, to read a single string.
+    """
+
+    async def read() -> str | None:
+        from sqlalchemy import text
+
+        async with engine.connect() as connection:
+            if engine.dialect.name == "postgresql":
+                present = (
+                    await connection.execute(text("SELECT to_regclass('public.alembic_version')"))
+                ).scalar()
+                if present is None:
+                    return None
+            else:
+                names = await connection.run_sync(
+                    lambda sync: sync.dialect.has_table(sync, "alembic_version")
+                )
+                if not names:
+                    return None
+            rows = (await connection.execute(text("SELECT version_num FROM alembic_version"))).all()
+        if not rows:
+            return None
+        if len(rows) > 1:  # branched history; not a single answer
+            return ",".join(sorted(str(row[0]) for row in rows))
+        return str(rows[0][0])
+
+    return read

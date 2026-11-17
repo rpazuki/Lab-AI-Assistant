@@ -357,7 +357,7 @@ migration work must address historical-schema stability rather than hide drift.
 schema/archive commit, keep previous compatible image and snapshot activation available.
 Migration history and the deployed-version record must not be inferred just from Git HEAD.
 
-### F15 — Readiness is not a sufficient import/role check
+### F15 — Readiness is not a sufficient import/role check (**partly resolved**)
 
 `/ready` checks DB access and S3 zero-key LIST; filesystem readiness performs a PUT. It
 returns a degraded JSON body without an HTTP 503. A tightly scoped reader may have GET
@@ -367,6 +367,19 @@ permission for known manifests but not bucket-wide listing. The deployment helpe
 **Change:** role-specific checks (known sentinel/manifest GET for reader, explicit publisher
 preflight for writes), schema/active-projection/policy age checks, meaningful HTTP status,
 and separate process liveness from serving readiness. No destructive probe writes.
+
+**Resolved, except the role.** `/ready` answers 503 when it is not fit to serve, so a
+load balancer reaches the same conclusion as something parsing the body. It checks the
+database, the object store and the migration revision against the one the build expects.
+Liveness (`/health`) touches no dependency, so a database blip cannot have an
+orchestrator restart every container at once. The probe write is gone: stores expose a
+read-only `ping`, and a store without one is reported unchecked rather than written to.
+A check that cannot measure something is non-blocking, because a probe that fails closed
+on its own blindness is an outage.
+
+**Still owed:** the role-specific half — a reader's sentinel GET instead of a bucket
+LIST, and a publisher's write preflight — which needs the installation role of F07.
+Adding a role setting that nothing enforces would be this table's fourth row.
 
 ### F16 — the PostgreSQL integration suite had never run (found while verifying F02)
 
@@ -535,6 +548,39 @@ Two defects were found by running this rather than by reading it, and both are f
 
 Still unproven: a restore onto a second machine, backup encryption and key recovery,
 S3 as either end of a backup, and any measured RTO.
+
+### Live S3 endpoint run, 2026-11-17
+
+The S3 adapter had never made a request to a real endpoint: the audit's earlier note said
+the suite was "written and unrun, because this machine's Docker could not pull a MinIO
+image". MinIO still cannot be pulled here, and `localstack/localstack:latest` is now the
+licensed image, but `localstack/localstack:3.8` runs. A disposable container on port 4566
+and a scratch bucket; removed afterwards.
+
+| Behaviour | Result |
+|---|---|
+| Bytes survive a signed round trip | passed |
+| An unknown object is absent, not an error | passed |
+| Readiness reaches the bucket | passed |
+| **A presigned URL actually fetches the bytes** | passed |
+| The same bytes twice is a no-op | passed |
+| A tombstone holds against a repeat write | passed |
+| **The endpoint honours `If-None-Match`** | passed |
+| A tampered presigned URL is rejected | **skipped** — see below |
+| A wrong credential is denied rather than absent | **skipped** — see below |
+
+The two skips are the point of being careful here. Both assert that a provider
+*rejects* something, and this emulator rejects nothing: it accepts any signature and any
+credential, and `ENFORCE_IAM` does not change that because IAM enforcement is one of
+LocalStack's paid features. Making them pass would have meant weakening them until they
+passed everywhere and meant nothing. Instead the endpoint is probed once for whether it
+enforces signatures at all, and those two skip with a reason naming exactly what went
+unproven — so they run by themselves against AWS, Ceph, MinIO or the institutional
+gateway.
+
+So: the signer and the conditional create now have real evidence, and the two
+security-critical refusals do not. Emulator results are not cloud validation, and this
+table is the difference between the two.
 
 This does not prove S3/GCS interoperability, multi-VM sharing or IAM behaviour, and the
 seeded corpus is synthetic. No production database or bucket was contacted.

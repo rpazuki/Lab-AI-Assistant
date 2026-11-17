@@ -44,6 +44,10 @@ class ApiContainer:
     orchestrator: TaskOrchestrator
     #: Optional shutdown hooks (database engine disposal, and so on).
     shutdown: tuple[Callable[[], Awaitable[None]], ...] = ()
+    #: Reads the migration revision the database is stamped at, for the
+    #: readiness probe. ``None`` on the in-memory profile, where there are no
+    #: migrations and the check reports itself as not performed.
+    schema_revision: Callable[[], Awaitable[str | None]] | None = None
 
 
 def build_container(settings: Settings) -> ApiContainer:
@@ -67,14 +71,20 @@ def build_container(settings: Settings) -> ApiContainer:
 
     shutdown: list[Callable[[], Awaitable[None]]] = []
 
+    schema_revision: Callable[[], Awaitable[str | None]] | None = None
     if settings.database_url.startswith("memory"):
         uow_factory = memory_uow_factory(MemoryDatabase())
         search = MemorySearchIndex()
     else:
         from lab_assistant.adapters.db.engine import create_engine_and_factory
+        from lab_assistant.adapters.db.migrations import schema_revision_reader
 
         engine, uow_factory, search = create_engine_and_factory(settings)
         shutdown.append(engine.dispose)
+        # So `/ready` can refuse traffic when this build's migrations have not
+        # run — the most common way a deploy goes wrong, and the one thing the
+        # previous probe did not look at.
+        schema_revision = schema_revision_reader(engine)
 
     if settings.object_store_kind == "s3":
         from lab_assistant.adapters.object_store.s3 import S3ObjectStore, S3StoreConfig
@@ -86,7 +96,10 @@ def build_container(settings: Settings) -> ApiContainer:
         object_store = S3ObjectStore(S3StoreConfig.from_settings(settings))
         shutdown.append(object_store.aclose)
     elif settings.object_store_kind == "filesystem":
-        object_store = FilesystemObjectStore(settings.object_store_root)
+        object_store = FilesystemObjectStore(
+            settings.object_store_root,
+            max_object_bytes=settings.object_store_max_object_bytes or None,
+        )
     else:
         raise ValueError(
             f"unknown LAB_OBJECT_STORE_KIND {settings.object_store_kind!r}; "
@@ -150,6 +163,7 @@ def build_container(settings: Settings) -> ApiContainer:
         handlers=handlers,
         orchestrator=TaskOrchestrator(context, handlers),
         shutdown=tuple(shutdown),
+        schema_revision=schema_revision,
     )
 
 

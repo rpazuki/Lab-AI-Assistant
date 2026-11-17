@@ -35,6 +35,7 @@ __all__ = [
     "STREAM_CHUNK_BYTES",
     "SpooledPayload",
     "bytes_stream",
+    "enforce_limit",
     "spool_stream",
 ]
 
@@ -135,3 +136,20 @@ async def _aiter(
         return
     for chunk in source:  # type: ignore[union-attr]
         yield chunk
+
+
+def enforce_limit(byte_length: int, max_bytes: int | None) -> None:
+    """Refuse a payload over the configured ceiling.
+
+    The streaming path checks the limit as it reads, which is the only way to
+    avoid buffering something enormous before rejecting it. A caller that
+    already holds the whole payload has no such problem — but it still has to
+    be refused, or the ceiling is advice that anything using ``put`` can
+    decline to take. Same error class either way, so a caller cannot tell which
+    path refused it.
+    """
+    if max_bytes is not None and max_bytes > 0 and byte_length > max_bytes:
+        raise LabAssistantError(
+            f"object exceeds the configured limit of {max_bytes} bytes",
+            context={"limit_bytes": max_bytes, "read_bytes": byte_length},
+        ).with_class(ErrorClass.TOO_LARGE)

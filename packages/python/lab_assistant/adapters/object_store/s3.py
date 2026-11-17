@@ -50,6 +50,7 @@ from lab_assistant.adapters.object_store._streaming import (
     SPOOL_THRESHOLD_BYTES,
     STREAM_CHUNK_BYTES,
     SpooledPayload,
+    enforce_limit,
     spool_stream,
 )
 from lab_assistant.adapters.object_store.filesystem import (
@@ -402,6 +403,7 @@ class S3ObjectStore:
         object_class: str,
         media_type: str = "application/octet-stream",
     ) -> StoredObjectRecord:
+        enforce_limit(len(data), self._config.max_object_bytes)
         digest = sha256_bytes(data)
         object_id = _object_id(workspace_id, digest)
         existing = await self.head(object_id)

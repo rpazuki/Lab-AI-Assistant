@@ -59,6 +59,43 @@ def prefix() -> str:
     return f"lab-test/{uuid4()}/"
 
 
+@pytest.fixture(scope="module")
+def enforces_signatures() -> bool:
+    """Does this endpoint actually check the signature it is sent?
+
+    AWS does. Ceph and MinIO do. LocalStack's community image does not — it
+    accepts any credential and any signature — and `ENFORCE_IAM` does not change
+    that, because IAM enforcement is one of its paid features.
+
+    That matters because two of the tests below assert a *rejection*. An
+    endpoint that rejects nothing cannot demonstrate one, so against such an
+    endpoint those tests prove nothing and fail for a reason that has nothing to
+    do with this adapter. They skip instead, naming what went unproven — which
+    is the honest result, and is not the same as the adapter being verified.
+    """
+    client = boto3.client(
+        "s3",
+        endpoint_url=ENDPOINT,
+        region_name=REGION,
+        aws_access_key_id=ACCESS_KEY,
+        aws_secret_access_key="definitely-not-the-secret",
+    )
+    try:
+        client.head_bucket(Bucket=BUCKET)
+    except Exception:
+        return True
+    return False
+
+
+def _require_signature_enforcement(enforces: bool, what: str) -> None:
+    if not enforces:
+        pytest.skip(
+            f"this endpoint accepts an invalid signature, so it cannot demonstrate "
+            f"{what}. Run against AWS, Ceph, MinIO or the institutional gateway "
+            "before relying on it."
+        )
+
+
 @pytest.fixture
 def store(prefix: str):
     config = S3StoreConfig(
@@ -114,8 +151,15 @@ class TestPresignedUrlsAreAccepted:
         assert response.status_code == 200, response.text[:400]
         assert response.content == payload
 
-    async def test_a_tampered_presigned_url_is_rejected(self, store) -> None:
-        """The signature covers the query, so an added parameter invalidates it."""
+    async def test_a_tampered_presigned_url_is_rejected(self, store, enforces_signatures) -> None:
+        """The signature covers the query, so an added parameter invalidates it.
+
+        This is the defect that did the most damage in the hand-written signer
+        this adapter replaced, and the one no parameter assertion can catch.
+        """
+        _require_signature_enforcement(
+            enforces_signatures, "that a tampered presigned URL is rejected"
+        )
         workspace = uuid4()
         stored = await store.put(b"payload", workspace_id=workspace, object_class="asset")
         url = await store.signed_url(stored.id, expires_seconds=120)
@@ -125,8 +169,13 @@ class TestPresignedUrlsAreAccepted:
 
 
 class TestDeniedIsNotMissing:
-    async def test_a_wrong_credential_is_denied_rather_than_absent(self, prefix: str) -> None:
+    async def test_a_wrong_credential_is_denied_rather_than_absent(
+        self, prefix: str, enforces_signatures: bool
+    ) -> None:
         """The conflation that sent a reader back to the source for free bytes."""
+        _require_signature_enforcement(
+            enforces_signatures, "that a wrong credential is denied rather than reported missing"
+        )
         config = S3StoreConfig(
             bucket=BUCKET,
             region=REGION,

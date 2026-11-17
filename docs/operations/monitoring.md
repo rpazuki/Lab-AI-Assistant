@@ -9,13 +9,26 @@ Source of truth: `packages/python/lab_assistant/application/tasks.py`, `scripts/
 
 | Signal | Source | Healthy | Act when |
 |---|---|---|---|
-| API health and readiness | `/health`, `/ready` | both 200 | either fails twice in a row |
+| API liveness | `/health` | 200 | fails twice in a row — the process is gone |
+| API readiness | `/ready` | 200 | **503** — running, and not fit to serve |
 | Queue depth per stage | `queue_snapshot` | steady or falling | rising for 30 minutes |
 | Oldest ready task age | `queue_snapshot` | minutes | over an hour |
 | Dead letters | task table | zero new | any new one |
 | `awaiting_user` count | task table | any value | **never pages** — it is a work queue for humans |
 | Lease expiries | task table | rare | repeated on one stage, meaning a worker is dying |
 | Answer latency p95 | message rows | within the gate | above the gate for an hour |
+
+`/health` answers whether the process is up and deliberately touches no
+dependency: a database blip that made every container report unhealthy would
+have an orchestrator restart all of them, which is the opposite of what that
+situation needs. `/ready` answers whether this process should receive a request
+and returns **503** when it should not — until 2026-11 it returned 200 with
+`"status": "degraded"` in the body, so every tool that reads the status code
+kept routing to a process that had just said it could not reach its database.
+
+A not-ready body names the failing check and why, so an alert can carry the
+reason instead of sending someone to the logs for it.
+
 | Unsupported-handle rate | message rows | near zero | any sustained rise — a generation regression |
 | Abstention rate | message rows | stable | a jump usually means retrieval or a release, not the model |
 | Provider 429s | logs | occasional | sustained; raise the delay or the budget |

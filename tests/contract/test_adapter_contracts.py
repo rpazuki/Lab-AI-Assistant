@@ -322,6 +322,45 @@ class TestStreamingIsTheSameContract:
             )
         assert await store.get_by_digest(digest, workspace_id=WORKSPACE) is None
 
+    @pytest.fixture(params=["memory", "filesystem"])
+    def bounded(self, request, tmp_path):
+        """A store configured with a ceiling, as a deployment configures one."""
+        if request.param == "memory":
+            return InMemoryObjectStore(max_object_bytes=4096)
+        return FilesystemObjectStore(tmp_path, max_object_bytes=4096)
+
+    async def test_the_configured_ceiling_applies_to_the_byte_path(self, bounded) -> None:
+        """`put` enforced nothing, so the limit was advice a caller could decline.
+
+        `LAB_OBJECT_STORE_MAX_OBJECT_BYTES` was checked only while streaming.
+        Anything holding a whole payload — and the upload route does — went
+        straight past it.
+        """
+        with pytest.raises(LabAssistantError) as raised:
+            await bounded.put(b"z" * 8192, workspace_id=WORKSPACE, object_class="asset")
+        assert raised.value.error_class is ErrorClass.TOO_LARGE
+        assert raised.value.context["limit_bytes"] == 4096
+
+    async def test_the_configured_ceiling_applies_to_the_streaming_path(self, bounded) -> None:
+        """Without an explicit `max_bytes`, the configured one still applies."""
+        with pytest.raises(LabAssistantError) as raised:
+            await bounded.put_stream(
+                _repeat(b"z" * 1024, 8), workspace_id=WORKSPACE, object_class="asset"
+            )
+        assert raised.value.error_class is ErrorClass.TOO_LARGE
+
+    async def test_a_payload_within_the_ceiling_is_stored(self, bounded) -> None:
+        """The guard must not refuse what it was configured to allow."""
+        stored = await bounded.put(b"z" * 4096, workspace_id=WORKSPACE, object_class="asset")
+        assert stored.byte_length == 4096
+        assert await bounded.get(stored.id) == b"z" * 4096
+
+    async def test_a_refused_payload_leaves_nothing_behind(self, bounded) -> None:
+        digest = sha256(b"z" * 8192).hexdigest()
+        with pytest.raises(LabAssistantError):
+            await bounded.put(b"z" * 8192, workspace_id=WORKSPACE, object_class="asset")
+        assert await bounded.get_by_digest(digest, workspace_id=WORKSPACE) is None
+
     async def test_streaming_a_corrupted_object_fails_at_the_end(self, tmp_path) -> None:
         """The bytes are already delivered, so the raise is the whole signal."""
         store = FilesystemObjectStore(tmp_path)
