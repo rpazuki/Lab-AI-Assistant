@@ -217,6 +217,28 @@ Work:
   has not been run against a live bucket.
 - Add private portable backup/restore commands and manifests; test app/version/extension
   compatibility, volume name discovery, secrets references and one-writer cutover.
+  **Done:** `lab backup create / verify / restore`, writing a recovery manifest
+  ([schema](../../schemas/recovery/backup-manifest.schema.json)) that records the app
+  version, Alembic revision, PostgreSQL and extension versions, object store kind and
+  address, per-workspace counts, and the *names* of the secrets a restore needs. The
+  payloads travel through the `ObjectStore` port, so a bucket backs up like a directory
+  through the same verified copy `lab storage migrate` uses. Restore preflights before it
+  touches anything and refuses a missing or older extension, an older PostgreSQL major, a
+  revision this code has never heard of, and a backup that records a hole in itself.
+  Volume names are resolved from the host by `infra/backup/lib/volumes.sh`, which refuses
+  on no match, on ambiguity, and on a target that is not empty.
+  **One-writer cutover is a refusal, not a warning:** a restore is a clone under a new
+  identity unless the operator declares the origin fenced, and a clone may not publish.
+  **Run against real PostgreSQL** (16.13 + pgvector 0.8.2, `pg_dump` 16.13): 985 passed,
+  and the operator commands driven end to end — create, verify, a refused restore into a
+  populated database, a refused restore into a database without pgvector, an applied
+  restore into a fresh one, and `lab db verify-restore` clean afterwards. Recorded in the
+  audit's section 5. **That run found two defects a reading would not have**: a logical
+  restore needs an empty destination, and the restore had its two steps in the backup's
+  order rather than its own. Both are fixed and both now have tests.
+  **Outstanding:** nothing has been restored onto a *second machine*; backup encryption
+  and key recovery are untested; neither end of a backup has been S3. Encryption at rest
+  is deliberately the operator's storage, not this command.
 - Repair unsafe schema/code rollback assumptions in deployment tooling before migrations.
 - Keep existing filesystem profile and object UUIDs/citations backward-compatible.
 
@@ -591,6 +613,25 @@ records architecture and an implementation-ready plan only.
             projection, and corruption past the thousandth release. Three of those
             were gaps the gate itself exposed and are now closed.
 - [ ] Phase 1 backend(s) and portable single-installation recovery accepted.
+      **In progress.**
+      - [x] F13 portable backup/restore commands and manifests. `lab backup create /
+            verify / restore`, a committed manifest schema, compatibility preflight,
+            secret references by name, host-resolved Compose volumes, and the
+            one-writer rule as a refusal. The predecessor's scripts backed up a
+            filesystem store with `rsync` — which is not a backup of a bucket — and
+            assumed every compatibility question a restore needed to ask.
+      - [x] Installation identity (`LAB_INSTALLATION_ID`), derived from the
+            installation's own addresses when unset so a restore onto a new host
+            correctly derives a different one. The manifest records which case applies,
+            because a derived identity does not survive a deliberate address change.
+      - [ ] GCS adapter.
+      - [ ] Upload limits and role-specific readiness (F15).
+      - [ ] Provider version tokens surfaced on the port.
+      - [ ] A recovery drill: restore into a scratch VM and record date, duration and
+            what went wrong. The commands are exercised end to end against real
+            PostgreSQL, on one machine, into scratch databases — which is not the same
+            as a VM rebuild, and the RTO remains unmeasured.
+      - [ ] A backup with S3 at either end, and tested encryption-key recovery.
 - [ ] Phase 2 complete archival format and crash-safe publication accepted.
 - [ ] Phase 3 independent reader end-to-end accepted with GET-only cloud identity.
 - [ ] Phase 4 role handover/workhorse tests accepted.

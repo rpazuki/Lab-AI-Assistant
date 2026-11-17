@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
@@ -66,6 +67,9 @@ __all__ = [
     "ClaimRepository",
     "Clock",
     "ConfigRepository",
+    "DatabaseFingerprint",
+    "DatabaseSnapshot",
+    "DumpResult",
     "EvaluationRepository",
     "IdFactory",
     "ObjectRecord",
@@ -175,6 +179,84 @@ class ObjectStore(Protocol):
 
     async def tombstone(self, object_id: UUID, *, reason: str) -> None:
         """Mark for purge. Never an in-place overwrite."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseFingerprint:
+    """What the running database says about itself.
+
+    Read from the server rather than from configuration, because the whole point
+    is to catch the case where the two disagree: a compose file declaring
+    pgvector 0.8 against a server holding 0.5 restores cleanly and then fails at
+    the first vector index — after the migrations, and usually after somebody
+    has told the lab it is back.
+    """
+
+    server_version: str
+    #: Extension name to installed version, e.g. ``{"vector": "0.8.2"}``.
+    extensions: dict[str, str] = field(default_factory=dict)
+    #: The Alembic revision the database is stamped at. ``None`` when there is no
+    #: ``alembic_version`` row — a schema built by ``lab db create``, which is a
+    #: finding rather than an error.
+    schema_revision: str | None = None
+    #: Application tables already present in the destination. A logical restore
+    #: goes into an *empty* database: replaying a dump over existing tables fails
+    #: on the first ``CREATE TABLE``, and it fails partway, after a restore has
+    #: already copied the object payloads in.
+    relation_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DumpResult:
+    """The outcome of writing a logical dump to a path."""
+
+    path: str
+    byte_length: int
+    sha256: str
+    #: The dump program's own version banner. A dump written by a newer
+    #: ``pg_dump`` than the destination's ``pg_restore`` fails partway through a
+    #: restore; recorded so a preflight can say so before anything is dropped.
+    tool_version: str
+
+
+@runtime_checkable
+class DatabaseSnapshot(Protocol):
+    """Taking and replaying a portable logical dump of the control plane.
+
+    A port rather than a service call because it shells out: ``pg_dump`` and
+    ``pg_restore`` are external programs, which makes them an adapter concern,
+    and the backup service has to be drivable by a test on a machine with no
+    PostgreSQL on it.
+
+    Logical, not physical. A ``PGDATA`` copy is faster and only restores inside a
+    narrow platform and version envelope; this format exists to survive a move to
+    a VM nobody has provisioned yet, so the portable method is the contract and
+    the fast one is an operator's optional shortcut.
+    """
+
+    async def fingerprint(self) -> DatabaseFingerprint:
+        """Server version, installed extensions, and the stamped revision."""
+        ...
+
+    async def dump(self, destination: Path) -> DumpResult:
+        """Write a restorable logical dump, and digest what was written.
+
+        A dump truncated by a full disk is a plausible-looking file. The digest
+        recorded at write time is the only thing that distinguishes it from a
+        good one.
+        """
+        ...
+
+    async def restore(self, source: Path, *, clean: bool = False) -> None:
+        """Replay a dump into the configured database.
+
+        ``clean`` drops existing objects first, and defaults off: the
+        predecessor's script removed the destination's files before it had
+        established that the restore would work, so an operator who pointed it at
+        the wrong volume had already lost the contents by the time they found
+        out.
+        """
         ...
 
 
@@ -303,6 +385,20 @@ class WorkspaceRepository(Protocol):
     async def get_by_slug(self, slug: str) -> Workspace | None: ...
     async def add(self, workspace: Workspace) -> None: ...
     async def list_for_user(self, user_id: UUID) -> list[Workspace]: ...
+
+    async def list_workspaces(
+        self, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[Workspace]:
+        """One keyset page of every workspace in the installation.
+
+        Distinct from ``list_for_user``, which answers a membership question. An
+        installation-wide operation — a backup, a recovery inventory — needs the
+        workspaces nobody is a member of too: one whose last member left still
+        holds evidence, and a backup that skipped it would restore an
+        installation missing a corpus nobody can name.
+        """
+        ...
+
     async def get_membership(self, workspace_id: UUID, user_id: UUID) -> Membership | None: ...
     async def list_memberships(self, workspace_id: UUID) -> list[Membership]: ...
     async def add_membership(self, membership: Membership) -> None: ...

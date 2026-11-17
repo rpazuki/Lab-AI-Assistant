@@ -123,6 +123,77 @@ def _parser() -> argparse.ArgumentParser:
         help="do not carry payloads the database does not describe",
     )
 
+    backup = subparsers.add_parser("backup", help="private portable backup of this installation")
+    backup_sub = backup.add_subparsers(dest="backup_command", required=True)
+    create_backup = backup_sub.add_parser(
+        "create", help="dump the control plane and copy every object, with a manifest"
+    )
+    create_backup.add_argument(
+        "directory", type=Path, help="a new directory; each backup is its own run"
+    )
+    create_backup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="fingerprint and inventory without writing anything",
+    )
+    create_backup.add_argument(
+        "--skip-objects",
+        action="store_true",
+        help="control plane only; the database alone does not hold the bytes",
+    )
+    create_backup.add_argument(
+        "--verify",
+        choices=["none", "metadata", "digest"],
+        default="digest",
+        help="how each copied object is confirmed; 'digest' reads the backup back",
+    )
+    verify_backup = backup_sub.add_parser(
+        "verify", help="re-digest a backup; touches the installation not at all"
+    )
+    verify_backup.add_argument("directory", type=Path)
+    verify_backup.add_argument(
+        "--skip-objects",
+        action="store_true",
+        help="manifest and dump only; the object sweep reads every payload",
+    )
+    restore_backup = backup_sub.add_parser(
+        "restore", help="preflight a restore, and with --apply carry it out"
+    )
+    restore_backup.add_argument("directory", type=Path)
+    restore_backup.add_argument(
+        "--apply",
+        action="store_true",
+        help="carry it out; without it this writes nothing and reports the verdict",
+    )
+    restore_backup.add_argument(
+        "--intent",
+        choices=["clone", "replace"],
+        default="clone",
+        help=(
+            "'clone' is a second installation that may not publish; 'replace' takes over "
+            "the original's identity and needs --origin-is-fenced"
+        ),
+    )
+    restore_backup.add_argument(
+        "--origin-is-fenced",
+        action="store_true",
+        help=(
+            "assert the original installation is stopped or demoted; required by "
+            "--intent replace, because two publishers on one library diverge silently"
+        ),
+    )
+    restore_backup.add_argument(
+        "--clean",
+        action="store_true",
+        help="drop existing objects before replaying the dump",
+    )
+    restore_backup.add_argument(
+        "--verify",
+        choices=["none", "metadata", "digest"],
+        default="digest",
+        help="how each restored object is confirmed",
+    )
+
     task = subparsers.add_parser("task", help="inspect and steer queued work")
     task_sub = task.add_subparsers(dest="task_command", required=True)
     for name, help_text in (
@@ -210,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_db(args, settings))
         case "storage":
             return asyncio.run(_storage(args, settings))
+        case "backup":
+            return asyncio.run(_backup(args, settings))
         case "task":
             return asyncio.run(_task(args, settings))
         case "worker":
@@ -716,6 +789,140 @@ async def _storage_migrate(args: argparse.Namespace, settings: Settings, contain
         file=sys.stderr,
     )
     return 0
+
+
+async def _backup(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """Take, check, or put back a private recovery backup.
+
+    ``container`` is injectable so a test drives the same code an operator does,
+    rather than a parallel implementation that could disagree with it.
+    """
+    from lab_assistant.adapters.db.migrations import migration_order
+    from lab_assistant.adapters.object_store.filesystem import FilesystemObjectStore
+    from lab_assistant.application.backup import BackupService, installation_identity
+    from lab_assistant.application.storage_migration import VerifyLevel
+    from lab_assistant.domain.recovery import RestoreIntent
+
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        snapshot = getattr(container, "database_snapshot", None)
+        if snapshot is None:
+            snapshot = _database_snapshot(container, settings)
+        installation_id, identity_source = installation_identity(settings)
+        service = BackupService(
+            container.context,
+            snapshot=snapshot,
+            installation_id=installation_id,
+            store_factory=FilesystemObjectStore,
+            writer_epoch=settings.writer_epoch,
+            identity_source=identity_source,
+        )
+
+        if args.backup_command == "create":
+            report = await service.create(
+                args.directory,
+                include_objects=not args.skip_objects,
+                dry_run=args.dry_run,
+                verify=VerifyLevel(args.verify),
+            )
+            print(json.dumps(report.as_dict(), indent=2, default=str))
+            if report.problems:
+                for problem in report.problems:
+                    print(f"  - {problem}", file=sys.stderr)
+                return 1
+            if report.dry_run:
+                print(
+                    "dry run: nothing was written. Re-run without --dry-run to take it.",
+                    file=sys.stderr,
+                )
+                return 0
+            manifest = report.manifest
+            assert manifest is not None  # create always builds one when it writes
+            if manifest.incomplete:
+                for item in manifest.incomplete:
+                    print(f"  - incomplete: {item}", file=sys.stderr)
+                print(
+                    "this backup records a hole in itself; a known hole is not a recovery point",
+                    file=sys.stderr,
+                )
+                return 1
+            print(
+                f"backup {manifest.backup_id} written to {report.directory}. "
+                "Put it in encrypted off-site storage: it holds password hashes and "
+                "unreviewed evidence.",
+                file=sys.stderr,
+            )
+            return 0
+
+        if args.backup_command == "verify":
+            verification = await service.verify(args.directory, check_objects=not args.skip_objects)
+            print(json.dumps(verification.as_dict(), indent=2, default=str))
+            if not verification.ok:
+                for problem in verification.problems:
+                    print(f"  - {problem}", file=sys.stderr)
+                print(
+                    f"{len(verification.problems)} problem(s): this backup is not a "
+                    "recovery point until each one is explained",
+                    file=sys.stderr,
+                )
+                return 1
+            print(
+                f"verified {verification.components_checked} component(s) and "
+                f"{verification.objects_checked} object(s)",
+                file=sys.stderr,
+            )
+            return 0
+
+        report = await service.restore(
+            args.directory,
+            intent=RestoreIntent(args.intent),
+            apply=args.apply,
+            origin_is_fenced=args.origin_is_fenced,
+            migration_order=migration_order(),
+            clean=args.clean,
+            verify=VerifyLevel(args.verify),
+        )
+        print(json.dumps(report.as_dict(), indent=2, default=str))
+        for step in report.next_steps:
+            print(f"  next: {step}", file=sys.stderr)
+        if report.problems:
+            for problem in report.problems:
+                print(f"  - {problem}", file=sys.stderr)
+            print(
+                f"{len(report.problems)} blocking finding(s): this restore is refused",
+                file=sys.stderr,
+            )
+            return 1
+        if not report.applied:
+            print("preflight only: nothing was changed. Re-run with --apply.", file=sys.stderr)
+        return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
+
+
+def _database_snapshot(container: Any, settings: Settings):
+    """The dump/restore adapter over the container's own engine.
+
+    Built here rather than in the container because nothing else needs it: an
+    API process that held a `pg_dump` runner would be carrying a privilege it
+    never uses.
+    """
+    from lab_assistant.adapters.db.snapshot import PostgresDatabaseSnapshot
+
+    engine = getattr(container, "engine", None)
+    if engine is None:
+        from lab_assistant.adapters.db.engine import make_engine
+
+        engine = make_engine(settings)
+    return PostgresDatabaseSnapshot(engine, database_url=settings.database_url)
 
 
 async def _task(

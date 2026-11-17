@@ -1,0 +1,297 @@
+{
+  "$defs": {
+    "BackupComponent": {
+      "description": "One file or directory in the backup, with the digest that proves it.\n\n`sha256` over a directory component is the digest of its own inventory\nlisting, not of a concatenation of payloads: the objects are individually\ncontent-addressed already, and re-reading a corpus to produce one number\nwould make verification cost a full corpus read every time.",
+      "properties": {
+        "byte_length": {
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "detail": {
+          "additionalProperties": true,
+          "title": "Detail",
+          "type": "object"
+        },
+        "item_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item Count"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComponentKind"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "optional": {
+          "default": false,
+          "title": "Optional",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "path",
+        "sha256",
+        "byte_length"
+      ],
+      "title": "BackupComponent",
+      "type": "object"
+    },
+    "ComponentKind": {
+      "description": "What a file in the backup directory is.\n\nThe kinds are separate because their failure modes are separate: a missing\ndump means there is nothing to restore, while a missing object export means\nthe database will restore and every citation into it will break. Reporting\nboth as \"a file is missing\" loses the difference between the two.",
+      "enum": [
+        "database_dump",
+        "object_payloads",
+        "object_inventory"
+      ],
+      "title": "ComponentKind",
+      "type": "string"
+    },
+    "InstallationFingerprint": {
+      "description": "Everything about an installation that a restore has to match or refuse.\n\nCollected from the running system rather than from configuration files,\nbecause what matters is the version that is actually loaded. A compose file\nclaiming pgvector 0.8 while the server has 0.5 is exactly the case this is\nhere to catch.",
+      "properties": {
+        "app_version": {
+          "title": "App Version",
+          "type": "string"
+        },
+        "database_server_version": {
+          "title": "Database Server Version",
+          "type": "string"
+        },
+        "env": {
+          "title": "Env",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "identity_source": {
+          "default": "derived",
+          "title": "Identity Source",
+          "type": "string"
+        },
+        "installation_id": {
+          "format": "uuid",
+          "title": "Installation Id",
+          "type": "string"
+        },
+        "object_store_address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Store Address"
+        },
+        "object_store_kind": {
+          "title": "Object Store Kind",
+          "type": "string"
+        },
+        "schema_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schema Revision"
+        },
+        "writer_epoch": {
+          "default": 0,
+          "title": "Writer Epoch",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "installation_id",
+        "env",
+        "app_version",
+        "database_server_version",
+        "object_store_kind"
+      ],
+      "title": "InstallationFingerprint",
+      "type": "object"
+    },
+    "SecretReference": {
+      "description": "A secret the restore will need, named but never carried.\n\n`where` is prose for a person: \"the institution's secret manager\", \"the TLS\nchain issued for the destination host\". It is deliberately not a machine\naddress \u2014 a backup that pointed at a vault path would be a map to the\ncredentials for anyone who stole the backup.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "where": {
+          "default": "the institution's secret manager",
+          "title": "Where",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SecretReference",
+      "type": "object"
+    },
+    "WorkspaceInventory": {
+      "description": "Counts a restore can check itself against.\n\nThese are the numbers an operator reads out loud during a drill. They are\nnot a substitute for `lab db verify-restore` \u2014 they cannot tell you a\nmanifest digest stopped recomputing \u2014 but a restore that came back with\nthree of four workspaces is caught here, in seconds, rather than by a\nresearcher's broken search a week later.",
+      "properties": {
+        "object_bytes": {
+          "default": 0,
+          "title": "Object Bytes",
+          "type": "integer"
+        },
+        "objects": {
+          "default": 0,
+          "title": "Objects",
+          "type": "integer"
+        },
+        "releases": {
+          "default": 0,
+          "title": "Releases",
+          "type": "integer"
+        },
+        "slug": {
+          "title": "Slug",
+          "type": "string"
+        },
+        "workspace_id": {
+          "format": "uuid",
+          "title": "Workspace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "slug"
+      ],
+      "title": "WorkspaceInventory",
+      "type": "object"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/recovery/backup-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The recovery manifest: what this backup is, and what it needs to come back.",
+  "properties": {
+    "backup_id": {
+      "format": "uuid",
+      "title": "Backup Id",
+      "type": "string"
+    },
+    "components": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/BackupComponent"
+      },
+      "title": "Components",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "excluded": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Excluded",
+      "type": "array"
+    },
+    "format_name": {
+      "default": "lab-assistant-recovery",
+      "title": "Format Name",
+      "type": "string"
+    },
+    "format_version": {
+      "default": "1.0",
+      "title": "Format Version",
+      "type": "string"
+    },
+    "incomplete": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Incomplete",
+      "type": "array"
+    },
+    "minimum_restore_protocol": {
+      "default": "1.0",
+      "title": "Minimum Restore Protocol",
+      "type": "string"
+    },
+    "origin": {
+      "$ref": "#/$defs/InstallationFingerprint"
+    },
+    "secret_references": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SecretReference"
+      },
+      "title": "Secret References",
+      "type": "array"
+    },
+    "workspaces": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WorkspaceInventory"
+      },
+      "title": "Workspaces",
+      "type": "array"
+    }
+  },
+  "required": [
+    "backup_id",
+    "created_at",
+    "origin"
+  ],
+  "title": "BackupManifest",
+  "type": "object",
+  "x-semantic-version": "1.0.0"
+}

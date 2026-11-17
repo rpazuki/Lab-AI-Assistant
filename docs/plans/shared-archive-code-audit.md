@@ -318,7 +318,7 @@ non-default chunkers before using this contract for portable manifests.
 explicit required/optional/missing states, count reporting and compatible projection checks.
 Keep restore check failures actionable rather than claiming blanket integrity.
 
-### F13 — Existing backup scripts are topology-specific and filesystem-only
+### F13 — Existing backup scripts are topology-specific and filesystem-only (**resolved**)
 
 [backup.sh](../../infra/backup/backup.sh) performs `pg_basebackup` then filesystem `rsync`;
 its explanatory comment describes a different ordering. This is not a general consistent
@@ -332,6 +332,17 @@ stopped-writer backup procedure, but the paths need consolidating.
 **Change:** portable dump/checkpoint manifests, resolved Compose volume names, fresh restore
 targets, provider-aware inventories, off-VM backup and tested key recovery. No destructive
 restore into a guessed volume. Separate public library artifacts from private DB dumps.
+
+**Resolved.** `lab backup create / verify / restore` with a committed recovery manifest;
+payloads copied through the `ObjectStore` port, so a bucket is backed up like a directory;
+a preflight that refuses a missing or older extension, an older PostgreSQL major and a
+dump from a schema this code has never heard of; `infra/backup/lib/volumes.sh` resolving
+Compose volume names from the host and refusing on no match, on ambiguity, and on a target
+that is not empty. The restore's `rm -rf` of a guessed volume is gone. The private
+recovery format (`contracts/backup.py`) is deliberately separate from the portable library
+archive (`contracts/archive.py`): one carries password hashes and unreviewed evidence and
+must never leave encrypted operator storage, the other is designed to be handed to a
+reader. Key recovery and an actual off-VM drill remain untested — see the plan's ledger.
 
 ### F14 — Deployment rollback assumes code rollback fixes schema state
 
@@ -485,6 +496,43 @@ LAB_TEST_DATABASE_URL=postgresql+asyncpg://postgres:...@localhost:55432/lab_assi
 | Lifecycle against the Alembic-built schema | passed — production DDL, not only `create_all` |
 | `alembic check` | **fails**, see F17 |
 | `lab db verify-restore` on seeded PostgreSQL | `restore verified`, `objects_checked: 1` of 4 registered, see F12 |
+
+### Backup and restore run, 2026-11-17
+
+A second disposable `pgvector/pgvector:pg16` container (PostgreSQL 16.13, pgvector 0.8.2)
+on port 55433, `pg_dump`/`pg_restore` 16.13 from Homebrew. Three scratch databases, all
+dropped afterwards; the container was removed. Nothing touched an existing container,
+volume or deployment.
+
+| Check | Result |
+|---|---|
+| Full suite with PostgreSQL enabled | 985 passed, 1 skipped (live S3 only) |
+| `tests/integration/test_backup_and_restore.py` | 48 passed, 5 of them against real PostgreSQL |
+| `alembic upgrade head` then `alembic check` | applied, then **clean** — this change adds no schema |
+| `lab backup create` against real PostgreSQL | 150 KB dump, 3 objects copied and digest-verified, manifest written |
+| `lab backup verify` | 3 components, 3 objects, `verified: true` |
+| `lab backup restore` into the **same** database | refused, exit 1: `destination_not_empty` (52 tables) and `clone_keeps_origin_identity` |
+| `lab backup restore` into a fresh database without pgvector | refused, exit 1: `extension_missing` — the rule firing on a real missing extension |
+| `lab backup restore --apply` into a fresh database with pgvector | applied; control plane and all 3 payloads restored; `may_publish: false` |
+| `lab db verify-restore` on the restored installation | `problems: []`; advisory orphans only |
+
+Two defects were found by running this rather than by reading it, and both are fixed:
+
+1. **`pg_restore` into a populated database fails partway**, on `relation already exists`
+   — and it fails *after* the restore has copied the payloads in. There was no rule that
+   a logical restore needs an empty destination. There is now (`destination_not_empty`),
+   and `--clean` is the deliberate alternative.
+2. **The restore copied objects before replaying the dump.** The copy is driven by the
+   *destination's* object registry, which does not exist until the dump creates it, so on
+   a fresh database it raised `UndefinedTable`. `create` puts payloads first, for a good
+   reason — a backup must never hold a control plane newer than its payloads — and the
+   symmetry is false: restoring is not the mirror image of backing up. The offline suite
+   could not catch this, because an in-memory registry has its tables whether or not a
+   dump was replayed; `TestAgainstRealPostgres::test_a_restore_into_a_fresh_database`
+   does, and fails when the two steps are swapped.
+
+Still unproven: a restore onto a second machine, backup encryption and key recovery,
+S3 as either end of a backup, and any measured RTO.
 
 This does not prove S3/GCS interoperability, multi-VM sharing or IAM behaviour, and the
 seeded corpus is synthetic. No production database or bucket was contacted.

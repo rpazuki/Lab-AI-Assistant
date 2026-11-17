@@ -41,6 +41,7 @@ import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
+from uuid import UUID
 
 import yaml
 from pydantic import Field, field_validator
@@ -108,6 +109,25 @@ class Settings(BaseSettings):
     )
 
     env: LabEnv = LabEnv.LOCAL
+
+    # ── installation identity ───────────────────────────────────────────────
+    # Who this installation is, as distinct from which library or workspace it
+    # serves. It exists for one rule: a backup is a faithful copy, so restoring
+    # one always produces something that believes it is the publisher. The
+    # recovery manifest records this id, and `domain/recovery.py` refuses a
+    # restore that would quietly stand a second publisher beside the first.
+    #
+    # Unset is supported and is not a failure: the identity is then derived from
+    # the installation's own addresses, and the manifest says `derived` rather
+    # than `configured`. A derived identity changes when the installation moves,
+    # which is the right default — a clone on a new host is a new installation —
+    # but it cannot survive a deliberate address change, so a deployment that
+    # means to keep its identity across a move sets this before moving.
+    installation_id: UUID | None = None
+    #: Incremented when a fenced handover transfers the right to publish. Phase 4
+    #: makes it durable; today it is configuration, recorded so a backup taken
+    #: now is readable by the implementation that does.
+    writer_epoch: int = 0
 
     # ── database ────────────────────────────────────────────────────────────
     # Owner of this address: Settings (local) and the compose `environment:`

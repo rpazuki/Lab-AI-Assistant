@@ -74,6 +74,10 @@ These are constraints, tests, or gates — never comments:
 - a projection is joined on its full key, `(workspace_id, release_id, chunk_key)`:
   copied chunks share keys across releases by design;
 - a published release is immutable; a correction is a successor release;
+- restoring a backup does not confer the right to publish: a restore is a clone with a
+  new installation identity unless the operator declares the origin fenced
+  (`domain/recovery.py`), because two publishers on one library do not fail — they both
+  work, and diverge;
 - a citation handle the server did not supply produces a **flagged answer**, never a
   500 and never a silent drop;
 - every cache and idempotency key carries workspace and policy scope.
@@ -89,6 +93,9 @@ These are constraints, tests, or gates — never comments:
 .venv/bin/lab db verify-restore --workspace <slug>   # post-restore integrity
 .venv/bin/lab storage scan --workspace <slug>        # database and store agree?
 .venv/bin/lab storage migrate                        # copy objects to another store
+.venv/bin/lab backup create <dir>                    # portable backup: dump, objects, manifest
+.venv/bin/lab backup verify <dir>                    # re-digest a backup, off-site copy included
+.venv/bin/lab backup restore <dir>                   # compatibility preflight; --apply to do it
 cd apps/web && npm test -- --run && npm run type-check
 python tools/docs-check/docs_check.py
 ```
@@ -116,6 +123,7 @@ python tools/docs-check/docs_check.py
 - `application/indexing.py` — why a release build is incremental by construction
 - `provenance/fingerprints.py` — every input that invalidates a cache entry
 - `adapters/connectors/fake.py` — the rule that makes the test suite meaningful
+- `domain/recovery.py` — which restores are refused, and the reason attached to each
 
 ## Tool-specific guidance
 

@@ -164,6 +164,14 @@ class _Workspaces:
         ids = {ws_id for (ws_id, uid) in self._db.memberships if uid == user_id}
         return [self._db.workspaces[i] for i in sorted(ids, key=str) if i in self._db.workspaces]
 
+    async def list_workspaces(
+        self, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[Workspace]:
+        ordered = sorted(self._db.workspaces.values(), key=lambda ws: str(ws.id))
+        if after_id is not None:
+            ordered = [ws for ws in ordered if str(ws.id) > str(after_id)]
+        return ordered[:limit]
+
     async def get_membership(self, workspace_id: UUID, user_id: UUID) -> Membership | None:
         return self._db.memberships.get((workspace_id, user_id))
 

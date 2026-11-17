@@ -264,6 +264,15 @@ class _Workspaces(_Base):
         result = await self._c.execute(statement)
         return WORKSPACES.from_rows(result.mappings().all())
 
+    async def list_workspaces(
+        self, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[Workspace]:
+        statement = select(t.workspaces).order_by(t.workspaces.c.id).limit(limit)
+        if after_id is not None:
+            statement = statement.where(t.workspaces.c.id > after_id)
+        result = await self._c.execute(statement)
+        return WORKSPACES.from_rows(result.mappings().all())
+
     async def get_membership(self, workspace_id: UUID, user_id: UUID) -> Membership | None:
         return await self._one(
             MEMBERSHIPS,

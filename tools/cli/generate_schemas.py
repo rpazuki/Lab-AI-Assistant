@@ -14,6 +14,7 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from lab_assistant.contracts.archive import SnapshotManifest, StageResultEnvelope
+from lab_assistant.contracts.backup import BackupManifest
 from lab_assistant.contracts.extraction import ClaimProposal, TemplateVersionSpec
 from lab_assistant.contracts.parsing import RenditionDocument
 from lab_assistant.contracts.release import ExportPackageManifest, ReleaseManifest
@@ -31,6 +32,9 @@ TARGETS = {
     "claim/template-version.schema.json": (TemplateVersionSpec, "1.0.0"),
     "release-package/release-manifest.schema.json": (ReleaseManifest, "1.0.0"),
     "release-package/export-package-manifest.schema.json": (ExportPackageManifest, "1.0.0"),
+    # Not a draft: `lab backup create` writes this file today, and an operator's
+    # own tooling reads it without importing this package.
+    "recovery/backup-manifest.schema.json": (BackupManifest, "1.0.0"),
     # Draft: nothing publishes or imports these yet (phase 2). Committed now so
     # the format can be reviewed before an implementation makes it expensive to
     # change, and so the fixture and the format are designed against each other.
