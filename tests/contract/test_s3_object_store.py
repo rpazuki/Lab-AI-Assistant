@@ -16,6 +16,8 @@ What they are about, in order of how much damage the bug did:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -83,6 +85,11 @@ def _record_json(*, tombstoned: bool = False, object_id=None) -> bytes:
         },
         sort_keys=True,
     ).encode()
+
+
+def _checksum(data: bytes) -> str:
+    """What the provider is told to verify the bytes against."""
+    return base64.b64encode(hashlib.sha256(data).digest()).decode("ascii")
 
 
 def _body(payload: bytes) -> StreamingBody:
@@ -185,6 +192,7 @@ class TestWritesCarryTheirPrecondition:
                 "Key": _key_for(DIGEST),
                 "Body": PAYLOAD,
                 "ContentType": "application/json",
+                "ChecksumSHA256": _checksum(PAYLOAD),
                 "IfNoneMatch": "*",
             },
         )
@@ -196,6 +204,7 @@ class TestWritesCarryTheirPrecondition:
                 "Key": f"records/{_object_id(WORKSPACE, DIGEST)}.json",
                 "Body": _record_json(),
                 "ContentType": "application/json",
+                "ChecksumSHA256": _checksum(_record_json()),
                 "IfNoneMatch": "*",
             },
         )
@@ -258,6 +267,7 @@ class TestWritesCarryTheirPrecondition:
                 "Key": f"records/{object_id}.json",
                 "Body": _record_json(tombstoned=True),
                 "ContentType": "application/json",
+                "ChecksumSHA256": _checksum(_record_json(tombstoned=True)),
                 "IfMatch": '"v7"',
             },
         )
@@ -286,6 +296,7 @@ class TestWritesCarryTheirPrecondition:
                 "Key": _key_for(DIGEST),
                 "Body": PAYLOAD,
                 "ContentType": "application/json",
+                "ChecksumSHA256": _checksum(PAYLOAD),
             },
         )
         stubber.add_response("put_object", {"ETag": '"record"'})
@@ -337,6 +348,7 @@ class TestAddressingIsNotIdentity:
                 "Key": f"libraries/rla-lab/{_key_for(DIGEST)}",
                 "Body": PAYLOAD,
                 "ContentType": "application/json",
+                "ChecksumSHA256": _checksum(PAYLOAD),
                 "IfNoneMatch": "*",
             },
         )
@@ -348,6 +360,7 @@ class TestAddressingIsNotIdentity:
                 "Key": f"libraries/rla-lab/records/{object_id}.json",
                 "Body": _record_json(),
                 "ContentType": "application/json",
+                "ChecksumSHA256": _checksum(_record_json()),
                 "IfNoneMatch": "*",
             },
         )
@@ -406,3 +419,89 @@ class TestConfiguration:
         assert _config(prefix="libraries/rla").prefix == "libraries/rla/"
         assert _config(prefix="/libraries/rla/").prefix == "libraries/rla/"
         assert _config(prefix="").prefix == ""
+
+
+class TestStreaming:
+    async def test_a_small_payload_is_one_conditional_request(self) -> None:
+        store, stubber = _store()
+        stubber.add_client_error("get_object", service_error_code="NoSuchKey", http_status_code=404)
+        stubber.add_response(
+            "put_object",
+            {"ETag": '"content"'},
+            expected_params={
+                "Bucket": BUCKET,
+                "Key": _key_for(DIGEST),
+                "Body": PAYLOAD,
+                "ContentType": "application/json",
+                "ChecksumSHA256": _checksum(PAYLOAD),
+                "IfNoneMatch": "*",
+            },
+        )
+        stubber.add_response("put_object", {"ETag": '"record"'})
+        stored = await store.put_stream(
+            _chunks(PAYLOAD, 4),
+            workspace_id=WORKSPACE,
+            object_class="rendition",
+            media_type="application/json",
+        )
+        assert stored.sha256 == DIGEST
+        stubber.assert_no_pending_responses()
+
+    async def test_a_large_payload_uses_the_multipart_api(self) -> None:
+        """Above the threshold it must not be one PutObject.
+
+        One part, not two: S3 requires every part but the last to be at least
+        5 MiB, and the SDK raises a smaller configured chunk size to that floor.
+        A test payload big enough to split would be 5 MiB of filler to prove
+        something this already proves — that the multipart API is the path
+        taken, and a transfer that fails resumes at a part boundary.
+        """
+        payload = b"p" * 2048
+        store, stubber = _store(_config(multipart_threshold=1024, transfer_concurrency=1))
+        stubber.add_client_error("get_object", service_error_code="NoSuchKey", http_status_code=404)
+        stubber.add_response("create_multipart_upload", {"UploadId": "upload-1"})
+        stubber.add_response("upload_part", {"ETag": '"part-1"'})
+        stubber.add_response("complete_multipart_upload", {"ETag": '"assembled"'})
+        stubber.add_response("put_object", {"ETag": '"record"'})
+
+        stored = await store.put_stream(
+            _chunks(payload, 256), workspace_id=WORKSPACE, object_class="asset"
+        )
+        assert stored.sha256 == sha256_bytes(payload)
+        assert stored.byte_length == len(payload)
+        stubber.assert_no_pending_responses()
+
+    async def test_the_limit_refuses_before_any_request(self) -> None:
+        store, stubber = _store(_config(max_object_bytes=64))
+        with pytest.raises(LabAssistantError) as raised:
+            await store.put_stream(
+                _chunks(b"q" * 4096, 128), workspace_id=WORKSPACE, object_class="asset"
+            )
+        assert raised.value.error_class is ErrorClass.TOO_LARGE
+        # Nothing was queued, so nothing may have been sent.
+        stubber.assert_no_pending_responses()
+
+    async def test_reading_streams_and_verifies(self) -> None:
+        store, stubber = _store()
+        stubber.add_response("get_object", {"Body": _body(_record_json()), "ETag": '"v1"'})
+        stubber.add_response("get_object", {"Body": _body(PAYLOAD), "ETag": '"c"'})
+        received = bytearray()
+        async for chunk in store.stream(_object_id(WORKSPACE, DIGEST), chunk_size=4):
+            received += chunk
+        assert bytes(received) == PAYLOAD
+
+    async def test_a_substituted_body_fails_after_delivery(self) -> None:
+        store, stubber = _store()
+        stubber.add_response("get_object", {"Body": _body(_record_json()), "ETag": '"v1"'})
+        stubber.add_response("get_object", {"Body": _body(b"substituted"), "ETag": '"c"'})
+        received = bytearray()
+        with pytest.raises(LabAssistantError) as raised:
+            async for chunk in store.stream(_object_id(WORKSPACE, DIGEST), chunk_size=4):
+                received += chunk
+        assert raised.value.error_class is ErrorClass.INVALID_CONTENT
+        assert received, "the caller holds bytes it must discard"
+
+
+async def _chunks(data: bytes, size: int):
+    for start in range(0, len(data), size):
+        yield data[start : start + size]

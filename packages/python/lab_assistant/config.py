@@ -137,6 +137,14 @@ class Settings(BaseSettings):
     #: Off only for an endpoint that rejects preconditions, which reopens the
     #: write race conditional creates close.
     object_store_conditional_writes: bool = True
+    #: Refuse a payload larger than this, while reading rather than after. 0
+    #: means no store-level limit; a caller's own limit still applies.
+    object_store_max_object_bytes: int = 0
+    #: At or above this, an upload goes in parts, so a failed transfer resumes
+    #: from a part boundary rather than from zero. 8 MiB matches the SDK's own
+    #: default and the spool threshold, so a payload small enough to send in one
+    #: request is also small enough never to touch disk.
+    object_store_multipart_threshold_bytes: int = 8 * 1024 * 1024
 
     # ── auth ────────────────────────────────────────────────────────────────
     secret_key: str = "development-only-not-for-production"

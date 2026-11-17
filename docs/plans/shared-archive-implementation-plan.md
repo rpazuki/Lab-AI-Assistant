@@ -194,8 +194,13 @@ Work:
   **S3 done ([ADR-0023](../architecture/adr/0023-object-storage-sdk.md)); GCS outstanding.**
 - Stream and checksum payloads; support standard credential chains, temporary session
   credentials/refresh, configurable permitted endpoints, TLS and region.
-  **Credential chain and checksums done; payloads are still whole-`bytes`, so streaming
-  and multipart are outstanding and bound the maximum object size.**
+  **Done:** credential chain, checksums verified by the provider, `put_stream` /
+  `stream` across all three stores with one shared spooling path, multipart above a
+  configured threshold, and a size limit enforced while reading. The byte-oriented
+  `put` / `get` remain for callers that genuinely hold the whole payload.
+  **Outstanding:** no production caller streams yet — the paths that would benefit
+  (export packaging, archive shards) are phase 2. The contract tests are what keep the
+  streaming path from rotting until then.
 - Conditional create, provider generation metadata, retries, upload limits, error taxonomy,
   connection pooling/close hooks and readiness capability tests.
   **Conditional create, compare-and-swap, SDK retries, error taxonomy and a close hook are

@@ -8,7 +8,7 @@ rewrite (scale §3.3).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import TracebackType
@@ -124,7 +124,38 @@ class ObjectStore(Protocol):
         media_type: str = "application/octet-stream",
     ) -> StoredObject: ...
 
+    async def put_stream(
+        self,
+        source: AsyncIterator[bytes],
+        *,
+        workspace_id: UUID | None,
+        object_class: str,
+        media_type: str = "application/octet-stream",
+        max_bytes: int | None = None,
+    ) -> StoredObject:
+        """Store a payload without holding it in memory.
+
+        The key is the digest and the digest is only known at the end, so the
+        payload is spooled — in memory while it is small, on disk once it is
+        not — and the limit is enforced while reading rather than after. Same
+        idempotence as ``put``: the same bytes twice are one object.
+        """
+        ...
+
     async def get(self, object_id: UUID) -> bytes: ...
+
+    def stream(
+        self, object_id: UUID, *, chunk_size: int = 1024 * 1024
+    ) -> AsyncIterator[bytes]:
+        """Yield the object's bytes, verifying the digest as they pass.
+
+        The verification can only fail at the end, by which time the consumer
+        holds most of the payload. So the contract is explicit: a stream that
+        raises has delivered bytes that must be discarded, not cached and not
+        served. A caller that cannot honour that — anything that treats a
+        partial read as a result — uses ``get`` and pays the memory.
+        """
+        ...
 
     async def get_by_digest(self, sha256: str, *, workspace_id: UUID | None) -> bytes | None: ...
 

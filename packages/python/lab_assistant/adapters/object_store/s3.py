@@ -37,13 +37,21 @@ job, evaluated long before an object reaches a store.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from lab_assistant.adapters.object_store._streaming import (
+    SPOOL_THRESHOLD_BYTES,
+    STREAM_CHUNK_BYTES,
+    SpooledPayload,
+    spool_stream,
+)
 from lab_assistant.adapters.object_store.filesystem import (
     StoredObjectRecord,
     _key_for,
@@ -116,7 +124,9 @@ class S3StoreConfig:
         "connect_timeout",
         "endpoint",
         "max_attempts",
+        "max_object_bytes",
         "max_pool_connections",
+        "multipart_threshold",
         "path_style",
         "prefix",
         "profile",
@@ -124,6 +134,7 @@ class S3StoreConfig:
         "region",
         "secret_key",
         "session_token",
+        "transfer_concurrency",
     )
 
     def __init__(
@@ -143,6 +154,9 @@ class S3StoreConfig:
         read_timeout: float = 60.0,
         max_attempts: int = 5,
         max_pool_connections: int = 16,
+        multipart_threshold: int = SPOOL_THRESHOLD_BYTES,
+        max_object_bytes: int | None = None,
+        transfer_concurrency: int = 4,
     ) -> None:
         missing = [
             name
@@ -188,6 +202,16 @@ class S3StoreConfig:
         self.read_timeout = read_timeout
         self.max_attempts = max_attempts
         self.max_pool_connections = max_pool_connections
+        #: At or above this a payload is uploaded in parts, so a transfer
+        #: that fails resumes from a part boundary rather than from zero.
+        self.multipart_threshold = multipart_threshold
+        #: Refused before the upload starts. ``None`` means the deployment
+        #: has not set one, not that anything goes: the caller's own limit
+        #: still applies.
+        self.max_object_bytes = max_object_bytes
+        #: Parts in flight per upload. Bounded, because the thread pool
+        #: behind them is shared with every other request in the process.
+        self.transfer_concurrency = transfer_concurrency
 
     @classmethod
     def from_settings(cls, settings: Any) -> S3StoreConfig:
@@ -201,6 +225,10 @@ class S3StoreConfig:
             profile=getattr(settings, "object_store_profile", None),
             prefix=getattr(settings, "object_store_prefix", "") or "",
             conditional_writes=getattr(settings, "object_store_conditional_writes", True),
+            multipart_threshold=getattr(
+                settings, "object_store_multipart_threshold_bytes", SPOOL_THRESHOLD_BYTES
+            ),
+            max_object_bytes=getattr(settings, "object_store_max_object_bytes", None) or None,
         )
 
     def build_client(self) -> Any:
@@ -405,6 +433,90 @@ class S3ObjectStore:
             return concurrent
         return record
 
+    async def put_stream(
+        self,
+        source: AsyncIterator[bytes],
+        *,
+        workspace_id: UUID | None,
+        object_class: str,
+        media_type: str = "application/octet-stream",
+        max_bytes: int | None = None,
+    ) -> StoredObjectRecord:
+        """Spool to a digest, then upload — in parts when it is large enough.
+
+        Above the multipart threshold the SDK uploads concurrently and the
+        conditional create is not available on the completing call. That is
+        acceptable for *content* and only for content: the key is the digest, so
+        a writer racing here is writing the same bytes. The metadata record,
+        which is mutable and where a race actually matters, is always a single
+        conditional ``put_object`` below.
+        """
+        limit = max_bytes if max_bytes is not None else self._config.max_object_bytes
+        with await spool_stream(source, max_bytes=limit) as payload:
+            object_id = _object_id(workspace_id, payload.sha256)
+            existing = await self.head(object_id)
+            if existing is not None:
+                return existing
+            key = _key_for(payload.sha256)
+            await self._upload(payload, self._object_key(key), media_type)
+            record = StoredObjectRecord(
+                id=object_id,
+                workspace_id=workspace_id,
+                sha256=payload.sha256,
+                byte_length=payload.byte_length,
+                media_type=media_type,
+                object_class=object_class,
+                created_at=self._clock(),
+                key=key,
+            )
+        try:
+            await self._write_record(record, create_only=True)
+        except LabAssistantError as exc:
+            if exc.error_class is not ErrorClass.CONFLICT:
+                raise
+            concurrent = await self.head(record.id)
+            if concurrent is None:  # pragma: no cover - provider contradiction
+                raise
+            return concurrent
+        return record
+
+    async def stream(
+        self, object_id: UUID, *, chunk_size: int = STREAM_CHUNK_BYTES
+    ) -> AsyncIterator[bytes]:
+        """Yield the object's bytes, verifying the digest as they pass.
+
+        Each read crosses the thread boundary, because the SDK's body is a
+        blocking stream and reading it on the event loop would stall every other
+        request for the length of the download.
+        """
+        record = await self.head(object_id)
+        if record is None:
+            raise FileNotFoundError(f"object {object_id} is not registered")
+        if record.tombstoned:
+            raise FileNotFoundError(f"object {object_id} has been tombstoned")
+        key = self._object_key(record.key)
+        bucket = self._config.bucket
+        body = (await self._in_thread(
+            "get_object", lambda: self._client.get_object(Bucket=bucket, Key=key), key=key
+        ))["Body"]
+        digest = hashlib.sha256()
+        try:
+            while True:
+                chunk = await self._in_thread("read", lambda: body.read(chunk_size), key=key)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                yield chunk
+        finally:
+            close = getattr(body, "close", None)
+            if close is not None:
+                close()
+        if digest.hexdigest() != record.sha256:
+            raise LabAssistantError(
+                "stored object does not match its recorded digest",
+                context={"object_id": str(object_id), "key": record.key},
+            ).with_class(ErrorClass.INVALID_CONTENT)
+
     async def get(self, object_id: UUID) -> bytes:
         record = await self.head(object_id)
         if record is None:
@@ -537,17 +649,65 @@ class S3ObjectStore:
 
         return await self._in_thread("get_object", call, key=key)
 
+    async def _upload(self, payload: SpooledPayload, key: str, media_type: str) -> None:
+        """One request, or several parts, depending on size."""
+        if payload.byte_length < self._config.multipart_threshold:
+            await self._put_content_bytes(key, payload.read_all(), media_type, payload.sha256)
+            return
+
+        from boto3.s3.transfer import TransferConfig
+
+        bucket = self._config.bucket
+        transfer = TransferConfig(
+            multipart_threshold=self._config.multipart_threshold,
+            multipart_chunksize=self._config.multipart_threshold,
+            max_concurrency=self._config.transfer_concurrency,
+        )
+
+        def call() -> None:
+            payload.file.seek(0)
+            self._client.upload_fileobj(
+                payload.file,
+                bucket,
+                key,
+                # Per-part SHA-256, so the provider rejects a part that arrived
+                # damaged rather than assembling it into the object. The whole
+                # object's digest is still checked by this application on read.
+                ExtraArgs={"ContentType": media_type, "ChecksumAlgorithm": "SHA256"},
+                Config=transfer,
+            )
+
+        await self._in_thread("upload_fileobj", call, key=key)
+
     async def _put_content(self, logical_key: str, data: bytes, media_type: str) -> None:
-        """Write immutable content, created once.
+        await self._put_content_bytes(
+            self._object_key(logical_key), data, media_type, sha256_bytes(data)
+        )
+
+    async def _put_content_bytes(
+        self, key: str, data: bytes, media_type: str, sha256: str
+    ) -> None:
+        """Write immutable content in one request, created once.
 
         A precondition failure here is not an error: the key *is* the digest, so
         an object already under it holds these bytes.
+
+        ``sha256`` goes to the provider as well, so it verifies what it received
+        and rejects a damaged upload at the door. An ETag would not do: it is
+        the digest of nothing in particular once server-side encryption or
+        multipart is involved.
         """
-        key = self._object_key(logical_key)
+        checksum = base64.b64encode(bytes.fromhex(sha256)).decode("ascii")
         try:
-            await self._put(key, data, media_type, create_only=self._config.conditional_writes)
+            await self._put(
+                key,
+                data,
+                media_type,
+                create_only=self._config.conditional_writes,
+                checksum_sha256=checksum,
+            )
         except ConditionalWritesUnsupported:
-            await self._put(key, data, media_type, create_only=False)
+            await self._put(key, data, media_type, create_only=False, checksum_sha256=checksum)
         except LabAssistantError as exc:
             if exc.error_class is not ErrorClass.CONFLICT:
                 raise
@@ -560,6 +720,7 @@ class S3ObjectStore:
         *,
         create_only: bool = False,
         expected_version: str | None = None,
+        checksum_sha256: str | None = None,
     ) -> str | None:
         bucket = self._config.bucket
         arguments: dict[str, Any] = {
@@ -568,6 +729,8 @@ class S3ObjectStore:
             "Body": data,
             "ContentType": media_type,
         }
+        if checksum_sha256 is not None:
+            arguments["ChecksumSHA256"] = checksum_sha256
         if create_only:
             arguments["IfNoneMatch"] = "*"
         elif expected_version is not None:
@@ -622,6 +785,7 @@ class S3ObjectStore:
             sort_keys=True,
         ).encode("utf-8")
         conditional = self._config.conditional_writes
+        checksum = base64.b64encode(hashlib.sha256(payload).digest()).decode("ascii")
         try:
             await self._put(
                 self._record_key(record.id),
@@ -629,9 +793,15 @@ class S3ObjectStore:
                 "application/json",
                 create_only=create_only and conditional,
                 expected_version=expected_version if conditional else None,
+                checksum_sha256=checksum,
             )
         except ConditionalWritesUnsupported:
-            await self._put(self._record_key(record.id), payload, "application/json")
+            await self._put(
+                self._record_key(record.id),
+                payload,
+                "application/json",
+                checksum_sha256=checksum,
+            )
 
 
 def _record_from_json(payload: bytes) -> StoredObjectRecord:

@@ -19,9 +19,12 @@ required because the VM and its database share a failure domain.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
+import shutil
 import tempfile
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -29,6 +32,11 @@ from functools import wraps
 from pathlib import Path
 from uuid import UUID, uuid5
 
+from lab_assistant.adapters.object_store._streaming import (
+    STREAM_CHUNK_BYTES,
+    SpooledPayload,
+    spool_stream,
+)
 from lab_assistant.contracts.canonical import sha256_bytes
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 
@@ -189,6 +197,94 @@ class FilesystemObjectStore:
         self._append_index(record)
         return record
 
+    async def put_stream(
+        self,
+        source: AsyncIterator[bytes],
+        *,
+        workspace_id: UUID | None,
+        object_class: str,
+        media_type: str = "application/octet-stream",
+        max_bytes: int | None = None,
+    ) -> StoredObjectRecord:
+        """Spool, then move into place. Memory is bounded by the spool size.
+
+        The spooling happens outside the store lock: it is the slow part, it
+        touches nothing shared, and holding an exclusive lock across a long
+        upload would serialise every writer on the VM behind it.
+        """
+        with await spool_stream(source, max_bytes=max_bytes) as payload:
+            return await self._register_spooled(
+                payload, workspace_id=workspace_id, object_class=object_class,
+                media_type=media_type,
+            )
+
+    @_synchronised
+    async def _register_spooled(
+        self,
+        payload: SpooledPayload,
+        *,
+        workspace_id: UUID | None,
+        object_class: str,
+        media_type: str,
+    ) -> StoredObjectRecord:
+        object_id = _object_id(workspace_id, payload.sha256)
+        existing = self._index.get(object_id)
+        if existing is not None:
+            return existing
+        key = _key_for(payload.sha256)
+        path = self._root / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+                    temporary = Path(handle.name)
+                    payload.file.seek(0)
+                    shutil.copyfileobj(payload.file, handle, STREAM_CHUNK_BYTES)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+        record = StoredObjectRecord(
+            id=object_id,
+            workspace_id=workspace_id,
+            sha256=payload.sha256,
+            byte_length=payload.byte_length,
+            media_type=media_type,
+            object_class=object_class,
+            created_at=self._clock(),
+            key=key,
+        )
+        self._index[object_id] = record
+        self._append_index(record)
+        return record
+
+    async def stream(
+        self, object_id: UUID, *, chunk_size: int = STREAM_CHUNK_BYTES
+    ) -> AsyncIterator[bytes]:
+        record = await self.head(object_id)
+        if record is None:
+            raise FileNotFoundError(f"object {object_id} is not registered")
+        if record.tombstoned:
+            raise FileNotFoundError(f"object {object_id} has been tombstoned")
+        digest = hashlib.sha256()
+        with (self._root / record.key).open("rb") as handle:
+            while True:
+                chunk = handle.read(chunk_size)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                yield chunk
+        if digest.hexdigest() != record.sha256:
+            # Raised after the last chunk, which is the only time it can be
+            # known. The consumer's contract is to discard what it received.
+            raise LabAssistantError(
+                "stored object does not match its recorded digest",
+                context={"object_id": str(object_id), "key": record.key},
+            ).with_class(ErrorClass.INVALID_CONTENT)
+
     @_synchronised
     async def get(self, object_id: UUID) -> bytes:
         record = self._index.get(object_id)
@@ -278,6 +374,41 @@ class InMemoryObjectStore:
         self._objects[object_id] = data
         self._records[object_id] = record
         return record
+
+    async def put_stream(
+        self,
+        source: AsyncIterator[bytes],
+        *,
+        workspace_id: UUID | None,
+        object_class: str,
+        media_type: str = "application/octet-stream",
+        max_bytes: int | None = None,
+    ) -> StoredObjectRecord:
+        with await spool_stream(source, max_bytes=max_bytes) as payload:
+            return await self.put(
+                payload.read_all(),
+                workspace_id=workspace_id,
+                object_class=object_class,
+                media_type=media_type,
+            )
+
+    async def stream(
+        self, object_id: UUID, *, chunk_size: int = STREAM_CHUNK_BYTES
+    ) -> AsyncIterator[bytes]:
+        record = self._records.get(object_id)
+        if record is None or record.tombstoned:
+            raise FileNotFoundError(f"object {object_id} is not available")
+        payload = self._objects[object_id]
+        digest = hashlib.sha256()
+        for start in range(0, len(payload), chunk_size):
+            chunk = payload[start : start + chunk_size]
+            digest.update(chunk)
+            yield chunk
+        if digest.hexdigest() != record.sha256:
+            raise LabAssistantError(
+                "stored object does not match its recorded digest",
+                context={"object_id": str(object_id)},
+            ).with_class(ErrorClass.INVALID_CONTENT)
 
     async def get(self, object_id: UUID) -> bytes:
         record = self._records.get(object_id)

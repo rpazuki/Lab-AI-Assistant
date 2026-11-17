@@ -82,6 +82,16 @@ boundary, and supersede ADR-0017's transport decision.
 - **Addressing is not identity.** An optional prefix isolates a shared bucket and
   is prepended to every key, but never stored: `StoredObjectRecord.key` stays
   logical, so the database survives a move to another bucket, prefix or provider.
+- **Payloads stream, and the limit is a control.** `put_stream` spools to a
+  digest — in memory while small, on disk once not — and refuses while reading
+  rather than after, because a limit checked at the end has already allocated
+  what it was meant to prevent. Above the multipart threshold the upload goes in
+  parts, so a failed transfer resumes at a part boundary. `stream` yields chunks
+  and verifies at the end, which is the only time it can: the contract is that a
+  stream which raises has delivered bytes the caller must discard.
+- **The provider checks the bytes too.** Every single-request write carries
+  `ChecksumSHA256`, and multipart parts carry per-part SHA-256, so a damaged
+  upload is rejected at the door rather than discovered on a later read.
 - **The ETag is not the content hash.** It is a concurrency token. It is not the
   SHA-256 of a multipart upload and not the SHA-256 under server-side encryption,
   so the application digest is still verified on every read.

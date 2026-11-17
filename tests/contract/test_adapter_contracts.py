@@ -7,6 +7,7 @@ validation. These are the promises the rest of the suite leans on.
 
 from __future__ import annotations
 
+from hashlib import sha256
 from uuid import uuid4
 
 import pytest
@@ -41,7 +42,7 @@ from lab_assistant.contracts.connector import (
     Identifier,
     IdentifierScheme,
 )
-from lab_assistant.contracts.errors import ErrorClass
+from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.contracts.models import GenerationRequest, StructuredRequest
 from lab_assistant.testing import fake_source, record, source_page
 
@@ -122,9 +123,7 @@ class TestFakesRaiseOnAMiss:
 def _cursor(compiled):
     from lab_assistant.contracts.connector import Cursor
 
-    return Cursor(
-        connector_id=compiled.connector_id, query_fingerprint=compiled.query_fingerprint
-    )
+    return Cursor(connector_id=compiled.connector_id, query_fingerprint=compiled.query_fingerprint)
 
 
 class TestConnectorRegistry:
@@ -175,9 +174,7 @@ class TestConnectorCapabilityManifests:
         capabilities = connector.capabilities
         if ConnectorOperation.ACQUIRE not in capabilities.operations:
             with pytest.raises(Exception):  # noqa: B017 - any refusal is acceptable
-                await connector.acquire(
-                    AcquisitionRequest(identifiers=(), route="open_repository")
-                )
+                await connector.acquire(AcquisitionRequest(identifiers=(), route="open_repository"))
 
     def test_no_connector_declares_a_secret_value(self) -> None:
         for connector in self.CONNECTORS:
@@ -254,6 +251,111 @@ class TestObjectStoreImmutability:
         url = await store.signed_url(stored.id, expires_seconds=60)
         assert str(tmp_path) not in url
         assert str(stored.id) in url
+
+
+class TestStreamingIsTheSameContract:
+    """Both local stores, one set of rules.
+
+    A streaming path that behaved differently from the byte path — a different
+    digest, a different id, a limit one store enforced and the other did not —
+    would mean the suite proved one thing about the adapter the tests use and
+    nothing about the adapter production uses.
+    """
+
+    @pytest.fixture(params=["memory", "filesystem"])
+    def store(self, request, tmp_path):
+        if request.param == "memory":
+            return InMemoryObjectStore()
+        return FilesystemObjectStore(tmp_path)
+
+    async def test_streaming_and_bytes_agree_on_identity(self, store) -> None:
+        payload = b"a rendition that arrived in pieces"
+        streamed = await store.put_stream(
+            _chunks(payload, 7), workspace_id=WORKSPACE, object_class="rendition"
+        )
+        direct = await store.put(payload, workspace_id=WORKSPACE, object_class="rendition")
+        assert streamed.id == direct.id
+        assert streamed.sha256 == direct.sha256
+        assert streamed.byte_length == direct.byte_length == len(payload)
+
+    async def test_a_payload_larger_than_memory_round_trips(self, store) -> None:
+        """Four megabytes, in kilobyte chunks, never held whole by the caller."""
+        chunk = b"y" * 1024
+        stored = await store.put_stream(
+            _repeat(chunk, 4096), workspace_id=WORKSPACE, object_class="asset"
+        )
+        assert stored.byte_length == 4096 * 1024
+
+        seen = 0
+        digest = sha256()
+        async for part in store.stream(stored.id):
+            seen += len(part)
+            digest.update(part)
+        assert seen == stored.byte_length
+        assert digest.hexdigest() == stored.sha256
+
+    async def test_the_limit_stops_the_read_rather_than_reporting_it(self, store) -> None:
+        """A limit checked at the end has already allocated what it prevents."""
+        consumed = 0
+
+        async def source():
+            nonlocal consumed
+            for _ in range(4096):
+                consumed += 1
+                yield b"z" * 1024
+
+        with pytest.raises(LabAssistantError) as raised:
+            await store.put_stream(
+                source(), workspace_id=WORKSPACE, object_class="asset", max_bytes=4096
+            )
+        assert raised.value.error_class is ErrorClass.TOO_LARGE
+        assert consumed <= 6, "the source kept being read after the limit was passed"
+
+    async def test_a_refused_payload_is_not_stored(self, store) -> None:
+        digest = sha256(b"z" * 8192).hexdigest()
+        with pytest.raises(LabAssistantError):
+            await store.put_stream(
+                _repeat(b"z" * 1024, 8),
+                workspace_id=WORKSPACE,
+                object_class="asset",
+                max_bytes=4096,
+            )
+        assert await store.get_by_digest(digest, workspace_id=WORKSPACE) is None
+
+    async def test_streaming_a_corrupted_object_fails_at_the_end(self, tmp_path) -> None:
+        """The bytes are already delivered, so the raise is the whole signal."""
+        store = FilesystemObjectStore(tmp_path)
+        stored = await store.put(b"evidence", workspace_id=WORKSPACE, object_class="asset")
+        (tmp_path / stored.key).write_bytes(b"substituted")
+
+        received = bytearray()
+        with pytest.raises(LabAssistantError) as raised:
+            async for part in store.stream(stored.id):
+                received += part
+        assert raised.value.error_class is ErrorClass.INVALID_CONTENT
+        assert received, "the consumer received bytes it must now discard"
+
+    async def test_streaming_a_tombstoned_object_refuses(self, store) -> None:
+        stored = await store.put(b"withdrawn", workspace_id=WORKSPACE, object_class="asset")
+        await store.tombstone(stored.id, reason="rights_revocation")
+        with pytest.raises(FileNotFoundError):
+            async for _ in store.stream(stored.id):
+                pass
+
+    async def test_streaming_an_unknown_object_refuses(self, store) -> None:
+        with pytest.raises(FileNotFoundError):
+            async for _ in store.stream(uuid4()):
+                pass
+
+
+async def _chunks(data: bytes, size: int):
+    for start in range(0, len(data), size):
+        yield data[start : start + size]
+
+
+async def _repeat(chunk: bytes, times: int):
+    for _ in range(times):
+        yield chunk
 
 
 class TestProviderContract:

@@ -120,6 +120,10 @@ def detect_media_type(content: bytes, *, declared: str | None = None) -> str:
     return "text/plain"
 
 
+#: Ceiling when the deployment has not configured one. A paper is not this
+#: large; something that is, is a mistake or an attack.
+DEFAULT_MAX_ASSET_BYTES = 64 * 1024 * 1024
+
 class AcquisitionService:
     """Rights decisions, plans, and the assisted upload path."""
 
@@ -311,11 +315,15 @@ class AcquisitionService:
     ) -> Asset:
         """Quarantine, validate, scan, verify identity, then register."""
         context = self._context
-        max_bytes = 64 * 1024 * 1024
+        # The raise used to carry no error class, so it defaulted to INTERNAL —
+        # which is retryable. A payload that is too large is too large every
+        # time, and a worker would have spent its attempts rediscovering that.
+        max_bytes = context.settings.object_store_max_object_bytes or DEFAULT_MAX_ASSET_BYTES
         if len(content) > max_bytes:
             raise LabAssistantError(
                 f"content of {len(content)} bytes exceeds the {max_bytes} byte limit",
-            )
+                context={"byte_length": len(content), "limit_bytes": max_bytes},
+            ).with_class(ErrorClass.TOO_LARGE)
 
         media_type = detect_media_type(content, declared=declared_media_type)
         validation = ValidationStatus.PASSED

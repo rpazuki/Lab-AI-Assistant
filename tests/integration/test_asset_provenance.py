@@ -198,3 +198,48 @@ class TestSharedBytesKeepTheirProvenance:
         assert by_digest is not None
         assert scoped is not None and scoped.id == asset.id
         assert other_work is None
+
+
+class TestSizeLimit:
+    """A payload that is too large is too large every time.
+
+    The refusal used to carry no error class, so it defaulted to INTERNAL —
+    retryable — and a worker would spend its attempts rediscovering the same
+    answer before dead-lettering it.
+    """
+
+    async def test_an_oversized_asset_is_refused_permanently(self, acquisition) -> None:
+        from lab_assistant.contracts.errors import ErrorClass, LabAssistantError, is_retryable
+
+        service: AcquisitionService = acquisition["service"]
+        actor = acquisition["actor"]
+        work, manifestation, plan = await acquisition["make"]("oversized")
+        decision = await service.decide_rights(
+            actor,
+            subject_type="manifestation",
+            subject_id=manifestation.id,
+            licence_expression="cc-by-4.0",
+            access_basis="open_access_repository",
+            route=AcquisitionRoute.OPEN_ACCESS_API,
+            requested_actions=REQUESTED,
+        )
+        settings = service._context.settings
+        limit = settings.object_store_max_object_bytes or 64 * 1024 * 1024
+
+        with pytest.raises(LabAssistantError) as raised:
+            await service.register_asset(
+                actor=actor,
+                plan=plan,
+                manifestation=manifestation,
+                content=b"x" * (limit + 1),
+                declared_media_type="application/pdf",
+                filename="huge.pdf",
+                rights_decision=decision,
+                route=AcquisitionRoute.OPEN_ACCESS_API,
+                connector_id="europepmc",
+                expected_identifiers=(),
+            )
+        assert raised.value.error_class is ErrorClass.TOO_LARGE
+        assert not is_retryable(raised.value.error_class)
+        assert raised.value.context["limit_bytes"] == limit
+        assert work is not None
