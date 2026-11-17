@@ -403,6 +403,22 @@ database.
 drift is indistinguishable from this standing noise, which matters as soon as phase 2 starts
 adding tables.
 
+### F18 — documented guards that were never wired (pattern, not a single defect)
+
+Three claims in this repository described enforcement that did not exist, each found by
+trying to use it rather than by reading it:
+
+| Claim | Where | Reality |
+|---|---|---|
+| "adapter contract tests against a stubbed transport" | ADR-0017 | no S3 test existed |
+| "the drift check in CI runs `alembic check`" | `database/migrations/env.py` | failed against any migrated database (F17) |
+| "CI regenerates them and fails on drift" | `tools/cli/generate_schemas.py` | CI checks `openapi.json` only |
+
+Each is now true: `tests/contract/test_s3_object_store.py`, the declared expression
+indexes, and `tests/contract/test_contract_schemas.py`. The pattern is worth naming
+because the next one will read just as convincing. A sentence in a docstring is not a
+control, and the cheapest way to find these is to run the thing the sentence describes.
+
 ## 5. Verification performed
 
 ### Ordinary targeted baseline

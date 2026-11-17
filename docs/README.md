@@ -215,6 +215,14 @@ The vocabulary is precise, and these pages are the definitions:
 
 ### Shared archive and portable installations (proposal)
 
+The portable format's first contracts are drafted in
+[`contracts/archive.py`](../packages/python/lab_assistant/contracts/archive.py), with
+JSON Schemas under `schemas/archive/` marked `1.0.0-draft`. Nothing publishes or
+imports them yet. The corpus they are designed against is
+[`lab_assistant.fixtures.archive`](../packages/python/lab_assistant/fixtures/archive.py):
+two releases containing a revised paper, restricted evidence, review history, an
+extraction that searched and reported nothing, and reusable projections.
+
 The [shared archive architecture](plans/shared-archive-architecture.md) evaluates remote
 S3/GCS storage, publisher/workhorse and independent reader installations. The
 [code audit](plans/shared-archive-code-audit.md) records current implementation gaps and

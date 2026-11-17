@@ -561,7 +561,19 @@ records architecture and an implementation-ready plan only.
             trips. Keyset-paged, sweeps all 12 reference sources and re-digests every
             object; a manifest that will not parse is a finding, not an escape. The
             non-default-chunker round-trip defect this predicted was real and is fixed.
-      - [ ] Golden portable archive fixture — the last phase 0 item.
+      - [x] Golden portable archive fixture: `lab_assistant.fixtures.archive`
+            publishes two releases containing a revised paper, restricted evidence,
+            review history, a searched-and-reported-nothing extraction and reusable
+            projections. Each case is asserted, so a fixture that stops producing
+            one fails rather than quietly narrowing phase 2's coverage.
+      - [x] Portable archive schema draft: `contracts/archive.py` plus committed
+            JSON Schemas under `schemas/archive/`, marked `1.0.0-draft`. Nothing
+            publishes or imports them yet — that is phase 2 — but the format and the
+            fixture are now designed against each other.
+      - [x] Phase 0 restore acceptance gate: the check catches missing original
+            bytes, a missing rendition, missing claims and config, a missing
+            projection, and corruption past the thousandth release. Three of those
+            were gaps the gate itself exposed and are now closed.
 - [ ] Phase 1 backend(s) and portable single-installation recovery accepted.
 - [ ] Phase 2 complete archival format and crash-safe publication accepted.
 - [ ] Phase 3 independent reader end-to-end accepted with GET-only cloud identity.

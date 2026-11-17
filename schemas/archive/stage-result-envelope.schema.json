@@ -1,0 +1,137 @@
+{
+  "$defs": {
+    "StageOutcome": {
+      "description": "How an expensive stage ended.\n\n``SUCCEEDED_EMPTY`` exists because it is the case every naive cache gets\nwrong. A paper the extractor read and found nothing in has been *done*; an\narchive that cannot say so makes every reader pay to do it again, forever.\n``FAILED_RETRYABLE`` is its opposite: not a result, and never a cache hit.",
+      "enum": [
+        "succeeded",
+        "succeeded_empty",
+        "succeeded_truncated",
+        "refused_by_policy",
+        "failed_retryable",
+        "failed_permanent",
+        "outcome_unknown"
+      ],
+      "title": "StageOutcome",
+      "type": "string"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/archive/stage-result-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A completed expensive stage, recorded so nobody pays for it twice.\n\nThe reuse fingerprint is the whole point, and it has to cover everything that\nwould change the answer: the input bytes, the recipe, the actual tool and\nmodel versions, and the policy scope under which it ran. A fingerprint over\nthe input alone would reuse a result produced by a model that has since been\nreplaced, which is how a corpus acquires numbers nobody can account for.",
+  "properties": {
+    "actor_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actor Id"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At"
+    },
+    "input_artifact_digests": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Input Artifact Digests",
+      "type": "array"
+    },
+    "outcome": {
+      "$ref": "#/$defs/StageOutcome"
+    },
+    "output_artifacts": {
+      "default": [],
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Output Artifacts",
+      "type": "array"
+    },
+    "policy_scope": {
+      "additionalProperties": true,
+      "title": "Policy Scope",
+      "type": "object"
+    },
+    "provider_request_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Request Id"
+    },
+    "reuse_fingerprint": {
+      "title": "Reuse Fingerprint",
+      "type": "string"
+    },
+    "reuse_restrictions": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Reuse Restrictions",
+      "type": "array"
+    },
+    "stage": {
+      "title": "Stage",
+      "type": "string"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Started At"
+    },
+    "token_usage": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Token Usage",
+      "type": "object"
+    },
+    "tool_versions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Tool Versions",
+      "type": "object"
+    }
+  },
+  "required": [
+    "stage",
+    "outcome",
+    "reuse_fingerprint"
+  ],
+  "title": "StageResultEnvelope",
+  "type": "object",
+  "x-semantic-version": "1.0.0-draft"
+}

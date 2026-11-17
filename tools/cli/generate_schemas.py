@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from lab_assistant.contracts.archive import SnapshotManifest, StageResultEnvelope
 from lab_assistant.contracts.extraction import ClaimProposal, TemplateVersionSpec
 from lab_assistant.contracts.parsing import RenditionDocument
 from lab_assistant.contracts.release import ExportPackageManifest, ReleaseManifest
@@ -30,6 +31,11 @@ TARGETS = {
     "claim/template-version.schema.json": (TemplateVersionSpec, "1.0.0"),
     "release-package/release-manifest.schema.json": (ReleaseManifest, "1.0.0"),
     "release-package/export-package-manifest.schema.json": (ExportPackageManifest, "1.0.0"),
+    # Draft: nothing publishes or imports these yet (phase 2). Committed now so
+    # the format can be reviewed before an implementation makes it expensive to
+    # change, and so the fixture and the format are designed against each other.
+    "archive/snapshot-manifest.schema.json": (SnapshotManifest, "1.0.0-draft"),
+    "archive/stage-result-envelope.schema.json": (StageResultEnvelope, "1.0.0-draft"),
 }
 
 

@@ -1,0 +1,331 @@
+{
+  "$defs": {
+    "CatalogShardRef": {
+      "description": "A shard of the snapshot catalog: typed records, never SQL or code.\n\nAn archive is data from an authority the reader has only partly verified, so\nnothing in it is executed. No SQL statements, no pickles, no parser plugins \u2014\na shard is rows, validated against a schema, with its size declared before\nanything is allocated to hold it.",
+      "properties": {
+        "byte_length": {
+          "title": "Byte Length",
+          "type": "integer"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "title": "Location",
+          "type": "string"
+        },
+        "row_count": {
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "schema_version": {
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "schema_version",
+        "sha256",
+        "byte_length",
+        "row_count",
+        "location"
+      ],
+      "title": "CatalogShardRef",
+      "type": "object"
+    },
+    "PackageRef": {
+      "description": "One work's immutable package revision within a snapshot.",
+      "properties": {
+        "manifest_digest": {
+          "title": "Manifest Digest",
+          "type": "string"
+        },
+        "package_revision": {
+          "title": "Package Revision",
+          "type": "integer"
+        },
+        "unchanged_since_parent": {
+          "default": false,
+          "title": "Unchanged Since Parent",
+          "type": "boolean"
+        },
+        "work_id": {
+          "format": "uuid",
+          "title": "Work Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "work_id",
+        "package_revision",
+        "manifest_digest"
+      ],
+      "title": "PackageRef",
+      "type": "object"
+    },
+    "ProjectionRef": {
+      "description": "Reusable chunk and embedding shards for one release.\n\n``embedding_profile_digest`` is the compatibility gate and dimension is not:\ntwo models can produce 768-dimension vectors that mean entirely different\nthings, and an importer that matched on dimension would mix them into one\nindex and return confident nonsense.",
+      "properties": {
+        "chunker_digest": {
+          "title": "Chunker Digest",
+          "type": "string"
+        },
+        "embedding_dimensions": {
+          "title": "Embedding Dimensions",
+          "type": "integer"
+        },
+        "embedding_profile_digest": {
+          "title": "Embedding Profile Digest",
+          "type": "string"
+        },
+        "release_id": {
+          "format": "uuid",
+          "title": "Release Id",
+          "type": "string"
+        },
+        "shards": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CatalogShardRef"
+          },
+          "title": "Shards",
+          "type": "array"
+        }
+      },
+      "required": [
+        "release_id",
+        "chunker_digest",
+        "embedding_profile_digest",
+        "embedding_dimensions"
+      ],
+      "title": "ProjectionRef",
+      "type": "object"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/archive/snapshot-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A consistent, committed catalog of one library at one publication.\n\nThis is the single object whose digest the publication head commits to, so\neverything an importer must agree about before it writes a row is here:\nformat and protocol, identity and sequence, the policy checkpoint in force,\nand the digests of every shard and package in the closure.",
+  "properties": {
+    "catalog_shards": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CatalogShardRef"
+      },
+      "title": "Catalog Shards",
+      "type": "array"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
+    "format_name": {
+      "default": "lab-assistant-library",
+      "title": "Format Name",
+      "type": "string"
+    },
+    "format_version": {
+      "default": "1.0",
+      "title": "Format Version",
+      "type": "string"
+    },
+    "key_identifier": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Key Identifier"
+    },
+    "library_id": {
+      "format": "uuid",
+      "title": "Library Id",
+      "type": "string"
+    },
+    "minimum_reader_protocol": {
+      "default": "1.0",
+      "title": "Minimum Reader Protocol",
+      "type": "string"
+    },
+    "missing_optional_artifacts": {
+      "default": [],
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Missing Optional Artifacts",
+      "type": "array"
+    },
+    "origin_installation_id": {
+      "format": "uuid",
+      "title": "Origin Installation Id",
+      "type": "string"
+    },
+    "package_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PackageRef"
+      },
+      "title": "Package Refs",
+      "type": "array"
+    },
+    "parent_snapshot_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Snapshot Id"
+    },
+    "policy_artifact_digest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Policy Artifact Digest"
+    },
+    "policy_sequence": {
+      "default": 0,
+      "title": "Policy Sequence",
+      "type": "integer"
+    },
+    "producer_app_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Producer App Version"
+    },
+    "projection_refs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ProjectionRef"
+      },
+      "title": "Projection Refs",
+      "type": "array"
+    },
+    "provenance_checkpoint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provenance Checkpoint"
+    },
+    "publication_sequence": {
+      "title": "Publication Sequence",
+      "type": "integer"
+    },
+    "required_features": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Features",
+      "type": "array"
+    },
+    "required_object_inventory_digest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Required Object Inventory Digest"
+    },
+    "scientific_release_ids": {
+      "default": [],
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Scientific Release Ids",
+      "type": "array"
+    },
+    "selected_alias_targets": {
+      "additionalProperties": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Selected Alias Targets",
+      "type": "object"
+    },
+    "signature": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Signature"
+    },
+    "snapshot_id": {
+      "format": "uuid",
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "source_workspace_id": {
+      "format": "uuid",
+      "title": "Source Workspace Id",
+      "type": "string"
+    },
+    "writer_epoch": {
+      "title": "Writer Epoch",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "library_id",
+    "source_workspace_id",
+    "snapshot_id",
+    "origin_installation_id",
+    "writer_epoch",
+    "publication_sequence"
+  ],
+  "title": "SnapshotManifest",
+  "type": "object",
+  "x-semantic-version": "1.0.0-draft"
+}

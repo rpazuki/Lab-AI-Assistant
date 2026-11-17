@@ -271,21 +271,23 @@ class StorageInventoryService:
     async def _check_payload(self, record, payload_check: PayloadCheck) -> Finding | None:
         store = self._context.object_store
         try:
-            if payload_check is PayloadCheck.DIGEST:
-                if not await store.verify(record.id):
-                    return Finding(
-                        kind=FindingKind.CORRUPT_PAYLOAD,
-                        detail=(
-                            f"stored bytes for {record.object_class} do not match "
-                            f"{record.sha256[:12]}…"
-                        ),
-                        object_id=record.id,
-                    )
-                return None
+            # Existence before integrity, always. ``verify`` answers False for an
+            # object that is absent and for one whose bytes are wrong, and those
+            # are different repairs: one is a restore, the other is a corruption
+            # to investigate. Asking the cheaper question first keeps them apart.
             if await store.head(record.id) is None:
                 return Finding(
                     kind=FindingKind.MISSING_PAYLOAD,
                     detail=f"{record.object_class} {record.storage_key} is not in the store",
+                    object_id=record.id,
+                )
+            if payload_check is PayloadCheck.DIGEST and not await store.verify(record.id):
+                return Finding(
+                    kind=FindingKind.CORRUPT_PAYLOAD,
+                    detail=(
+                        f"stored bytes for {record.object_class} do not match "
+                        f"{record.sha256[:12]}…"
+                    ),
                     object_id=record.id,
                 )
         except LabAssistantError as exc:

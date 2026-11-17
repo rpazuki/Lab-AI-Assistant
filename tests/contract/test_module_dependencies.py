@@ -27,6 +27,12 @@ ALLOWED: dict[str, frozenset[str]] = {
     "provenance": frozenset({"contracts", "domain"}),
     "evaluation": frozenset({"contracts", "domain", "application", "policy", "provenance"}),
     "application": frozenset({"contracts", "domain", "policy", "provenance", "config"}),
+    # Reproducible corpora. They drive the ordinary services, so they may reach
+    # the application and the testing harness — and nothing may reach them, which
+    # is what keeps a fixture from becoming a dependency of the thing it tests.
+    "fixtures": frozenset(
+        {"contracts", "domain", "policy", "provenance", "application", "config", "testing"}
+    ),
     "adapters": frozenset(
         {"contracts", "domain", "policy", "provenance", "application", "config"}
     ),
@@ -187,6 +193,22 @@ def test_external_connector_calls_go_through_the_rate_limiter(layer: str, path: 
         "Pass the call to RateLimiter.request(...) or RateLimiter.throttle(...) so it "
         "spends the shared budget (ADR-0018)."
     )
+
+
+def test_nothing_imports_the_fixtures() -> None:
+    """A fixture that production code imports is no longer a fixture.
+
+    It becomes a dependency of the thing it was written to test, and the test
+    stops being able to fail independently of it.
+    """
+    offenders: list[str] = []
+    for layer, path in _modules():
+        if layer == "fixtures":
+            continue
+        for module in _imports(path):
+            if module.startswith("lab_assistant.fixtures"):
+                offenders.append(f"{path.relative_to(PACKAGE_ROOT)} imports {module}")
+    assert not offenders, offenders
 
 
 def test_the_bypass_guard_actually_catches_a_bypass(tmp_path: Path) -> None:

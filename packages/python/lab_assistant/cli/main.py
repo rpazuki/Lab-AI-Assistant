@@ -367,6 +367,11 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
       different next moves, and reporting them as one loses the distinction;
     - a stored manifest can disagree with the digest the release records, or be
       unparseable, which is itself the finding rather than a traceback;
+    - a release can have every byte it needs and no search projection, which
+      makes it unservable for a different reason;
+    - a manifest can name claim revisions or a scope version the database no
+      longer holds, which is a release that cannot answer however intact its
+      bytes are;
     - an alias can point at a release that is not servable.
 
     Everything pages with a keyset cursor. The previous implementation read a
@@ -381,7 +386,8 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
     from lab_assistant.contracts.release import ReleaseManifest
 
     problems: list[str] = []
-    releases_checked = manifests_checked = aliases_checked = 0
+    releases_checked = manifests_checked = aliases_checked = projections_checked = 0
+    claims_checked = claims_missing = 0
 
     chain_ok, chain_problems = await _verify_audit(container, workspace_id)
     problems.extend(f"audit: {problem}" for problem in chain_problems)
@@ -417,13 +423,43 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
                 problems.append(f"release {release.id}: manifest does not parse ({exc})")
                 continue
             manifests_checked += 1
+            # A servable release that declared a projection and has none cannot
+            # answer a question. The bytes can all be present and the release
+            # still be unservable, so this is its own check.
+            if release.projection_ready_profiles and context.search_index is not None:
+                chunks = await context.search_index.count_chunks(workspace_id, release.id)
+                if chunks == 0:
+                    problems.append(
+                        f"release {release.id}: declares projections for "
+                        f"{', '.join(release.projection_ready_profiles)} and has no chunks"
+                    )
+                else:
+                    projections_checked += 1
             if release.manifest_sha256 and manifest.manifest_sha256 != release.manifest_sha256:
                 problems.append(
                     f"release {release.id}: stored manifest digests to "
                     f"{manifest.manifest_sha256[:12]}…, the release records "
                     f"{release.manifest_sha256[:12]}…"
                 )
+            for scope_version_id in manifest.scope_version_ids:
+                if await uow.configs.get_scope_version(workspace_id, scope_version_id) is None:
+                    problems.append(
+                        f"release {release.id}: scope version {scope_version_id} is absent"
+                    )
+
             for record in manifest.items:
+                # The claim revisions this release serves. A manifest naming a
+                # revision the database no longer has is a release that cannot
+                # answer about that claim, however intact its bytes are.
+                for revision_id in record.claim_revision_ids:
+                    if await uow.claims.get_revision(workspace_id, revision_id) is None:
+                        problems.append(
+                            f"release {release.id}: claim revision {revision_id} "
+                            f"for work {record.work_id} is absent"
+                        )
+                        claims_missing += 1
+                    else:
+                        claims_checked += 1
                 if record.rendition_digest is None:
                     continue
                 stored = await context.object_store.get_by_digest(
@@ -456,6 +492,9 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
                 "audit_chain": "ok" if chain_ok else "failed",
                 "releases_checked": releases_checked,
                 "manifests_checked": manifests_checked,
+                "projections_checked": projections_checked,
+                "claim_revisions_checked": claims_checked,
+                "claim_revisions_missing": claims_missing,
                 "aliases_checked": aliases_checked,
                 "storage": inventory.as_dict(),
                 "advisory": advisory,
