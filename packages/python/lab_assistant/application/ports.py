@@ -40,6 +40,7 @@ from lab_assistant.domain.identity import (
     WorkIdentifier,
     WorkRelation,
 )
+from lab_assistant.domain.objects import ObjectRecord
 from lab_assistant.domain.observation import (
     DiscoveryRun,
     SourceAssertion,
@@ -67,6 +68,8 @@ __all__ = [
     "ConfigRepository",
     "EvaluationRepository",
     "IdFactory",
+    "ObjectRecord",
+    "ObjectRegistryRepository",
     "ObjectStore",
     "ObservationRepository",
     "PolicyRepository",
@@ -84,7 +87,12 @@ __all__ = [
 
 
 class StoredObject(Protocol):
-    """Metadata of an immutable object in content-addressed storage."""
+    """Metadata of an immutable object in content-addressed storage.
+
+    ``key`` is the backend's address for the bytes. It is part of the protocol
+    because the database records it: a restore has to be able to say *where* a
+    missing object was expected, and "somewhere in the store" is not an answer.
+    """
 
     id: UUID
     workspace_id: UUID | None
@@ -93,6 +101,7 @@ class StoredObject(Protocol):
     media_type: str
     object_class: str
     created_at: datetime
+    key: str
 
 
 @runtime_checkable
@@ -128,6 +137,44 @@ class ObjectStore(Protocol):
     async def tombstone(self, object_id: UUID, *, reason: str) -> None:
         """Mark for purge. Never an in-place overwrite."""
         ...
+
+
+@runtime_checkable
+class ObjectRegistryRepository(Protocol):
+    """The database's record of what the object store holds.
+
+    Separate from ``ObjectStore`` on purpose: the store writes bytes, this writes
+    a row, and the row belongs to the caller's transaction beside the asset or
+    rendition that points at it. An adapter that registered on the caller's
+    behalf would have to open its own transaction, and a dependent row would then
+    commit against a registration that could still roll back.
+    """
+
+    async def register(self, record: ObjectRecord) -> None:
+        """Insert if absent. Never an update, so a tombstone cannot be cleared
+        by storing the same bytes again."""
+        ...
+
+    async def get(self, object_id: UUID) -> ObjectRecord | None: ...
+
+    async def get_by_digest(
+        self, workspace_id: UUID | None, sha256: str
+    ) -> ObjectRecord | None: ...
+
+    async def tombstone(self, object_id: UUID, *, reason: str) -> None: ...
+
+    async def list_objects(
+        self,
+        workspace_id: UUID,
+        *,
+        limit: int = 500,
+        after_id: UUID | None = None,
+        object_class: str | None = None,
+    ) -> list[ObjectRecord]:
+        """One keyset page of the registry, for inventory and restore checks."""
+        ...
+
+    async def count_objects(self, workspace_id: UUID) -> int: ...
 
 
 @runtime_checkable
@@ -563,6 +610,7 @@ class UnitOfWork(Protocol):
 
     users: UserRepository
     workspaces: WorkspaceRepository
+    objects: ObjectRegistryRepository
     policies: PolicyRepository
     configs: ConfigRepository
     observations: ObservationRepository

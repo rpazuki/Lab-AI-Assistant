@@ -15,6 +15,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.objects import register_object
 from lab_assistant.application.pagination import collect_pages
 from lab_assistant.application.rate_limit import RateLimiter, budget_key, host_of
 from lab_assistant.contracts.connector import (
@@ -392,6 +393,10 @@ class AcquisitionService:
             )
             if existing is not None:
                 return existing
+            # The registry row before the row that references it: the asset's
+            # object_id is a foreign key, and a database that enforces it
+            # rejects the asset otherwise.
+            await register_object(uow, stored)
             await uow.assets.add_asset(asset)
             await uow.audit.append(
                 context.audit.build(

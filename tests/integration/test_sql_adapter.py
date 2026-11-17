@@ -27,6 +27,7 @@ from lab_assistant.application import build_handler_registry
 from lab_assistant.application.accounts import AccountService
 from lab_assistant.application.chat import ChatService
 from lab_assistant.application.context import ServiceContext
+from lab_assistant.application.objects import register_object
 from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseService
 from lab_assistant.application.tasks import TaskOrchestrator
 from lab_assistant.config import LabEnv, Settings
@@ -41,7 +42,7 @@ from lab_assistant.domain.workspace import Role
 from lab_assistant.policy.engine import PolicyEngine
 from lab_assistant.policy.model_transfer import ModelTransferPolicy
 from lab_assistant.policy.rights import default_open_access_policy
-from lab_assistant.testing import make_actor
+from lab_assistant.testing import make_actor, reset_database
 
 DATABASE_URLS = ["sqlite+aiosqlite:///:memory:"]
 if os.environ.get("LAB_TEST_DATABASE_URL"):
@@ -59,6 +60,7 @@ async def sql_stack(request, tmp_path):
     )
     engine = make_engine(settings)
     await create_schema(engine, dimensions=(64,))
+    await reset_database(engine)
     context = ServiceContext(
         uow_factory=sql_uow_factory(engine),
         object_store=FilesystemObjectStore(settings.object_store_root),
@@ -674,6 +676,7 @@ class TestEndToEndOverSql:
                 identity_verified=True,
                 created_at=datetime.now(tz=UTC),
             )
+            await register_object(uow, asset_object)
             await uow.assets.add_asset(asset)
             await uow.commit()
 
@@ -702,6 +705,7 @@ class TestEndToEndOverSql:
                 status="succeeded",
             )
             await uow.renditions.add_parse_run(parse_run)
+            await register_object(uow, rendition_object)
             await uow.renditions.add_rendition(
                 Rendition(
                     id=context.new_id(),

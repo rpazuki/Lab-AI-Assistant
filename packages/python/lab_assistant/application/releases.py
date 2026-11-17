@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.objects import register_object
 from lab_assistant.application.pagination import collect_pages
 from lab_assistant.contracts.canonical import canonical_json
 from lab_assistant.contracts.errors import (
@@ -165,6 +166,7 @@ class ReleaseService:
                 object_class="release_manifest",
                 media_type="application/json",
             )
+            await register_object(uow, stored)
             release.release_manifest_object_id = stored.id
             release.manifest_sha256 = manifest.manifest_sha256
 
@@ -356,12 +358,16 @@ class ReleaseService:
             release.status = ReleaseState.APPROVED if report.passed else ReleaseState.REJECTED
             release.version += 1
             await uow.releases.update(release)
-            await context.object_store.put(
+            # No column points at the validation report, so without this row
+            # the object is unreachable from SQL and a restore check cannot
+            # tell a missing report from one that was never written.
+            report_object = await context.object_store.put(
                 canonical_json(report.model_dump(mode="json")),
                 workspace_id=actor.workspace_id,
                 object_class="release_validation_report",
                 media_type="application/json",
             )
+            await register_object(uow, report_object)
             await uow.audit.append(
                 context.audit.build(
                     workspace_id=actor.workspace_id,

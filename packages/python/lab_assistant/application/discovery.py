@@ -23,6 +23,7 @@ from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.objects import register_object
 from lab_assistant.application.rate_limit import RateLimiter, budget_key, host_of
 from lab_assistant.contracts.connector import (
     BodyKind,
@@ -572,6 +573,9 @@ class DiscoveryHandler:
                 record_count=len(parsed),
                 outcome=SourceOutcome.SUCCEEDED,
             )
+            await register_object(uow, stored)
+            if upstream_stored is not None:
+                await register_object(uow, upstream_stored)
             await uow.observations.add_request(source_request)
 
             assertions: list[SourceAssertion] = []
@@ -596,6 +600,7 @@ class DiscoveryHandler:
                     observed_at=response.completed_at,
                     parse_status="failed" if record.canonical.get("_parse_error") else "parsed",
                 )
+                await register_object(uow, canonical_object)
                 await uow.observations.add_observation(observation)
                 for predicate, value, authority in record.assertions:
                     assertions.append(

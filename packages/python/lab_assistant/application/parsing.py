@@ -15,6 +15,7 @@ from uuid import UUID
 
 from lab_assistant.application.acquisition import parse_readiness
 from lab_assistant.application.context import ServiceContext
+from lab_assistant.application.objects import register_object
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
 from lab_assistant.contracts.errors import ErrorClass, NotFound, PolicyDenied
 from lab_assistant.contracts.events import ActorType, AuditAction
@@ -203,6 +204,7 @@ class ParsingHandler:
 
         async with context.uow_factory() as uow:
             await uow.renditions.update_parse_run(run)
+            await register_object(uow, stored)
             await uow.renditions.add_rendition(rendition)
             await uow.audit.append(
                 context.audit.build(

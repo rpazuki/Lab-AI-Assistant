@@ -7,6 +7,7 @@ the codebase builds a connection string.
 
 from __future__ import annotations
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from lab_assistant.adapters.db.repositories import sql_uow_factory
@@ -25,7 +26,7 @@ def make_engine(settings: Settings) -> AsyncEngine:
     connection indefinitely.
     """
     if settings.database_url.startswith("sqlite"):
-        return create_async_engine(settings.database_url, future=True)
+        return _with_foreign_keys(create_async_engine(settings.database_url, future=True))
     return create_async_engine(
         settings.database_url,
         pool_pre_ping=True,
@@ -37,6 +38,25 @@ def make_engine(settings: Settings) -> AsyncEngine:
             }
         },
     )
+
+
+def _with_foreign_keys(engine: AsyncEngine) -> AsyncEngine:
+    """Turn on SQLite's foreign keys, which are off by default.
+
+    PostgreSQL enforces every ``ForeignKey`` in ``tables.py``; SQLite ignores all
+    of them unless asked. The offline suite therefore ran for months against a
+    database that accepted an asset whose ``object_id`` named a row that did not
+    exist, and the gap only appeared on PostgreSQL. A test database that enforces
+    less than production is a test database that proves less than it claims.
+    """
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable(dbapi_connection, _record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    return engine
 
 
 def create_engine_and_factory(settings: Settings):

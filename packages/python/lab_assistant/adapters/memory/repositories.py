@@ -32,6 +32,7 @@ from lab_assistant.domain.assets import (
 from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback
 from lab_assistant.domain.claims import Claim, ClaimRevision, Entity, Experiment, Review
 from lab_assistant.domain.identity import IdentityDecision, Work, WorkIdentifier, WorkRelation
+from lab_assistant.domain.objects import ObjectRecord
 from lab_assistant.domain.observation import (
     DiscoveryRun,
     SourceAssertion,
@@ -70,6 +71,7 @@ class MemoryDatabase:
     invitations: dict[UUID, Invitation] = field(default_factory=dict)
     grants: dict[UUID, GrantSpec] = field(default_factory=dict)
     rights_decisions: dict[UUID, RightsDecision] = field(default_factory=dict)
+    objects: dict[UUID, ObjectRecord] = field(default_factory=dict)
     scope_versions: dict[UUID, ScopeVersion] = field(default_factory=dict)
     config_versions: dict[UUID, ConfigVersion] = field(default_factory=dict)
     discovery_runs: dict[UUID, DiscoveryRun] = field(default_factory=dict)
@@ -316,6 +318,63 @@ class _Configs:
             if config.workspace_id == workspace_id and (kind is None or config.kind.value == kind)
         ]
         return sorted(configs, key=lambda c: (c.logical_id, c.semantic_version))
+
+
+class _Objects:
+    """The in-memory object registry.
+
+    ``register`` refuses to overwrite, exactly as the SQL adapter does, so a test
+    cannot pass because this store quietly let a tombstone be cleared.
+    """
+
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def register(self, record: ObjectRecord) -> None:
+        if record.id in self._db.objects:
+            return
+        self._db.objects[record.id] = record
+
+    async def get(self, object_id: UUID) -> ObjectRecord | None:
+        return self._db.objects.get(object_id)
+
+    async def get_by_digest(self, workspace_id: UUID | None, sha256: str) -> ObjectRecord | None:
+        for record in self._db.objects.values():
+            if record.workspace_id == workspace_id and record.sha256 == sha256:
+                return record
+        return None
+
+    async def tombstone(self, object_id: UUID, *, reason: str) -> None:
+        record = self._db.objects.get(object_id)
+        if record is None:
+            return
+        self._db.objects[object_id] = record.model_copy(
+            update={"tombstoned": True, "tombstone_reason": reason}
+        )
+
+    async def list_objects(
+        self,
+        workspace_id: UUID,
+        *,
+        limit: int = 500,
+        after_id: UUID | None = None,
+        object_class: str | None = None,
+    ) -> list[ObjectRecord]:
+        rows = [
+            record
+            for record in self._db.objects.values()
+            if record.workspace_id == workspace_id
+            and (object_class is None or record.object_class == object_class)
+        ]
+        rows.sort(key=lambda record: record.id)
+        if after_id is not None:
+            rows = [record for record in rows if record.id > after_id]
+        return rows[:limit]
+
+    async def count_objects(self, workspace_id: UUID) -> int:
+        return sum(
+            1 for record in self._db.objects.values() if record.workspace_id == workspace_id
+        )
 
 
 class _Observations:
@@ -1129,6 +1188,7 @@ class MemoryUnitOfWork:
         self._db = db
         self.users = _Users(db)
         self.workspaces = _Workspaces(db)
+        self.objects = _Objects(db)
         self.policies = _Policies(db)
         self.configs = _Configs(db)
         self.observations = _Observations(db)

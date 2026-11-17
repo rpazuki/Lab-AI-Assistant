@@ -20,6 +20,7 @@ from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.objects import register_object
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
 from lab_assistant.contracts.errors import NotFound, PolicyDenied
 from lab_assistant.contracts.events import ActorType, AuditAction
@@ -430,6 +431,7 @@ class ExportService:
             media_type="application/zip",
         )
         async with context.uow_factory() as uow:
+            await register_object(uow, stored)
             await uow.audit.append(
                 context.audit.build(
                     workspace_id=actor.workspace_id,

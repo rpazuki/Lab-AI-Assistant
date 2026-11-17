@@ -34,6 +34,7 @@ from lab_assistant.domain.assets import (
 from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback
 from lab_assistant.domain.claims import Claim, ClaimRevision, Entity, Experiment, Review
 from lab_assistant.domain.identity import IdentityDecision, Work, WorkIdentifier, WorkRelation
+from lab_assistant.domain.objects import ObjectRecord
 from lab_assistant.domain.observation import (
     DiscoveryRun,
     SourceAssertion,
@@ -95,6 +96,7 @@ RUNS = Mapper(
     renames={"metrics": "metrics"},
     loaders={"connector_states": lambda rows: tuple(rows or ())},
 )
+OBJECTS = Mapper(t.objects, ObjectRecord)
 REQUESTS = Mapper(t.source_requests, SourceRequest)
 OBSERVATIONS = Mapper(t.source_observations, SourceObservation)
 ASSERTIONS = Mapper(t.source_assertions, SourceAssertion)
@@ -450,6 +452,62 @@ class _Configs(_Base):
         return await self._many(
             CONFIGS, *conditions, order=t.config_versions.c.logical_id
         )
+
+
+class _Objects(_Base):
+    """The ``objects`` registry: one row per stored payload.
+
+    ``register`` inserts and never updates. Storing the same bytes twice is a
+    no-op in the object store, and it has to be a no-op here too, or a repeat of
+    an ordinary write would clear a tombstone — the resurrection the audit found
+    in the S3 adapter's unconditional record write, reproduced in SQL.
+    """
+
+    async def register(self, record: ObjectRecord) -> None:
+        existing = await self._c.execute(select(t.objects.c.id).where(t.objects.c.id == record.id))
+        if existing.first() is not None:
+            return
+        row, _keys = OBJECTS.upsert_values(record)
+        await self._c.execute(insert(t.objects).values(**row))
+
+    async def get(self, object_id: UUID) -> ObjectRecord | None:
+        return await self._one(OBJECTS, t.objects.c.id == object_id)
+
+    async def get_by_digest(self, workspace_id: UUID | None, sha256: str) -> ObjectRecord | None:
+        scope = (
+            t.objects.c.workspace_id.is_(None)
+            if workspace_id is None
+            else t.objects.c.workspace_id == workspace_id
+        )
+        return await self._one(OBJECTS, scope, t.objects.c.sha256 == sha256)
+
+    async def tombstone(self, object_id: UUID, *, reason: str) -> None:
+        await self._c.execute(
+            update(t.objects)
+            .where(t.objects.c.id == object_id)
+            .values(tombstoned=True, tombstone_reason=reason)
+        )
+
+    async def list_objects(
+        self,
+        workspace_id: UUID,
+        *,
+        limit: int = 500,
+        after_id: UUID | None = None,
+        object_class: str | None = None,
+    ) -> list[ObjectRecord]:
+        conditions = [self._scope(OBJECTS, workspace_id)]
+        if after_id is not None:
+            conditions.append(t.objects.c.id > after_id)
+        if object_class is not None:
+            conditions.append(t.objects.c.object_class == object_class)
+        return await self._many(OBJECTS, *conditions, order=t.objects.c.id, limit=limit)
+
+    async def count_objects(self, workspace_id: UUID) -> int:
+        result = await self._c.execute(
+            select(func.count()).select_from(t.objects).where(self._scope(OBJECTS, workspace_id))
+        )
+        return int(result.scalar_one())
 
 
 class _Observations(_Base):
@@ -1391,6 +1449,7 @@ class SqlUnitOfWork:
         connection = self._connection
         self.users = _Users(connection)
         self.workspaces = _Workspaces(connection)
+        self.objects = _Objects(connection)
         self.policies = _Policies(connection)
         self.configs = _Configs(connection)
         self.observations = _Observations(connection)
