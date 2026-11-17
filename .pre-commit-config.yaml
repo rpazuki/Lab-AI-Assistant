@@ -1,7 +1,10 @@
 # Fast local gates. CI runs the same checks plus the full suite.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    # Must match the pinned ruff in packages/python/pyproject.toml. At v0.8.4 the
+    # hook reformatted files the CI gate had just accepted, so the two fought and
+    # the loser was whoever committed last.
+    rev: v0.16.2
     hooks:
       - id: ruff
         args: [--fix]
