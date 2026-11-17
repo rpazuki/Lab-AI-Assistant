@@ -63,6 +63,7 @@ _SECRET_KEYS = frozenset(
         "llm_api_key",
         "object_store_secret_key",
         "object_store_access_key",
+        "object_store_session_token",
         "ncbi_api_key",
         "unpaywall_email",
         "smtp_password",
@@ -124,6 +125,18 @@ class Settings(BaseSettings):
     object_store_region: str | None = None
     object_store_access_key: str | None = None
     object_store_secret_key: str | None = None
+    #: Temporary credentials. Leaving all three unset selects the SDK credential
+    #: chain, which is how a deployment gets a role whose session refreshes
+    #: inside a job longer than the session's lifetime (ADR-0023).
+    object_store_session_token: str | None = None
+    object_store_profile: str | None = None
+    #: Shared-bucket isolation. Prepended to every key and never stored on a
+    #: record, so the database stays portable across buckets and prefixes.
+    #: Changing it on a populated bucket is a migration, not a setting change.
+    object_store_prefix: str = ""
+    #: Off only for an endpoint that rejects preconditions, which reopens the
+    #: write race conditional creates close.
+    object_store_conditional_writes: bool = True
 
     # ── auth ────────────────────────────────────────────────────────────────
     secret_key: str = "development-only-not-for-production"

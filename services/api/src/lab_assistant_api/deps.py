@@ -79,9 +79,12 @@ def build_container(settings: Settings) -> ApiContainer:
     if settings.object_store_kind == "s3":
         from lab_assistant.adapters.object_store.s3 import S3ObjectStore, S3StoreConfig
 
-        # Refuses to construct when bucket, endpoint, region, or credentials are
-        # missing: better at startup than during an acquisition run at 2am.
+        # Refuses to construct when the bucket, the region, or any resolvable
+        # credential is missing: better at startup than during an acquisition
+        # run at 2am. Credentials may come from the SDK chain rather than
+        # settings, so a role-based deployment configures no keys at all.
         object_store = S3ObjectStore(S3StoreConfig.from_settings(settings))
+        shutdown.append(object_store.aclose)
     elif settings.object_store_kind == "filesystem":
         object_store = FilesystemObjectStore(settings.object_store_root)
     else:

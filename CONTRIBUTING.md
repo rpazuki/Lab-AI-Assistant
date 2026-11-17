@@ -31,6 +31,8 @@ pre-commit install
 .venv/bin/pytest -q                                  # everything, offline
 .venv/bin/pytest -q tests/policy                     # isolation only
 LAB_TEST_DATABASE_URL=postgresql+asyncpg://... .venv/bin/pytest -q tests/integration
+LAB_TEST_S3_BUCKET=scratch LAB_TEST_S3_ACCESS_KEY=... LAB_TEST_S3_SECRET_KEY=... \
+  .venv/bin/pytest -q tests/integration/test_s3_live_endpoint.py   # a real bucket
 cd apps/web && npm test -- --run
 ```
 

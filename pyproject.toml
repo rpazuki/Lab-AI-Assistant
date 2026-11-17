@@ -54,6 +54,7 @@ addopts = "-q --strict-markers"
 markers = [
   "postgres: requires a live PostgreSQL 16 + pgvector instance (LAB_TEST_DATABASE_URL)",
   "live_source: opt-in network test against a real scholarly source (LAB_LIVE_SOURCE_TESTS=1)",
+  "object_store: opt-in test against a real S3-compatible endpoint (LAB_TEST_S3_BUCKET)",
   "slow: long-running test excluded from the pull-request pipeline",
 ]
 filterwarnings = ["error::DeprecationWarning:lab_assistant.*"]

@@ -213,6 +213,15 @@ The vocabulary is precise, and these pages are the definitions:
 - [Export package](data-contracts/export-package.md) — what leaves, and with what provenance
 - [State and error taxonomy](data-contracts/state-and-error-taxonomy.md) — every state and failure, and what each means
 
+### Shared archive and portable installations (proposal)
+
+The [shared archive architecture](plans/shared-archive-architecture.md) evaluates remote
+S3/GCS storage, publisher/workhorse and independent reader installations. The
+[code audit](plans/shared-archive-code-audit.md) records current implementation gaps and
+local verification; the [implementation handoff](plans/shared-archive-implementation-plan.md)
+contains phased delivery, migration procedures and scenario tests for the next session.
+These are proposals, not deployed capabilities.
+
 ### Decisions
 
 [Architecture decision records](architecture/adr/README.md) — one page per durable

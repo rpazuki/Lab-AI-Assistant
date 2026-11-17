@@ -1,9 +1,21 @@
-Status: accepted
+Status: superseded
 Owner: technical owner + operator
-Last verified: 2026-08-13
+Last verified: 2026-11-17
 Applies to: the data plane
 
 # ADR-0017: S3-compatible object storage, signed without an SDK
+
+> Superseded by [ADR-0023](0023-object-storage-sdk.md), which replaces the
+> hand-written signer with the maintained SDK. The key convention, the two key
+> spaces, digest-verified reads, validation at construction and presigned GETs
+> below are carried forward unchanged; the transport, the signing and the
+> `objectstore` extra are not. The revisit trigger at the foot of this page is
+> what fired. Note that the claim of "adapter contract tests against a stubbed
+> transport" was not true of the checkout: those tests were written with
+> ADR-0023.
+>
+> [ADR-0022](0022-single-vm-filesystem-storage.md) amends the production storage
+> policy here and remains in force.
 
 ## Context
 

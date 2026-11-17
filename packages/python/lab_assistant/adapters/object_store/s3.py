@@ -1,19 +1,34 @@
-"""S3-compatible object storage.
+"""S3-compatible object storage, over the maintained AWS SDK.
 
 Same contract as the filesystem store, same key convention::
 
     sha256/ab/cd/<full-digest>        immutable content
     records/<object-id>.json         one metadata record per (workspace, digest)
 
-Content objects are written once and never overwritten: ``put`` checks for the key
-first, and there is no code path that rewrites bytes under an existing key. The
-metadata record beside it *is* mutable, because a tombstone has to be recordable
-without touching content — the distinction is deliberate and is why they are
-separate keys.
+A configured prefix is prepended to both when the bucket is shared, and it is
+*not* part of the stored key: ``StoredObjectRecord.key`` stays logical, so the
+database survives a move to another bucket, prefix or provider. A bucket name is
+an address, not an identity (ADR-0023).
 
-Requests are signed with SigV4 using the standard library's ``hmac`` and
-``hashlib`` over ``httpx``, so this adapter adds no dependency and stays async.
-Any S3-compatible endpoint works: AWS, MinIO, Ceph, or an institutional gateway.
+This replaces a hand-written SigV4 signer. That signer had four independent
+defects — an unsigned query parameter appended after signing, a host header
+without the port, no endpoint path prefix, and static keys only — and none of
+them could be found without a real provider, because the stubbed-transport tests
+ADR-0017 described were never written. The SDK brings the credential chain and
+its refresh, which long acquisition runs under temporary credentials need.
+
+Three behaviours here are load-bearing:
+
+- **Missing is not denied.** A 404 means the object is absent; a 403 means
+  storage answered and refused. Conflating them let a reader with wrong bucket
+  permissions conclude the evidence was gone and acquire it again, paying a
+  source a second time for bytes that were already there.
+- **Writes are conditional.** Content is created with ``If-None-Match: *``, and
+  a record update carries ``If-Match`` on the version it read. A stale writer
+  cannot resurrect a tombstoned record by writing over it.
+- **Digest verified on read.** A provider ETag is a concurrency token, not a
+  content hash: it is not the SHA-256 for a multipart upload and it is not the
+  SHA-256 under server-side encryption. The application hash is checked itself.
 
 Nothing here decides *whether* bytes may be stored. That is the rights policy's
 job, evaluated long before an object reaches a store.
@@ -21,54 +36,119 @@ job, evaluated long before an object reaches a store.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
+import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
-from urllib.parse import quote
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
-import httpx
-
-from lab_assistant.adapters.object_store.filesystem import StoredObjectRecord, _key_for, _object_id
+from lab_assistant.adapters.object_store.filesystem import (
+    StoredObjectRecord,
+    _key_for,
+    _object_id,
+)
 from lab_assistant.contracts.canonical import sha256_bytes
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 
 __all__ = ["S3ObjectStore", "S3StoreConfig"]
 
-_UNSIGNED = "UNSIGNED-PAYLOAD"
-_ALGORITHM = "AWS4-HMAC-SHA256"
+#: Provider error codes, by what the caller must do about them. A code absent
+#: from every set falls back to the HTTP status, and an unrecognised status is a
+#: provider error rather than a silent success.
+_DENIED_CODES = frozenset(
+    {
+        "AccessDenied",
+        "AccessDeniedException",
+        "AccountProblem",
+        "AllAccessDisabled",
+        "ExpiredToken",
+        "ExpiredTokenException",
+        "InvalidAccessKeyId",
+        "InvalidToken",
+        "RequestTimeTooSkewed",
+        "SignatureDoesNotMatch",
+        "UnauthorizedAccess",
+    }
+)
+_MISSING_CODES = frozenset({"404", "NoSuchBucket", "NoSuchKey", "NotFound"})
+_CONFLICT_CODES = frozenset(
+    {"ConditionalRequestConflict", "OperationAborted", "PreconditionFailed"}
+)
+#: The object is in a cold storage class. It exists, it is not readable yet, and
+#: the only correct response is to wait for the restore — never to report it
+#: missing and never to re-run the analysis that produced it.
+_RESTORE_CODES = frozenset({"InvalidObjectState"})
+_THROTTLE_CODES = frozenset(
+    {"RequestLimitExceeded", "SlowDown", "Throttling", "ThrottlingException", "TooManyRequests"}
+)
+#: Conditional writes are unsupported by some S3-compatible gateways, which say
+#: so with one of these rather than by honouring the header.
+_UNSUPPORTED_CODES = frozenset({"MethodNotAllowed", "NotImplemented", "UnsupportedArgument"})
+
+
+class ConditionalWritesUnsupported(LabAssistantError):
+    """The endpoint does not implement the precondition this write needs."""
+
+    error_class = ErrorClass.PROVIDER_REFUSAL
 
 
 class S3StoreConfig:
-    """Endpoint, bucket, region, and credentials, validated at construction.
+    """Bucket, region, addressing and credentials, validated at construction.
 
-    A store that is missing its bucket cannot work, so it refuses to exist rather
-    than failing on the first upload — which would be during an acquisition run,
-    hours after the deploy that broke it.
+    A store that cannot work refuses to exist rather than failing on the first
+    upload — which would be during an acquisition run, hours after the deploy
+    that broke it (ADR-0017, kept).
+
+    Credentials are optional *here* but not absent: leaving them unset selects
+    the SDK's ordinary chain — environment, shared config, container and
+    instance roles, web identity — which is how a deployment gets short-lived
+    credentials that refresh inside a long job. Construction still refuses when
+    the chain resolves to nothing, so "no credentials anywhere" remains a
+    startup failure rather than a runtime one.
     """
 
-    __slots__ = ("access_key", "bucket", "endpoint", "path_style", "region", "secret_key")
+    __slots__ = (
+        "access_key",
+        "bucket",
+        "conditional_writes",
+        "connect_timeout",
+        "endpoint",
+        "max_attempts",
+        "max_pool_connections",
+        "path_style",
+        "prefix",
+        "profile",
+        "read_timeout",
+        "region",
+        "secret_key",
+        "session_token",
+    )
 
     def __init__(
         self,
         *,
         bucket: str | None,
-        endpoint: str | None,
         region: str | None,
-        access_key: str | None,
-        secret_key: str | None,
+        endpoint: str | None = None,
+        access_key: str | None = None,
+        secret_key: str | None = None,
+        session_token: str | None = None,
+        profile: str | None = None,
+        prefix: str = "",
         path_style: bool = True,
+        conditional_writes: bool = True,
+        connect_timeout: float = 10.0,
+        read_timeout: float = 60.0,
+        max_attempts: int = 5,
+        max_pool_connections: int = 16,
     ) -> None:
         missing = [
             name
             for name, value in (
                 ("LAB_OBJECT_STORE_BUCKET", bucket),
-                ("LAB_OBJECT_STORE_ENDPOINT", endpoint),
                 ("LAB_OBJECT_STORE_REGION", region),
-                ("LAB_OBJECT_STORE_ACCESS_KEY", access_key),
-                ("LAB_OBJECT_STORE_SECRET_KEY", secret_key),
             )
             if not value
         ]
@@ -77,42 +157,212 @@ class S3StoreConfig:
                 "S3 object store is selected but not configured",
                 context={"missing": missing},
             ).with_class(ErrorClass.INVALID_CONTENT)
-        assert bucket and endpoint and region and access_key and secret_key  # for type narrowing
+        if bool(access_key) != bool(secret_key):
+            # Half a pair would otherwise fall through to the credential chain
+            # and succeed with somebody else's identity.
+            absent = "LAB_OBJECT_STORE_SECRET_KEY" if access_key else "LAB_OBJECT_STORE_ACCESS_KEY"
+            raise LabAssistantError(
+                "S3 object store has half a static credential; supply both keys or "
+                "neither and let the credential chain resolve it",
+                context={"missing": [absent]},
+            ).with_class(ErrorClass.INVALID_CONTENT)
+        assert bucket and region  # for type narrowing
         self.bucket = bucket
-        self.endpoint = endpoint.rstrip("/")
         self.region = region
+        self.endpoint = endpoint.rstrip("/") if endpoint else None
         self.access_key = access_key
         self.secret_key = secret_key
+        self.session_token = session_token
+        self.profile = profile
+        #: Shared-bucket isolation. Normalised to end in "/" so a key is simply
+        #: appended, and never stored on a record: see the module docstring.
+        self.prefix = f"{prefix.strip('/')}/" if prefix.strip("/") else ""
         #: Path style (``endpoint/bucket/key``) works on every S3-compatible
         #: implementation; virtual-host style does not.
         self.path_style = path_style
+        #: Turn off only for an endpoint that rejects preconditions. Doing so
+        #: reopens the write race this adapter exists to close, so it is a
+        #: deliberate, logged choice rather than a silent fallback.
+        self.conditional_writes = conditional_writes
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        self.max_attempts = max_attempts
+        self.max_pool_connections = max_pool_connections
 
     @classmethod
-    def from_settings(cls, settings) -> S3StoreConfig:
+    def from_settings(cls, settings: Any) -> S3StoreConfig:
         return cls(
             bucket=settings.object_store_bucket,
-            endpoint=settings.object_store_endpoint,
             region=settings.object_store_region,
+            endpoint=settings.object_store_endpoint,
             access_key=settings.object_store_access_key,
             secret_key=settings.object_store_secret_key,
+            session_token=getattr(settings, "object_store_session_token", None),
+            profile=getattr(settings, "object_store_profile", None),
+            prefix=getattr(settings, "object_store_prefix", "") or "",
+            conditional_writes=getattr(settings, "object_store_conditional_writes", True),
+        )
+
+    def build_client(self) -> Any:
+        """Construct the SDK client, refusing when no credential resolves."""
+        import boto3
+        from botocore.config import Config
+
+        session = boto3.session.Session(
+            aws_access_key_id=self.access_key,
+            aws_secret_access_key=self.secret_key,
+            aws_session_token=self.session_token,
+            region_name=self.region,
+            profile_name=self.profile,
+        )
+        if session.get_credentials() is None:
+            raise LabAssistantError(
+                "S3 object store found no credentials: set LAB_OBJECT_STORE_ACCESS_KEY "
+                "and LAB_OBJECT_STORE_SECRET_KEY, or give the deployment a role the "
+                "SDK credential chain can resolve",
+                context={"region": self.region, "bucket": self.bucket},
+            ).with_class(ErrorClass.AUTHENTICATION_REQUIRED)
+        return session.client(
+            "s3",
+            endpoint_url=self.endpoint,
+            config=Config(
+                s3={"addressing_style": "path" if self.path_style else "virtual"},
+                retries={"max_attempts": self.max_attempts, "mode": "standard"},
+                connect_timeout=self.connect_timeout,
+                read_timeout=self.read_timeout,
+                max_pool_connections=self.max_pool_connections,
+            ),
         )
 
 
+def _translate(exc: Exception, *, operation: str, key: str | None) -> LabAssistantError:
+    """Map one provider failure onto the taxonomy, deliberately.
+
+    The default is ``PROVIDER_ERROR`` — retryable — rather than anything that
+    reads as an answer about the object. An unrecognised failure is a failure,
+    not an absence.
+    """
+    from botocore.exceptions import (
+        ClientError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        EndpointConnectionError,
+        NoCredentialsError,
+        ReadTimeoutError,
+    )
+
+    context: dict[str, Any] = {"operation": operation}
+    if key is not None:
+        context["key"] = key
+
+    if isinstance(exc, (ConnectTimeoutError, ReadTimeoutError)):
+        return LabAssistantError(
+            f"timeout contacting the object store during {operation}", context=context
+        ).with_class(ErrorClass.TIMEOUT)
+    if isinstance(exc, (ConnectionClosedError, EndpointConnectionError)):
+        return LabAssistantError(
+            f"cannot reach the object store endpoint during {operation}", context=context
+        ).with_class(ErrorClass.SOURCE_UNAVAILABLE)
+    if isinstance(exc, NoCredentialsError):
+        return LabAssistantError(
+            "the object store credential chain resolved to nothing", context=context
+        ).with_class(ErrorClass.AUTHENTICATION_REQUIRED)
+    if not isinstance(exc, ClientError):
+        return LabAssistantError(
+            f"object store {operation} failed: {exc}", context=context
+        ).with_class(ErrorClass.PROVIDER_ERROR)
+
+    error = exc.response.get("Error", {})
+    code = str(error.get("Code", ""))
+    status = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) or 0)
+    context |= {"code": code, "status": status}
+
+    # The code is read before the status, because the two disagree. A GET on an
+    # object in a cold class answers `InvalidObjectState` with HTTP 403, and a
+    # status-first reading turns "this is being restored, wait" into "you are
+    # not allowed to see this" — which is the same class of conflation as
+    # treating a denial as an absence, one layer further in.
+    if code:
+        if code in _MISSING_CODES:
+            return LabAssistantError(
+                f"object store has no {key or 'object'}", context=context
+            ).with_class(ErrorClass.NOT_FOUND)
+        if code in _RESTORE_CODES:
+            return LabAssistantError(
+                f"object is in a cold storage class and is being restored: {key}",
+                context=context,
+            ).with_class(ErrorClass.STORAGE_RESTORE_PENDING)
+        if code in _DENIED_CODES:
+            # Never NOT_FOUND. A denial that reads as an absence sends the
+            # caller back to the source for bytes sitting in the bucket.
+            return LabAssistantError(
+                f"object store denied {operation}", context=context
+            ).with_class(ErrorClass.STORAGE_DENIED)
+        if code in _UNSUPPORTED_CODES:
+            return ConditionalWritesUnsupported(
+                f"object store endpoint does not support {operation} as issued", context=context
+            )
+        if code in _CONFLICT_CODES:
+            return LabAssistantError(
+                f"object store precondition failed for {key or operation}", context=context
+            ).with_class(ErrorClass.CONFLICT)
+        if code in _THROTTLE_CODES:
+            return LabAssistantError(
+                f"object store throttled {operation}", context=context
+            ).with_class(ErrorClass.RATE_LIMITED)
+
+    # Only then the status, for a provider that sent a code we do not know.
+    if status == 404:
+        return LabAssistantError(
+            f"object store has no {key or 'object'}", context=context
+        ).with_class(ErrorClass.NOT_FOUND)
+    if status in (401, 403):
+        return LabAssistantError(f"object store denied {operation}", context=context).with_class(
+            ErrorClass.STORAGE_DENIED
+        )
+    if status == 501:
+        return ConditionalWritesUnsupported(
+            f"object store endpoint does not support {operation} as issued", context=context
+        )
+    if status in (409, 412):
+        return LabAssistantError(
+            f"object store precondition failed for {key or operation}", context=context
+        ).with_class(ErrorClass.CONFLICT)
+    if status == 429:
+        return LabAssistantError(f"object store throttled {operation}", context=context).with_class(
+            ErrorClass.RATE_LIMITED
+        )
+    if status >= 500:
+        return LabAssistantError(
+            f"object store returned {status} for {operation}", context=context
+        ).with_class(ErrorClass.PROVIDER_ERROR)
+    return LabAssistantError(
+        f"object store {operation} failed with {code or status}", context=context
+    ).with_class(ErrorClass.PROVIDER_ERROR)
+
+
 class S3ObjectStore:
-    """Content-addressed storage over an S3-compatible endpoint."""
+    """Content-addressed storage over an S3-compatible endpoint.
+
+    The SDK is synchronous, so every call crosses one explicit thread boundary
+    and a semaphore bounds how many are in flight. The boundary is in one place
+    on purpose: a blocking SDK call made directly from the event loop stalls
+    every other request in the process, and the failure is a latency mystery
+    rather than an exception.
+    """
 
     def __init__(
         self,
         config: S3StoreConfig,
         *,
-        client: httpx.AsyncClient | None = None,
-        clock=None,
-        timeout_seconds: float = 30.0,
+        client: Any | None = None,
+        clock: Callable[[], datetime] | None = None,
+        max_concurrency: int = 8,
     ) -> None:
         self._config = config
-        self._client = client
-        self._timeout = timeout_seconds
+        self._client = client if client is not None else config.build_client()
         self._clock = clock or (lambda: datetime.now(tz=UTC))
+        self._gate = asyncio.Semaphore(max_concurrency)
 
     # ── the ObjectStore protocol ────────────────────────────────────────────
 
@@ -131,8 +381,7 @@ class S3ObjectStore:
             # Registering the same bytes twice is a no-op, never an overwrite.
             return existing
         key = _key_for(digest)
-        if await self._status(key) != 200:
-            await self._request("PUT", key, body=data, content_type=media_type)
+        await self._put_content(key, data, media_type)
         record = StoredObjectRecord(
             id=object_id,
             workspace_id=workspace_id,
@@ -143,7 +392,17 @@ class S3ObjectStore:
             created_at=self._clock(),
             key=key,
         )
-        await self._write_record(record)
+        try:
+            await self._write_record(record, create_only=True)
+        except LabAssistantError as exc:
+            if exc.error_class is not ErrorClass.CONFLICT:
+                raise
+            # Another writer registered these bytes between the head and the
+            # write. Its record wins — including a tombstone it may carry.
+            concurrent = await self.head(object_id)
+            if concurrent is None:  # pragma: no cover - provider contradiction
+                raise
+            return concurrent
         return record
 
     async def get(self, object_id: UUID) -> bytes:
@@ -152,10 +411,9 @@ class S3ObjectStore:
             raise FileNotFoundError(f"object {object_id} is not registered")
         if record.tombstoned:
             raise FileNotFoundError(f"object {object_id} has been tombstoned")
-        response = await self._request("GET", record.key)
-        payload = response.content
-        # Verified on read: a substituted or truncated object is a detected fault,
-        # not evidence someone cites.
+        payload = await self._get_bytes(self._object_key(record.key))
+        # Verified on read: a substituted or truncated object is a detected
+        # fault, not evidence someone cites.
         if sha256_bytes(payload) != record.sha256:
             raise LabAssistantError(
                 "stored object does not match its recorded digest",
@@ -170,70 +428,185 @@ class S3ObjectStore:
             return None
 
     async def head(self, object_id: UUID) -> StoredObjectRecord | None:
-        key = self._record_key(object_id)
-        response = await self._request("GET", key, allow_missing=True)
-        if response is None:
-            return None
-        row = json.loads(response.content)
-        return StoredObjectRecord(
-            id=UUID(row["id"]),
-            workspace_id=UUID(row["workspace_id"]) if row["workspace_id"] else None,
-            sha256=row["sha256"],
-            byte_length=row["byte_length"],
-            media_type=row["media_type"],
-            object_class=row["object_class"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            key=row["key"],
-            tombstoned=row.get("tombstoned", False),
-        )
+        record, _version = await self._read_record(object_id)
+        return record
 
     async def verify(self, object_id: UUID) -> bool:
+        """Recompute the digest of stored bytes and compare with the record.
+
+        ``False`` means absent or corrupt. A denial, a timeout or a cold object
+        raises instead: "I was not allowed to look" is not "the bytes are wrong",
+        and answering ``False`` would let a permissions mistake be reported as
+        data corruption.
+        """
         record = await self.head(object_id)
         if record is None:
             return False
-        response = await self._request("GET", record.key, allow_missing=True)
-        if response is None:
-            return False
-        return sha256_bytes(response.content) == record.sha256
+        try:
+            payload = await self._get_bytes(self._object_key(record.key))
+        except LabAssistantError as exc:
+            if exc.error_class is ErrorClass.NOT_FOUND:
+                return False
+            raise
+        return sha256_bytes(payload) == record.sha256
 
     async def signed_url(self, object_id: UUID, *, expires_seconds: int) -> str:
-        """A presigned GET, so bytes never pass through the API process."""
+        """A presigned GET, so bytes never pass through the API process.
+
+        The URL is a bearer capability for its lifetime and carries no
+        per-request policy check, which is why the caller decides whether the
+        material may be handed out this way at all.
+        """
         record = await self.head(object_id)
         if record is None:
             raise FileNotFoundError(f"object {object_id} is not registered")
         if record.tombstoned:
             raise FileNotFoundError(f"object {object_id} has been tombstoned")
-        return self._presign(record.key, expires_seconds=expires_seconds)
+        bucket = self._config.bucket
+        key = self._object_key(record.key)
+        expires = min(expires_seconds, 604_800)
+        return await self._in_thread(
+            "generate_presigned_url",
+            lambda: self._client.generate_presigned_url(
+                "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=expires
+            ),
+            key=key,
+        )
 
     async def tombstone(self, object_id: UUID, *, reason: str) -> None:
-        record = await self.head(object_id)
+        """Deny access to the payload without touching the payload.
+
+        The update is conditional on the version just read, so two stewards
+        acting at once produce a conflict rather than one silently overwriting
+        the other — and a slow writer holding an old record cannot put it back.
+        """
+        record, version = await self._read_record(object_id)
         if record is None:
             return
-        await self._write_record(replace(record, tombstoned=True))
-        await self._request(
-            "PUT",
-            f"{self._record_key(object_id)}.tombstone",
-            body=reason.encode("utf-8"),
-            content_type="text/plain",
-        )
+        await self._write_record(replace(record, tombstoned=True), expected_version=version)
 
     # ── readiness ──────────────────────────────────────────────────────────
 
     async def ping(self) -> None:
-        """Confirm the bucket answers. Raises with the reason if it does not."""
-        response = await self._request("GET", "", params={"max-keys": "0", "list-type": "2"})
-        if response.status_code != 200:  # pragma: no cover - _request already raises
-            raise LabAssistantError(
-                f"object store returned {response.status_code}"
-            ).with_class(ErrorClass.SOURCE_UNAVAILABLE)
+        """Confirm the bucket answers. Raises with the reason if it does not.
+
+        This is a LIST, which a narrowly scoped reader credential may not hold
+        even when every GET it needs would succeed. Role-specific readiness is
+        still owed (audit F15); this keeps the existing behaviour rather than
+        quietly weakening it.
+        """
+        bucket = self._config.bucket
+        prefix = self._config.prefix
+        await self._in_thread(
+            "list_objects_v2",
+            lambda: self._client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1),
+        )
+
+    async def aclose(self) -> None:
+        """Release the SDK's connection pool on shutdown."""
+        close = getattr(self._client, "close", None)
+        if close is not None:
+            await asyncio.to_thread(close)
 
     # ── internals ──────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _record_key(object_id: UUID) -> str:
-        return f"records/{object_id}.json"
+    def _object_key(self, logical_key: str) -> str:
+        return f"{self._config.prefix}{logical_key}"
 
-    async def _write_record(self, record: StoredObjectRecord) -> None:
+    def _record_key(self, object_id: UUID) -> str:
+        return f"{self._config.prefix}records/{object_id}.json"
+
+    async def _in_thread(self, operation: str, call: Callable[[], Any], *, key: str | None = None):
+        async with self._gate:
+            try:
+                return await asyncio.to_thread(call)
+            except LabAssistantError:
+                raise
+            except Exception as exc:  # translated, never swallowed
+                raise _translate(exc, operation=operation, key=key) from exc
+
+    async def _get_bytes(self, key: str) -> bytes:
+        bucket = self._config.bucket
+
+        def call() -> bytes:
+            # Read the body inside the worker thread: the stream is blocking
+            # too, and handing it back would move the blocking read onto the
+            # event loop the thread hop exists to protect.
+            response = self._client.get_object(Bucket=bucket, Key=key)
+            return response["Body"].read()
+
+        return await self._in_thread("get_object", call, key=key)
+
+    async def _put_content(self, logical_key: str, data: bytes, media_type: str) -> None:
+        """Write immutable content, created once.
+
+        A precondition failure here is not an error: the key *is* the digest, so
+        an object already under it holds these bytes.
+        """
+        key = self._object_key(logical_key)
+        try:
+            await self._put(key, data, media_type, create_only=self._config.conditional_writes)
+        except ConditionalWritesUnsupported:
+            await self._put(key, data, media_type, create_only=False)
+        except LabAssistantError as exc:
+            if exc.error_class is not ErrorClass.CONFLICT:
+                raise
+
+    async def _put(
+        self,
+        key: str,
+        data: bytes,
+        media_type: str,
+        *,
+        create_only: bool = False,
+        expected_version: str | None = None,
+    ) -> str | None:
+        bucket = self._config.bucket
+        arguments: dict[str, Any] = {
+            "Bucket": bucket,
+            "Key": key,
+            "Body": data,
+            "ContentType": media_type,
+        }
+        if create_only:
+            arguments["IfNoneMatch"] = "*"
+        elif expected_version is not None:
+            arguments["IfMatch"] = expected_version
+        response = await self._in_thread(
+            "put_object", lambda: self._client.put_object(**arguments), key=key
+        )
+        return response.get("ETag") if isinstance(response, dict) else None
+
+    async def _read_record(self, object_id: UUID) -> tuple[StoredObjectRecord | None, str | None]:
+        """The metadata record and the provider version that produced it.
+
+        Returns ``(None, None)`` only for a genuine absence. Every other
+        failure — denied, throttled, cold, unreachable — is raised, because the
+        caller's next move differs for each and "absent" is the one answer that
+        sends it back to the source.
+        """
+        key = self._record_key(object_id)
+        bucket = self._config.bucket
+
+        def call() -> tuple[bytes, str | None]:
+            response = self._client.get_object(Bucket=bucket, Key=key)
+            return response["Body"].read(), response.get("ETag")
+
+        try:
+            payload, version = await self._in_thread("get_object", call, key=key)
+        except LabAssistantError as exc:
+            if exc.error_class is ErrorClass.NOT_FOUND:
+                return None, None
+            raise
+        return _record_from_json(payload), version
+
+    async def _write_record(
+        self,
+        record: StoredObjectRecord,
+        *,
+        create_only: bool = False,
+        expected_version: str | None = None,
+    ) -> None:
         payload = json.dumps(
             {
                 "id": str(record.id),
@@ -248,180 +621,29 @@ class S3ObjectStore:
             },
             sort_keys=True,
         ).encode("utf-8")
-        await self._request(
-            "PUT", self._record_key(record.id), body=payload, content_type="application/json"
-        )
-
-    def _url(self, key: str) -> str:
-        config = self._config
-        prefix = f"{config.endpoint}/{config.bucket}" if config.path_style else config.endpoint
-        if not key:
-            return prefix
-        return f"{prefix}/{quote(key, safe='/')}"
-
-    async def _status(self, key: str) -> int:
-        response = await self._request("HEAD", key, allow_missing=True)
-        return 404 if response is None else response.status_code
-
-    async def _request(
-        self,
-        method: str,
-        key: str,
-        *,
-        body: bytes | None = None,
-        content_type: str | None = None,
-        params: dict[str, str] | None = None,
-        allow_missing: bool = False,
-    ) -> httpx.Response | None:
-        url = self._url(key)
-        headers = self._sign(method, key, body=body, content_type=content_type, params=params)
-        client = self._client or httpx.AsyncClient(timeout=self._timeout)
-        owns_client = self._client is None
+        conditional = self._config.conditional_writes
         try:
-            response = await client.request(
-                method, url, content=body, headers=headers, params=params
+            await self._put(
+                self._record_key(record.id),
+                payload,
+                "application/json",
+                create_only=create_only and conditional,
+                expected_version=expected_version if conditional else None,
             )
-        except httpx.TimeoutException as exc:
-            raise LabAssistantError(f"timeout contacting the object store: {url}").with_class(
-                ErrorClass.TIMEOUT
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise LabAssistantError(f"object store transport error: {exc}").with_class(
-                ErrorClass.SOURCE_UNAVAILABLE
-            ) from exc
-        finally:
-            if owns_client:
-                await client.aclose()
-        if response.status_code in (403, 404) and allow_missing:
-            return None
-        if response.status_code >= 400:
-            raise LabAssistantError(
-                f"object store {method} {key or '/'} failed with {response.status_code}",
-                context={"status": response.status_code},
-            ).with_class(
-                ErrorClass.AUTHENTICATION_REQUIRED
-                if response.status_code in (401, 403)
-                else ErrorClass.SOURCE_UNAVAILABLE
-            )
-        return response
+        except ConditionalWritesUnsupported:
+            await self._put(self._record_key(record.id), payload, "application/json")
 
-    # ── SigV4 ──────────────────────────────────────────────────────────────
 
-    def _sign(
-        self,
-        method: str,
-        key: str,
-        *,
-        body: bytes | None,
-        content_type: str | None,
-        params: dict[str, str] | None,
-    ) -> dict[str, str]:
-        config = self._config
-        now = datetime.now(tz=UTC)
-        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-        date_stamp = now.strftime("%Y%m%d")
-        payload_hash = hashlib.sha256(body or b"").hexdigest()
-        host = httpx.URL(config.endpoint).host
-        canonical_uri = self._canonical_uri(key)
-        canonical_query = self._canonical_query(params or {})
-        headers = {
-            "host": host,
-            "x-amz-content-sha256": payload_hash,
-            "x-amz-date": amz_date,
-        }
-        if content_type:
-            headers["content-type"] = content_type
-        signed_headers = ";".join(sorted(headers))
-        canonical_headers = "".join(
-            f"{name}:{headers[name]}\n" for name in sorted(headers)
-        )
-        canonical_request = "\n".join(
-            [
-                method,
-                canonical_uri,
-                canonical_query,
-                canonical_headers,
-                signed_headers,
-                payload_hash,
-            ]
-        )
-        scope = f"{date_stamp}/{config.region}/s3/aws4_request"
-        string_to_sign = "\n".join(
-            [
-                _ALGORITHM,
-                amz_date,
-                scope,
-                hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
-            ]
-        )
-        signature = hmac.new(
-            self._signing_key(date_stamp), string_to_sign.encode("utf-8"), hashlib.sha256
-        ).hexdigest()
-        out = dict(headers)
-        out["authorization"] = (
-            f"{_ALGORITHM} Credential={config.access_key}/{scope}, "
-            f"SignedHeaders={signed_headers}, Signature={signature}"
-        )
-        return out
-
-    def _presign(self, key: str, *, expires_seconds: int) -> str:
-        config = self._config
-        now = datetime.now(tz=UTC)
-        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-        date_stamp = now.strftime("%Y%m%d")
-        scope = f"{date_stamp}/{config.region}/s3/aws4_request"
-        host = httpx.URL(config.endpoint).host
-        query = {
-            "X-Amz-Algorithm": _ALGORITHM,
-            "X-Amz-Credential": f"{config.access_key}/{scope}",
-            "X-Amz-Date": amz_date,
-            "X-Amz-Expires": str(min(expires_seconds, 604800)),
-            "X-Amz-SignedHeaders": "host",
-        }
-        canonical_request = "\n".join(
-            [
-                "GET",
-                self._canonical_uri(key),
-                self._canonical_query(query),
-                f"host:{host}\n",
-                "host",
-                _UNSIGNED,
-            ]
-        )
-        string_to_sign = "\n".join(
-            [
-                _ALGORITHM,
-                amz_date,
-                scope,
-                hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
-            ]
-        )
-        signature = hmac.new(
-            self._signing_key(date_stamp), string_to_sign.encode("utf-8"), hashlib.sha256
-        ).hexdigest()
-        expiry = (now + timedelta(seconds=expires_seconds)).isoformat()
-        query["X-Amz-Signature"] = signature
-        # The expiry is in the signature; the readable copy is for logs and tests.
-        return f"{self._url(key)}?{self._canonical_query(query)}&x-lab-expires-at={quote(expiry)}"
-
-    def _canonical_uri(self, key: str) -> str:
-        path = f"/{self._config.bucket}" if self._config.path_style else ""
-        if key:
-            path = f"{path}/{quote(key, safe='/')}"
-        return path or "/"
-
-    @staticmethod
-    def _canonical_query(params: dict[str, str]) -> str:
-        return "&".join(
-            f"{quote(name, safe='-_.~')}={quote(str(value), safe='-_.~')}"
-            for name, value in sorted(params.items())
-        )
-
-    def _signing_key(self, date_stamp: str) -> bytes:
-        def sign(key: bytes, message: str) -> bytes:
-            return hmac.new(key, message.encode("utf-8"), hashlib.sha256).digest()
-
-        key = sign(f"AWS4{self._config.secret_key}".encode(), date_stamp)
-        key = sign(key, self._config.region)
-        key = sign(key, "s3")
-        return sign(key, "aws4_request")
+def _record_from_json(payload: bytes) -> StoredObjectRecord:
+    row = json.loads(payload)
+    return StoredObjectRecord(
+        id=UUID(row["id"]),
+        workspace_id=UUID(row["workspace_id"]) if row["workspace_id"] else None,
+        sha256=row["sha256"],
+        byte_length=row["byte_length"],
+        media_type=row["media_type"],
+        object_class=row["object_class"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        key=row["key"],
+        tombstoned=row.get("tombstoned", False),
+    )

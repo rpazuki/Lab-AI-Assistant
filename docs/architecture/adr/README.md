@@ -31,7 +31,7 @@ names its successor.
 | [0014](0014-vector-index-strategy.md) | Vector index type, parameters, and build cost |
 | [0015](0015-delivery-profile.md) | Delivery profile and the M1-first milestone order |
 | [0016](0016-authentication-and-oidc-path.md) | Password login now, OIDC-ready identity model |
-| [0017](0017-object-storage-adapter.md) | S3-compatible object storage, signed without an SDK |
+| [0017](0017-object-storage-adapter.md) | S3-compatible object storage, signed without an SDK — superseded by 0023 |
 | [0018](0018-connector-rate-budgets.md) | Rate budgets stored, and enforced per request |
 | [0019](0019-model-provider-naming.md) | Provider and model naming, and what the defaults mean |
 | [0020](0020-predecessor-api-compatibility.md) | The API is a deliberate break, with a written map |
@@ -39,3 +39,4 @@ names its successor.
 | [0021](0021-worker-network-and-shared-host.md) | Shared-host ports and worker coordinator connectivity |
 
 | [0022](0022-single-vm-filesystem-storage.md) | Optional persistent filesystem storage on one VM |
+| [0023](0023-object-storage-sdk.md) | Object storage through the maintained SDK |

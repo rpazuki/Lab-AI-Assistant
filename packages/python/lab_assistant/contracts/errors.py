@@ -43,6 +43,14 @@ class ErrorClass(StrEnum):
     MALWARE_DETECTED = "malware_detected"
     TOO_LARGE = "too_large"
     NOT_FOUND = "not_found"
+    #: Storage answered, and refused. Distinct from NOT_FOUND because a reader
+    #: whose bucket permissions are wrong must not conclude the evidence is gone
+    #: and reacquire it, and distinct from AUTHENTICATION_REQUIRED because the
+    #: credential may be perfectly valid for a principal this object denies.
+    STORAGE_DENIED = "storage_denied"
+    #: The object exists in a cold class and is being restored. Not missing, not
+    #: corrupt, not a reason to re-analyse: a named wait.
+    STORAGE_RESTORE_PENDING = "storage_restore_pending"
     PROVIDER_ERROR = "provider_error"
     PROVIDER_REFUSAL = "provider_refusal"
     SCHEMA_VIOLATION = "schema_violation"
@@ -66,6 +74,8 @@ _RETRY_TABLE: dict[ErrorClass, RetryEligibility] = {
     ErrorClass.PROVIDER_ERROR: RetryEligibility.RETRYABLE,
     ErrorClass.CONFLICT: RetryEligibility.RETRYABLE,
     ErrorClass.AUTHENTICATION_REQUIRED: RetryEligibility.HUMAN_ACTION,
+    ErrorClass.STORAGE_DENIED: RetryEligibility.HUMAN_ACTION,
+    ErrorClass.STORAGE_RESTORE_PENDING: RetryEligibility.RETRYABLE_AFTER,
     ErrorClass.ENTITLEMENT_REQUIRED: RetryEligibility.HUMAN_ACTION,
     ErrorClass.BUDGET_EXCEEDED: RetryEligibility.HUMAN_ACTION,
     ErrorClass.MALWARE_DETECTED: RetryEligibility.PERMANENT,

@@ -31,12 +31,17 @@ dev = [
   # Lets the SQL adapter run against SQLite offline; PostgreSQL integration tests
   # still need LAB_TEST_DATABASE_URL.
   "aiosqlite>=0.20",
+  # The S3 adapter's contract tests run against botocore's stubber, offline. A
+  # dev environment without it would skip exactly the tests ADR-0017 claimed to
+  # have and did not.
+  "boto3>=1.35",
 ]
 # Optional adapters. The core suite never imports these.
 parsers = ["pypdf>=4.2", "openpyxl>=3.1", "python-docx>=1.1"]
 embeddings = ["sentence-transformers>=2.7"]
-# No `objectstore` extra: the S3 adapter signs with the standard library
-# over httpx, which the package already depends on (ADR-0017).
+# The S3 adapter uses the maintained AWS SDK for its credential chain,
+# conditional writes and error codes (ADR-0023 supersedes ADR-0017).
+objectstore = ["boto3>=1.35"]
 anthropic = ["anthropic>=0.40"]
 export = ["pyarrow>=16.0"]
 
