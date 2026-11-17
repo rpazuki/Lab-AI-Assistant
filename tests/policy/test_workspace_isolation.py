@@ -284,9 +284,7 @@ async def _seed_workspace(harness, spec: dict[str, str]) -> dict[str, Any]:
     report = await releases.validate(actor, release_id=release.id)
     assert report.passed, report.failures
     _, tasks = await releases.approve(actor, release_id=release.id)
-    await harness.orchestrator.submit_requests(
-        tasks, workspace_id=workspace.id, actor_id=owner.id
-    )
+    await harness.orchestrator.submit_requests(tasks, workspace_id=workspace.id, actor_id=owner.id)
     await harness.run_all_tasks()
     await releases.publish(actor, release_id=release.id)
     return {
@@ -372,9 +370,7 @@ class TestCountAndAnalyticsIsolation:
 
 
 class TestRepositoryAndErrorIsolation:
-    async def test_reading_another_workspaces_row_by_id_is_refused(
-        self, two_workspaces
-    ) -> None:
+    async def test_reading_another_workspaces_row_by_id_is_refused(self, two_workspaces) -> None:
         harness, left, right = two_workspaces
         async with harness.context.uow_factory() as uow:
             with pytest.raises(AssertionError, match="belongs to workspace"):
@@ -419,9 +415,7 @@ class TestExportIsolation:
         assert RIGHT["title"] not in blob
         assert RIGHT["doi"] not in blob
 
-    async def test_exporting_another_workspaces_release_is_refused(
-        self, two_workspaces
-    ) -> None:
+    async def test_exporting_another_workspaces_release_is_refused(self, two_workspaces) -> None:
         harness, left, right = two_workspaces
         exports = ExportService(harness.context)
         with pytest.raises((AssertionError, PolicyDenied, NotFound)):
@@ -471,6 +465,4 @@ class TestAuditIsolation:
         assert left_events and right_events
         assert verify_chain(left_events) == (True, ())
         assert verify_chain(right_events) == (True, ())
-        assert {event.id for event in left_events}.isdisjoint(
-            {event.id for event in right_events}
-        )
+        assert {event.id for event in left_events}.isdisjoint({event.id for event in right_events})

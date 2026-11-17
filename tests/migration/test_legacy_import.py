@@ -93,9 +93,7 @@ class TestDocumentImport:
             works = await uow.works.list_works(actor.workspace_id)
         assert works[0].relevance is RelevanceState.UNREVIEWED
 
-    async def test_rows_without_identifiers_are_reported_not_dropped(
-        self, importer_stack
-    ) -> None:
+    async def test_rows_without_identifiers_are_reported_not_dropped(self, importer_stack) -> None:
         _harness, actor, importer = importer_stack
         report = await importer.import_documents(
             actor, documents=[{"document_id": "", "title": "No identifier at all"}]
@@ -169,9 +167,7 @@ class TestDatasheetRowImport:
         assert all(revision.review_status is ReviewState.UNREVIEWED for revision in revisions)
         assert all(revision.validation_status == "invalid" for revision in revisions)
         assert all(revision.evidence_span_ids == () for revision in revisions)
-        assert all(
-            revision.proposal_source.value == "legacy_import" for revision in revisions
-        )
+        assert all(revision.proposal_source.value == "legacy_import" for revision in revisions)
 
     async def test_an_imported_proposal_cannot_reach_a_release(self, importer_stack) -> None:
         harness, actor, importer = importer_stack
@@ -195,9 +191,7 @@ class TestDatasheetRowImport:
         assert blockers
         assert any("validation status" in blocker for blocker in blockers)
 
-    async def test_legacy_not_reported_is_not_treated_as_an_absence(
-        self, importer_stack
-    ) -> None:
+    async def test_legacy_not_reported_is_not_treated_as_an_absence(self, importer_stack) -> None:
         harness, actor, importer = importer_stack
         await self._seed_work(importer, actor)
         await importer.import_datasheet_rows(

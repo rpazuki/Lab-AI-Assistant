@@ -456,15 +456,17 @@ import pytest
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
+
 @event.listens_for(Engine, "connect")
 def enable_fk(dbapi, record):
     cursor = dbapi.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
 
-raise SystemExit(pytest.main([
-    "-q", "tests/integration/test_sql_adapter.py", "--tb=short", "--maxfail=2"
-]))
+
+raise SystemExit(
+    pytest.main(["-q", "tests/integration/test_sql_adapter.py", "--tb=short", "--maxfail=2"])
+)
 ```
 
 Run this only in the SQLite offline test environment, without `LAB_TEST_DATABASE_URL`.

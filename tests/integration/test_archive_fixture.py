@@ -150,9 +150,7 @@ class TestTheFixtureContainsItsCases:
             if decision is not None
         )
 
-    async def test_the_review_history_has_an_acceptance_and_a_correction(
-        self, archive
-    ) -> None:
+    async def test_the_review_history_has_an_acceptance_and_a_correction(self, archive) -> None:
         fixture, harness = archive["fixture"], archive["harness"]
         assert fixture.accepted_revision_ids
         assert fixture.corrected_revision_ids
@@ -179,13 +177,10 @@ class TestTheFixtureContainsItsCases:
                     (r for r in revisions if r.id == claim.current_revision_id), revisions[-1]
                 )
                 assert (
-                    current.abstention_reason
-                    is AbstentionReason.NOT_REPORTED_AFTER_COMPLETE_SEARCH
+                    current.abstention_reason is AbstentionReason.NOT_REPORTED_AFTER_COMPLETE_SEARCH
                 )
 
-    async def test_both_releases_carry_projections_under_a_named_profile(
-        self, archive
-    ) -> None:
+    async def test_both_releases_carry_projections_under_a_named_profile(self, archive) -> None:
         """An importer has to be testable for reusing these, not re-embedding."""
         fixture, harness = archive["fixture"], archive["harness"]
         for release_id in fixture.release_ids:

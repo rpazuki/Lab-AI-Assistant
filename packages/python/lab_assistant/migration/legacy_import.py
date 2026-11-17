@@ -198,9 +198,7 @@ class LegacyImporter:
             legacy_id = str(row.get("document_id") or row.get("id") or "")
             identifiers = _legacy_identifiers(row)
             if not identifiers:
-                report.skipped.append(
-                    {"legacy_id": legacy_id, "reason": "no usable identifier"}
-                )
+                report.skipped.append({"legacy_id": legacy_id, "reason": "no usable identifier"})
                 continue
 
             async with context.uow_factory() as uow:

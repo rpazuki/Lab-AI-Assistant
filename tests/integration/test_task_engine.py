@@ -369,9 +369,7 @@ class TestQueueSnapshot:
                 return StageResult(
                     stage=self.stage_name,
                     status=StageStatus.SUCCEEDED,
-                    next_tasks=(
-                        TaskRequest(stage=StageName.PARSING, inputs={"asset_id": "a"}),
-                    ),
+                    next_tasks=(TaskRequest(stage=StageName.PARSING, inputs={"asset_id": "a"}),),
                 )
 
         harness.handlers.register(ChainingHandler(StageName.ACQUISITION))

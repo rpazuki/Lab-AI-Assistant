@@ -51,7 +51,9 @@ def test_the_committed_schema_matches_its_contract(relative: str) -> None:
 
 def test_the_draft_archive_schemas_say_they_are_drafts() -> None:
     """A draft a consumer mistook for a stable contract is a trap."""
-    for relative in ("archive/snapshot-manifest.schema.json",
-                     "archive/stage-result-envelope.schema.json"):
+    for relative in (
+        "archive/snapshot-manifest.schema.json",
+        "archive/stage-result-envelope.schema.json",
+    ):
         assert relative in TARGETS
         assert TARGETS[relative][1].endswith("-draft")

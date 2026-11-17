@@ -497,9 +497,11 @@ class S3ObjectStore:
             raise FileNotFoundError(f"object {object_id} has been tombstoned")
         key = self._object_key(record.key)
         bucket = self._config.bucket
-        body = (await self._in_thread(
-            "get_object", lambda: self._client.get_object(Bucket=bucket, Key=key), key=key
-        ))["Body"]
+        body = (
+            await self._in_thread(
+                "get_object", lambda: self._client.get_object(Bucket=bucket, Key=key), key=key
+            )
+        )["Body"]
         digest = hashlib.sha256()
         try:
             while True:
@@ -685,9 +687,7 @@ class S3ObjectStore:
             self._object_key(logical_key), data, media_type, sha256_bytes(data)
         )
 
-    async def _put_content_bytes(
-        self, key: str, data: bytes, media_type: str, sha256: str
-    ) -> None:
+    async def _put_content_bytes(self, key: str, data: bytes, media_type: str, sha256: str) -> None:
         """Write immutable content in one request, created once.
 
         A precondition failure here is not an error: the key *is* the digest, so

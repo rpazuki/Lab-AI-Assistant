@@ -31,9 +31,7 @@ class TestLoginThrottling:
     async def test_repeated_failures_start_returning_the_throttling_error(self, accounts) -> None:
         for _ in range(3):
             with pytest.raises(AuthenticationFailed):
-                await accounts.accounts.authenticate(
-                    email="steward@lab.invalid", password="wrong"
-                )
+                await accounts.accounts.authenticate(email="steward@lab.invalid", password="wrong")
         with pytest.raises(LoginRateLimited) as raised:
             await accounts.accounts.authenticate(email="steward@lab.invalid", password="wrong")
         assert raised.value.http_status == 429
@@ -62,12 +60,8 @@ class TestLoginThrottling:
         """Two typos then a correct password must not lock someone out."""
         for _ in range(2):
             with pytest.raises(AuthenticationFailed):
-                await accounts.accounts.authenticate(
-                    email="steward@lab.invalid", password="wrong"
-                )
-        user = await accounts.accounts.authenticate(
-            email="steward@lab.invalid", password=PASSWORD
-        )
+                await accounts.accounts.authenticate(email="steward@lab.invalid", password="wrong")
+        user = await accounts.accounts.authenticate(email="steward@lab.invalid", password=PASSWORD)
         assert user.last_login_at is not None
         async with accounts.context.uow_factory() as uow:
             budget = await uow.tasks.get_rate_budget(login_budget_key("steward@lab.invalid"))

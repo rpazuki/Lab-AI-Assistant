@@ -240,10 +240,7 @@ class PolicyEngine:
         deliberately *not* enough to unlock group-restricted material — that check
         is separate and demands a grant naming the group or the exact resource.
         """
-        if (
-            grant.subject_type is SubjectType.WORKSPACE
-            and grant.subject_id == request.workspace_id
-        ):
+        if grant.subject_type is SubjectType.WORKSPACE and grant.subject_id == request.workspace_id:
             return True
         return request.subject.matches(grant.subject_type, grant.subject_id)
 

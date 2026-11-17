@@ -89,7 +89,7 @@ an outage.
 Two fakes, both **fixture-keyed and raising on a miss**:
 
 ```python
-FakeConnector(pages={("query", None): [...]})   # a request with no fixture raises FixtureMiss
+FakeConnector(pages={("query", None): [...]})  # a request with no fixture raises FixtureMiss
 ```
 
 A permissive fake that returns an empty page on an unexpected request makes every test

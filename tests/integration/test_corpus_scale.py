@@ -69,9 +69,7 @@ class TestPaginationHelper:
         async with harness.context.uow_factory() as uow:
             first_page = await uow.works.list_works(workspace.id, limit=DEFAULT_PAGE_SIZE)
             everything = await collect_pages(
-                lambda after, size: uow.works.list_works(
-                    workspace.id, limit=size, after_id=after
-                )
+                lambda after, size: uow.works.list_works(workspace.id, limit=size, after_id=after)
             )
         assert len(first_page) == DEFAULT_PAGE_SIZE
         assert len(everything) == CORPUS_SIZE
@@ -104,9 +102,9 @@ class TestPaginationHelper:
 class TestCorpusScalePaths:
     async def test_retrieval_visibility_covers_the_whole_corpus(self, large_corpus) -> None:
         """The old limit made this an access filter that silently stopped being complete."""
-        visible, denied = await RetrievalService(
-            large_corpus["harness"].context
-        ).visible_work_ids(large_corpus["actor"])
+        visible, denied = await RetrievalService(large_corpus["harness"].context).visible_work_ids(
+            large_corpus["actor"]
+        )
         assert len(visible) + denied == CORPUS_SIZE
 
     async def test_the_conflict_queue_is_not_truncated(self, large_corpus) -> None:

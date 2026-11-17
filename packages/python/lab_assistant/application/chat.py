@@ -505,9 +505,7 @@ class ChatService:
         if rendition.work_id is not None and not context.policy_engine.allows(
             actor.policy_input(now=context.now()),
             action=PolicyAction.DISPLAY_EXCERPT,
-            resource=ResourceRef(
-                resource_type=ResourceType.WORK, resource_id=rendition.work_id
-            ),
+            resource=ResourceRef(resource_type=ResourceType.WORK, resource_id=rendition.work_id),
         ):
             raise PolicyDenied("you may not view this evidence")
 

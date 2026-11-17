@@ -54,7 +54,7 @@ restricted rows looks complete and is not.
 ## Validation
 
 ```python
-validate_package(path)   # recomputes every digest, checks the manifest, raises on drift
+validate_package(path)  # recomputes every digest, checks the manifest, raises on drift
 ```
 
 Runs before the package is written, and can be re-run by the recipient with nothing

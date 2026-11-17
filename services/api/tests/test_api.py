@@ -82,9 +82,7 @@ async def api() -> dict[str, Any]:
     )
     app = create_app(settings=harness.settings, container=container)
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://api.invalid"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://api.invalid") as client:
         yield {
             "client": client,
             "harness": harness,
@@ -95,9 +93,7 @@ async def api() -> dict[str, Any]:
 
 
 async def _login(client: httpx.AsyncClient, email: str) -> str:
-    response = await client.post(
-        "/api/v1/auth/login", json={"email": email, "password": PASSWORD}
-    )
+    response = await client.post("/api/v1/auth/login", json={"email": email, "password": PASSWORD})
     assert response.status_code == 200, response.text
     return response.json()["access_token"]
 
@@ -219,9 +215,7 @@ class TestAuth:
 
     async def test_a_tampered_token_is_rejected(self, api) -> None:
         token = await _login(api["client"], "researcher@lab.invalid")
-        response = await api["client"].get(
-            "/api/v1/auth/me", headers=_auth(token[:-3] + "aaa")
-        )
+        response = await api["client"].get("/api/v1/auth/me", headers=_auth(token[:-3] + "aaa"))
         assert response.status_code == 401
 
     async def test_cookie_sessions_work_for_the_web_tier(self, api) -> None:
@@ -276,9 +270,7 @@ class TestSessionsAndAsk:
 
     async def test_another_users_session_is_not_found(self, api) -> None:
         steward_token = await _login(api["client"], "steward@lab.invalid")
-        created = await api["client"].post(
-            "/api/v1/chat/sessions", headers=_auth(steward_token)
-        )
+        created = await api["client"].post("/api/v1/chat/sessions", headers=_auth(steward_token))
         session_id = created.json()["id"]
         researcher_token = await _login(api["client"], "researcher@lab.invalid")
         response = await api["client"].get(
@@ -299,17 +291,13 @@ class TestCollections:
                 "inclusion_criteria": ["engineered yeast"],
                 "intended_uses": ["literature search"],
                 "concepts": ["lipid production"],
-                "connectors": [
-                    {"connector_id": "pubmed-fixture", "query": "lipid production"}
-                ],
+                "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
             },
         )
         assert created.status_code == 201
         scope_id = created.json()["id"]
 
-        gate = await api["client"].post(
-            f"/api/v1/scopes/{scope_id}/gate", headers=_auth(token)
-        )
+        gate = await api["client"].post(f"/api/v1/scopes/{scope_id}/gate", headers=_auth(token))
         assert gate.json()["passed"] is True
         assert gate.json()["compiled_connectors"] == ["pubmed-fixture"]
 
@@ -343,9 +331,7 @@ class TestCollections:
                 "inclusion_criteria": ["engineered yeast"],
                 "intended_uses": ["literature search"],
                 "concepts": ["lipid production"],
-                "connectors": [
-                    {"connector_id": "pubmed-fixture", "query": "lipid production"}
-                ],
+                "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
             },
         )
         scope_id = created.json()["id"]

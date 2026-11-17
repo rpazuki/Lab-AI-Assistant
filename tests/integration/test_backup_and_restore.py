@@ -264,9 +264,7 @@ class TestCreate:
         filesystem = secret_references(Settings(object_store_kind="filesystem"))
         assert not any("OBJECT_STORE_ACCESS_KEY" in ref.name for ref in filesystem)
 
-        bucket = secret_references(
-            Settings(object_store_kind="s3", external_model_enabled=True)
-        )
+        bucket = secret_references(Settings(object_store_kind="s3", external_model_enabled=True))
         assert any("OBJECT_STORE_ACCESS_KEY" in ref.name for ref in bucket)
         assert any(ref.name == "LAB_LLM_API_KEY" for ref in bucket)
 
@@ -369,7 +367,7 @@ class TestVerify:
         store = FilesystemObjectStore(tmp_path / "backup" / "objects")
         stored = await store.head(records[0].id)
         assert stored is not None
-        target = (tmp_path / "backup" / "objects" / stored.key)
+        target = tmp_path / "backup" / "objects" / stored.key
         target.write_bytes(b"not the bytes that were stored here")
 
         verification = await service.verify(tmp_path / "backup")
@@ -423,9 +421,7 @@ class TestCompatibility:
         assert verdict.permitted, [f.detail for f in verdict.blocking]
 
     def test_a_missing_extension_blocks(self, taken) -> None:
-        target = _target(taken).model_copy(
-            update={"extensions": {}, "installation_id": uuid4()}
-        )
+        target = _target(taken).model_copy(update={"extensions": {}, "installation_id": uuid4()})
         verdict = evaluate_restore(taken, target=target, migration_order=migration_order())
         assert not verdict.permitted
         assert any(f.code == "extension_missing" for f in verdict.blocking)
@@ -469,9 +465,7 @@ class TestCompatibility:
         """Restoring it into older code succeeds and then serves wrong answers,
         because the code does not know about the columns the dump filled."""
         future = taken.model_copy(
-            update={
-                "origin": taken.origin.model_copy(update={"schema_revision": "0099_not_yet"})
-            }
+            update={"origin": taken.origin.model_copy(update={"schema_revision": "0099_not_yet"})}
         )
         verdict = evaluate_restore(
             future,
@@ -595,15 +589,11 @@ class TestOneWriter:
         assert verdict.installation_id == taken.origin.installation_id
         assert any(f.code == "writer_taken_over" for f in verdict.advisory)
 
-    def test_a_fenced_takeover_of_an_incompatible_backup_still_may_not_publish(
-        self, taken
-    ) -> None:
+    def test_a_fenced_takeover_of_an_incompatible_backup_still_may_not_publish(self, taken) -> None:
         """`may_publish` is not independent of the rest of the verdict: a
         blocked restore that nonetheless reported a right to publish would be
         read by a script as permission."""
-        target = _target(taken).model_copy(
-            update={"extensions": {}, "installation_id": uuid4()}
-        )
+        target = _target(taken).model_copy(update={"extensions": {}, "installation_id": uuid4()})
         verdict = evaluate_restore(
             taken,
             target=target,
@@ -924,9 +914,7 @@ class TestVolumeDiscovery:
         a restore lands in the wrong installation."""
         if not shutil.which("bash"):  # pragma: no cover
             pytest.skip("bash is required")
-        result = self._run(
-            tmp_path, "resolve_volume pgdata", volumes="alpha_pgdata\nbeta_pgdata"
-        )
+        result = self._run(tmp_path, "resolve_volume pgdata", volumes="alpha_pgdata\nbeta_pgdata")
         assert result.returncode != 0
         assert "ambiguous" in result.stderr.lower()
 
@@ -957,9 +945,7 @@ class TestAgainstRealPostgres:
         yield engine
         await engine.dispose()
 
-    async def test_the_fingerprint_is_what_the_rules_compare(
-        self, engine, postgres_url
-    ) -> None:
+    async def test_the_fingerprint_is_what_the_rules_compare(self, engine, postgres_url) -> None:
         from lab_assistant.adapters.db.snapshot import PostgresDatabaseSnapshot
 
         snapshot = PostgresDatabaseSnapshot(engine, database_url=postgres_url)
@@ -1001,8 +987,7 @@ class TestAgainstRealPostgres:
         result = await snapshot.dump(tmp_path / "dump.pgcustom")
         assert result.byte_length > 0
         assert (
-            result.sha256
-            == hashlib.sha256((tmp_path / "dump.pgcustom").read_bytes()).hexdigest()
+            result.sha256 == hashlib.sha256((tmp_path / "dump.pgcustom").read_bytes()).hexdigest()
         )
         assert "pg_dump" in result.tool_version
 
@@ -1023,9 +1008,7 @@ class TestAgainstRealPostgres:
                 await target.restore(tmp_path / "dump.pgcustom")
 
                 async with target_engine.connect() as connection:
-                    rows = (
-                        await connection.execute(text("SELECT id FROM backup_probe"))
-                    ).all()
+                    rows = (await connection.execute(text("SELECT id FROM backup_probe"))).all()
                 assert [row[0] for row in rows] == [1]
                 after = await target.fingerprint()
                 assert after.relation_count > 1
@@ -1040,9 +1023,7 @@ class TestAgainstRealPostgres:
             async with engine.begin() as connection:
                 await connection.execute(text("DROP TABLE IF EXISTS backup_probe"))
 
-    async def test_the_fingerprint_sees_a_populated_destination(
-        self, engine, postgres_url
-    ) -> None:
+    async def test_the_fingerprint_sees_a_populated_destination(self, engine, postgres_url) -> None:
         """The count the `destination_not_empty` rule reads is a real count."""
         from lab_assistant.adapters.db.snapshot import PostgresDatabaseSnapshot
 
@@ -1051,9 +1032,7 @@ class TestAgainstRealPostgres:
         ).fingerprint()
         assert fingerprint.relation_count > 1
 
-    async def test_a_restore_into_a_fresh_database(
-        self, engine, postgres_url, tmp_path
-    ) -> None:
+    async def test_a_restore_into_a_fresh_database(self, engine, postgres_url, tmp_path) -> None:
         """The acceptance case, and the one that fails when the steps are
         ordered the wrong way round.
 
@@ -1121,9 +1100,7 @@ class TestAgainstRealPostgres:
                 )
                 report = await BackupService(
                     destination.context,
-                    snapshot=PostgresDatabaseSnapshot(
-                        target_engine, database_url=target_url
-                    ),
+                    snapshot=PostgresDatabaseSnapshot(target_engine, database_url=target_url),
                     installation_id=uuid4(),
                     store_factory=FilesystemObjectStore,
                 ).restore(

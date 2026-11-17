@@ -113,9 +113,7 @@ class MemoryDatabase:
     #: Per-stage leases, tracked by task id rather than as a counter. Rows here
     #: are mutated in place, so "what state was this task in before?" is not a
     #: question this store can answer — a counter would leak on every update.
-    leased_task_ids: dict[StageName, set[UUID]] = field(
-        default_factory=lambda: defaultdict(set)
-    )
+    leased_task_ids: dict[StageName, set[UUID]] = field(default_factory=lambda: defaultdict(set))
 
 
 class _Users:
@@ -332,7 +330,6 @@ class _Configs:
         return sorted(configs, key=lambda c: (c.logical_id, c.semantic_version))
 
 
-
 #: ``(table, column) -> the MemoryDatabase attribute holding those rows``. Built
 #: from the domain models themselves, so a new ``*_object_id`` field is covered
 #: here the moment it exists rather than when somebody remembers this mapping.
@@ -428,9 +425,7 @@ class _Objects:
         return rows[:limit]
 
     async def count_objects(self, workspace_id: UUID) -> int:
-        return sum(
-            1 for record in self._db.objects.values() if record.workspace_id == workspace_id
-        )
+        return sum(1 for record in self._db.objects.values() if record.workspace_id == workspace_id)
 
     def reference_sources(self) -> tuple[ObjectReferenceSource, ...]:
         """Only the sources this store can actually serve.
@@ -466,9 +461,7 @@ class _Objects:
         if after_id is not None:
             rows = [row for row in rows if row.id > after_id]
         return [
-            ObjectReference(
-                source=source, row_id=row.id, object_id=getattr(row, source.column)
-            )
+            ObjectReference(source=source, row_id=row.id, object_id=getattr(row, source.column))
             for row in rows[:limit]
         ]
 

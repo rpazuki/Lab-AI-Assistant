@@ -139,9 +139,7 @@ class ScopeVersion(BaseModel):
                     "connector_plan": [e.model_dump(mode="python") for e in self.connector_plan],
                     "relevance_policy": {
                         key: stable_number(value) if isinstance(value, float) else value
-                        for key, value in self.relevance_policy.model_dump(
-                            mode="python"
-                        ).items()
+                        for key, value in self.relevance_policy.model_dump(mode="python").items()
                     },
                 }
             )

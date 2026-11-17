@@ -285,8 +285,7 @@ class StorageInventoryService:
                 return Finding(
                     kind=FindingKind.CORRUPT_PAYLOAD,
                     detail=(
-                        f"stored bytes for {record.object_class} do not match "
-                        f"{record.sha256[:12]}…"
+                        f"stored bytes for {record.object_class} do not match {record.sha256[:12]}…"
                     ),
                     object_id=record.id,
                 )

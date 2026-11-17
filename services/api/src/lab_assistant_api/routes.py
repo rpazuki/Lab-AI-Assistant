@@ -57,6 +57,7 @@ def _client_signal(request: Request) -> str | None:
     client = request.client
     return client.host if client else None
 
+
 router = APIRouter(prefix="/api/v1")
 
 Container = Annotated[ApiContainer, Depends(get_container)]
@@ -163,9 +164,7 @@ async def login(
         workspaces = await uow.workspaces.list_for_user(user.id)
     selected = None
     if payload.workspace:
-        selected = next(
-            (w.id for w in workspaces if w.slug == payload.workspace.lower()), None
-        )
+        selected = next((w.id for w in workspaces if w.slug == payload.workspace.lower()), None)
     elif workspaces:
         selected = workspaces[0].id
     token, _minted = mint_token(
@@ -261,9 +260,7 @@ async def rename_session(
 
 
 @router.delete("/chat/sessions/{session_id}", status_code=204)
-async def delete_session(
-    session_id: UUID, actor: CurrentActor, container: Container
-) -> Response:
+async def delete_session(session_id: UUID, actor: CurrentActor, container: Container) -> Response:
     await ChatService(container.context).delete_session(actor, session_id=session_id)
     return Response(status_code=204)
 
@@ -364,9 +361,7 @@ async def search(
                 "source_label": block.source_label,
                 "locator": block.locator,
                 "display_restricted": block.display_restricted,
-                "score": result.scores.get(
-                    result.handle_index[block.handle]["chunk_key"], None
-                ),
+                "score": result.scores.get(result.handle_index[block.handle]["chunk_key"], None),
                 "work_id": result.handle_index[block.handle]["work_id"],
             }
             for block in result.evidence
@@ -537,9 +532,7 @@ async def list_candidates(
         works = await uow.works.list_works(actor.workspace_id, limit=limit)
         items = []
         for work in works:
-            assertions = await uow.observations.list_assertions(
-                actor.workspace_id, work_id=work.id
-            )
+            assertions = await uow.observations.list_assertions(actor.workspace_id, work_id=work.id)
             metadata = canonical_metadata(list(assertions))
             identifiers = await uow.works.list_identifiers(actor.workspace_id, work.id)
             items.append(
@@ -910,9 +903,7 @@ async def rollback_release(
     alias: Annotated[str, Query()] = "current",
     reason: Annotated[str, Query()] = "operator_rollback",
 ) -> dict[str, Any]:
-    switched = await ReleaseService(container.context).rollback(
-        actor, alias=alias, reason=reason
-    )
+    switched = await ReleaseService(container.context).rollback(actor, alias=alias, reason=reason)
     return {"alias": switched.alias, "release_id": str(switched.release_id)}
 
 
@@ -945,9 +936,7 @@ async def corpus_stats(
     container: Container,
     release_id: Annotated[UUID | None, Query()] = None,
 ) -> dict[str, Any]:
-    stats = await AnalyticsService(container.context).corpus_stats(
-        actor, release_id=release_id
-    )
+    stats = await AnalyticsService(container.context).corpus_stats(actor, release_id=release_id)
     return {
         "release_id": str(stats.release_id),
         "release_name": stats.release_name,
@@ -1012,9 +1001,7 @@ async def task_snapshot(actor: CurrentActor, container: Container) -> dict[str, 
 
 
 @router.post("/operations/tasks/{task_id}/retry")
-async def retry_task(
-    task_id: UUID, actor: CurrentActor, container: Container
-) -> dict[str, Any]:
+async def retry_task(task_id: UUID, actor: CurrentActor, container: Container) -> dict[str, Any]:
     actor.require(Capability.VIEW_OPERATIONS)
     task = await container.orchestrator.retry_dead_letter(
         workspace_id=actor.workspace_id, task_id=task_id

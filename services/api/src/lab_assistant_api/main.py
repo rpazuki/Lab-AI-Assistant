@@ -39,8 +39,7 @@ def create_app(
         blockers = resolved_settings.production_blockers()
         if blockers:
             raise RuntimeError(
-                "refusing to start in production with development settings: "
-                + "; ".join(blockers)
+                "refusing to start in production with development settings: " + "; ".join(blockers)
             )
 
     @asynccontextmanager
@@ -145,9 +144,7 @@ def create_app(
                 await ping()
                 checks["object_store"] = True
             else:
-                stored = await store.put(
-                    b"readiness", workspace_id=None, object_class="readiness"
-                )
+                stored = await store.put(b"readiness", workspace_id=None, object_class="readiness")
                 checks["object_store"] = await store.verify(stored.id)
         except Exception:  # pragma: no cover - reported, not raised
             checks["object_store"] = False

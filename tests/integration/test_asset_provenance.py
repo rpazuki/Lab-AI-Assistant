@@ -116,9 +116,7 @@ async def _register(acquisition, label: str, *, licence: str = "cc-by-4.0"):
         rights_decision=decision,
         route=AcquisitionRoute.OPEN_ACCESS_API,
         connector_id="europepmc",
-        expected_identifiers=(
-            Identifier(scheme=IdentifierScheme.DOI, value="10.1234/shared"),
-        ),
+        expected_identifiers=(Identifier(scheme=IdentifierScheme.DOI, value="10.1234/shared"),),
     )
     return work, manifestation, decision, asset
 
@@ -177,9 +175,7 @@ class TestSharedBytesKeepTheirProvenance:
     async def test_every_acquisition_is_audited(self, acquisition) -> None:
         await _register(acquisition, "audited-one")
         await _register(acquisition, "audited-two")
-        actions = [
-            event.action.value for event in acquisition["harness"].db.audit_events
-        ]
+        actions = [event.action.value for event in acquisition["harness"].db.audit_events]
         # Two registrations, not one: the second used to vanish with its asset.
         assert actions.count("asset_registered") == 2
 

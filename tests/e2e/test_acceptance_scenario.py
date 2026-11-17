@@ -403,9 +403,7 @@ async def test_full_lifecycle_acceptance_scenario() -> None:
         plans = await uow.assets.list_plans(workspace.id)
     acquired_work_ids = {asset.work_id for asset in assets}
     assert public_work.id in acquired_work_ids
-    assisted_plan = next(
-        plan for plan in plans if plan.work_id == private_work.id
-    )
+    assisted_plan = next(plan for plan in plans if plan.work_id == private_work.id)
     assert assisted_plan.status in ("assisted", "failed")
 
     # ── step 5: a user uploads an authorised copy of the restricted work ────
@@ -427,9 +425,7 @@ async def test_full_lifecycle_acceptance_scenario() -> None:
 
     # Restrict the uploaded work to the group, then parse and extract both works.
     async with context.uow_factory() as uow:
-        decision = await uow.policies.get_rights_decision(
-            workspace.id, upload.rights_decision_id
-        )
+        decision = await uow.policies.get_rights_decision(workspace.id, upload.rights_decision_id)
         assert decision is not None
         await uow.policies.add_rights_decision(
             decision.model_copy(update={"restricted_to_group_ids": (private_group.id,)})
@@ -612,12 +608,8 @@ async def test_full_lifecycle_acceptance_scenario() -> None:
 
     # ── step 11: group member sees the restricted work; outsider does not ───
     retrieval = RetrievalService(context)
-    insider_result = await retrieval.retrieve(
-        insider_actor, query="confidential strain screen"
-    )
-    outsider_result = await retrieval.retrieve(
-        outsider_actor, query="confidential strain screen"
-    )
+    insider_result = await retrieval.retrieve(insider_actor, query="confidential strain screen")
+    outsider_result = await retrieval.retrieve(outsider_actor, query="confidential strain screen")
     insider_titles = {block.work_title for block in insider_result.evidence}
     outsider_titles = {block.work_title for block in outsider_result.evidence}
     assert "Confidential strain screen" in insider_titles

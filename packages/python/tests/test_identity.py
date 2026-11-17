@@ -175,9 +175,7 @@ class TestMergeInvariants:
 
     def test_every_refusal_explains_itself(self) -> None:
         left, right = _work(), _work()
-        assessment = assess_merge(
-            left=left, right=right, left_identifiers=[], right_identifiers=[]
-        )
+        assessment = assess_merge(left=left, right=right, left_identifiers=[], right_identifiers=[])
         assert assessment.explanation
         assert assessment.as_decision_payload()["reason_code"] == "no_identifier_bridge"
 

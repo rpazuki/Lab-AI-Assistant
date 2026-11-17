@@ -75,6 +75,7 @@ METADATA = MetaData(
     }
 )
 
+
 class UuidType(TypeDecorator):
     """UUID column that works on PostgreSQL and on SQLite.
 
@@ -332,9 +333,7 @@ source_requests = Table(
     Column("response_body_object_id", _UUID, ForeignKey("objects.id")),
     Column("response_sha256", Text),
     Column("response_byte_length", Integer),
-    Column(
-        "response_body_kind", Text, nullable=False, server_default=text("'upstream_bytes'")
-    ),
+    Column("response_body_kind", Text, nullable=False, server_default=text("'upstream_bytes'")),
     Column("upstream_body_object_id", _UUID, ForeignKey("objects.id")),
     Column("upstream_sha256", Text),
     Column("source_cursor_before", Text),
@@ -662,9 +661,7 @@ evidence_spans = Table(
     METADATA,
     Column("id", _UUID, primary_key=True),
     Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
-    Column(
-        "rendition_id", _UUID, ForeignKey("renditions.id", ondelete="CASCADE"), nullable=False
-    ),
+    Column("rendition_id", _UUID, ForeignKey("renditions.id", ondelete="CASCADE"), nullable=False),
     Column("node_id", Text, nullable=False),
     Column("start_offset", Integer, nullable=False),
     Column("end_offset", Integer, nullable=False),
@@ -1029,9 +1026,7 @@ chat_messages = Table(
     METADATA,
     Column("id", _UUID, primary_key=True),
     Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
-    Column(
-        "session_id", _UUID, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
-    ),
+    Column("session_id", _UUID, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False),
     Column("role", Text, nullable=False),
     Column("content", Text, nullable=False),
     Column("release_id", _UUID, ForeignKey("corpus_releases.id")),
@@ -1073,9 +1068,7 @@ feedback = Table(
     METADATA,
     Column("id", _UUID, primary_key=True),
     Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
-    Column(
-        "message_id", _UUID, ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=False
-    ),
+    Column("message_id", _UUID, ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=False),
     Column("user_id", _UUID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("rating", Integer, nullable=False),
     Column("comment", Text),

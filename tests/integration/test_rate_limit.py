@@ -157,9 +157,7 @@ class TestBudgetKey:
 
 
 class TestSharedBudget:
-    async def test_two_limiters_on_one_context_share_the_allowance(
-        self, limiter_harness
-    ) -> None:
+    async def test_two_limiters_on_one_context_share_the_allowance(self, limiter_harness) -> None:
         """Two workers, one budget: this is the whole reason it is stored."""
         policy = RatePolicy(requests_per_second=1.0, burst=2, max_concurrent=4)
         worker_one = RateLimiter(limiter_harness.context)
@@ -185,9 +183,7 @@ class TestSharedBudget:
         await limiter.acquire(KEY, policy=policy)
         await limiter.release(KEY)
 
-    async def test_a_concurrency_cap_blocks_a_second_request(
-        self, limiter_harness
-    ) -> None:
+    async def test_a_concurrency_cap_blocks_a_second_request(self, limiter_harness) -> None:
         policy = RatePolicy(requests_per_second=10.0, burst=10, max_concurrent=1)
         limiter = RateLimiter(limiter_harness.context)
         await limiter.acquire(KEY, policy=policy)
@@ -261,9 +257,7 @@ class TestThrottledPages:
             ).with_class(ErrorClass.RATE_LIMITED)
 
         with pytest.raises(LabAssistantError):
-            async for _page in limiter.throttle(
-                rate_limited_source(), key=KEY, policy=policy
-            ):
+            async for _page in limiter.throttle(rate_limited_source(), key=KEY, policy=policy):
                 pass
 
         async with limiter_harness.context.uow_factory() as uow:
@@ -428,9 +422,7 @@ class TestRateLimitedWorkAlwaysComesBack:
         state = stored_run.state_for("pubmed-fixture")
         assert state is not None and state.outcome.value == "rate_limited_retryable"
 
-    async def test_the_retry_resumes_from_the_stored_cursor(
-        self, provisioned_two_page
-    ) -> None:
+    async def test_the_retry_resumes_from_the_stored_cursor(self, provisioned_two_page) -> None:
         """Page one is fetched, page two is deferred, and the cursor points at two."""
         from lab_assistant.domain.states import TaskState
 

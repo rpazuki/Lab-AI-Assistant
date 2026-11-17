@@ -282,12 +282,8 @@ class TestIncrementalProjection:
         )
         # A copied projection is a complete projection: same chunk count, and the
         # membership gate agrees.
-        first_count = await harness.search.count_chunks(
-            actor.workspace_id, first["release"].id
-        )
-        second_count = await harness.search.count_chunks(
-            actor.workspace_id, second["release"].id
-        )
+        first_count = await harness.search.count_chunks(actor.workspace_id, first["release"].id)
+        second_count = await harness.search.count_chunks(actor.workspace_id, second["release"].id)
         assert second_count == first_count
         assert second["result"].quality_gates["projection_membership"]
 
@@ -303,9 +299,7 @@ class TestIncrementalProjection:
                 include_claims=False,
             ),
         )
-        keys_before = set(
-            harness.search.chunks[(actor.workspace_id, built["release"].id)].keys()
-        )
+        keys_before = set(harness.search.chunks[(actor.workspace_id, built["release"].id)].keys())
         handler = harness.handlers.get(StageName.INDEXING)
         await handler.execute(
             StageCommand(
@@ -315,9 +309,7 @@ class TestIncrementalProjection:
                 inputs={"release_id": str(built["release"].id)},
             )
         )
-        keys_after = set(
-            harness.search.chunks[(actor.workspace_id, built["release"].id)].keys()
-        )
+        keys_after = set(harness.search.chunks[(actor.workspace_id, built["release"].id)].keys())
         # Chunk identity is derived from content and profile, so a rerun is a no-op.
         assert keys_before == keys_after
 

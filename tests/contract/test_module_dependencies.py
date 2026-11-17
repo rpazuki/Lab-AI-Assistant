@@ -33,9 +33,7 @@ ALLOWED: dict[str, frozenset[str]] = {
     "fixtures": frozenset(
         {"contracts", "domain", "policy", "provenance", "application", "config", "testing"}
     ),
-    "adapters": frozenset(
-        {"contracts", "domain", "policy", "provenance", "application", "config"}
-    ),
+    "adapters": frozenset({"contracts", "domain", "policy", "provenance", "application", "config"}),
     "migration": frozenset(
         {"contracts", "domain", "policy", "provenance", "application", "adapters", "config"}
     ),

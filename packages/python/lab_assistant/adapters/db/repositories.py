@@ -81,9 +81,7 @@ def _str_tuple(value: Any) -> tuple[str, ...]:
 # ── mappers ─────────────────────────────────────────────────────────────────
 USERS = Mapper(t.users, User)
 WORKSPACES = Mapper(t.workspaces, Workspace)
-MEMBERSHIPS = Mapper(
-    t.memberships, Membership, loaders={"extra_capabilities": _capabilities}
-)
+MEMBERSHIPS = Mapper(t.memberships, Membership, loaders={"extra_capabilities": _capabilities})
 GROUPS = Mapper(t.groups, Group)
 INVITATIONS = Mapper(t.invitations, Invitation)
 SCOPES = Mapper(
@@ -107,9 +105,7 @@ OBSERVATIONS = Mapper(t.source_observations, SourceObservation)
 ASSERTIONS = Mapper(t.source_assertions, SourceAssertion)
 WORKS = Mapper(t.works, Work)
 IDENTIFIERS = Mapper(t.work_identifiers, WorkIdentifier)
-RELATIONS = Mapper(
-    t.work_relations, WorkRelation, loaders={"assertion_ids": uuid_list}
-)
+RELATIONS = Mapper(t.work_relations, WorkRelation, loaders={"assertion_ids": uuid_list})
 DECISIONS = Mapper(
     t.identity_decisions,
     IdentityDecision,
@@ -153,9 +149,7 @@ REVISIONS = Mapper(
     renames={"value": "value_json"},
     loaders={"evidence_span_ids": uuid_list, "validation_issues": _str_tuple},
 )
-REVIEWS = Mapper(
-    t.reviews, Review, renames={"before": "before_json", "after": "after_json"}
-)
+REVIEWS = Mapper(t.reviews, Review, renames={"before": "before_json", "after": "after_json"})
 RELEASES = Mapper(
     t.corpus_releases,
     CorpusRelease,
@@ -186,9 +180,7 @@ MESSAGES = Mapper(
         "citations": lambda rows: tuple(rows or ()),
     },
 )
-FEEDBACK = Mapper(
-    t.feedback, Feedback, loaders={"flagged_citation_handles": _str_tuple}
-)
+FEEDBACK = Mapper(t.feedback, Feedback, loaders={"flagged_citation_handles": _str_tuple})
 GRANTS = Mapper(t.resource_grants, GrantSpec)
 
 
@@ -239,9 +231,7 @@ class _Users(_Base):
 
     async def list_all(self, *, limit: int = 100, cursor: str | None = None) -> list[User]:
         conditions = [t.users.c.email_normalized > cursor] if cursor else []
-        return await self._many(
-            USERS, *conditions, order=t.users.c.email_normalized, limit=limit
-        )
+        return await self._many(USERS, *conditions, order=t.users.c.email_normalized, limit=limit)
 
 
 class _Workspaces(_Base):
@@ -289,9 +279,7 @@ class _Workspaces(_Base):
     async def update_membership(self, membership: Membership) -> None:
         await self._upsert(MEMBERSHIPS, membership)
 
-    async def list_groups(
-        self, workspace_id: UUID, *, user_id: UUID | None = None
-    ) -> list[Group]:
+    async def list_groups(self, workspace_id: UUID, *, user_id: UUID | None = None) -> list[Group]:
         if user_id is None:
             groups = await self._many(GROUPS, self._scope(GROUPS, workspace_id))
         else:
@@ -316,9 +304,7 @@ class _Workspaces(_Base):
             loaded.append(
                 group.model_copy(
                     update={
-                        "member_user_ids": frozenset(
-                            uuid_or_none(row[0]) for row in members.all()
-                        )
+                        "member_user_ids": frozenset(uuid_or_none(row[0]) for row in members.all())
                     }
                 )
             )
@@ -417,9 +403,7 @@ class _Configs(_Base):
         found = row.first()
         return ScopeVersion.model_validate(found[0]) if found else None
 
-    async def latest_scope_version(
-        self, workspace_id: UUID, scope_id: UUID
-    ) -> ScopeVersion | None:
+    async def latest_scope_version(self, workspace_id: UUID, scope_id: UUID) -> ScopeVersion | None:
         row = await self._c.execute(
             select(t.scope_versions.c.payload)
             .where(
@@ -463,10 +447,7 @@ class _Configs(_Base):
         conditions = [t.config_versions.c.workspace_id == workspace_id]
         if kind is not None:
             conditions.append(t.config_versions.c.kind == kind)
-        return await self._many(
-            CONFIGS, *conditions, order=t.config_versions.c.logical_id
-        )
-
+        return await self._many(CONFIGS, *conditions, order=t.config_versions.c.logical_id)
 
 
 @lru_cache(maxsize=1)
@@ -745,8 +726,12 @@ class _Works(_Base):
         if after_id is not None:
             conditions.append(t.works.c.id > after_id)
         page = (
-            select(t.works.c.id, t.works.c.relevance, t.works.c.merged_into_work_id,
-                   t.works.c.identity_status)
+            select(
+                t.works.c.id,
+                t.works.c.relevance,
+                t.works.c.merged_into_work_id,
+                t.works.c.identity_status,
+            )
             .where(*conditions)
             .order_by(t.works.c.id)
             .limit(limit)
@@ -764,8 +749,7 @@ class _Works(_Base):
             .select_from(
                 page.outerjoin(
                     t.assets,
-                    (t.assets.c.work_id == page.c.id)
-                    & (t.assets.c.workspace_id == workspace_id),
+                    (t.assets.c.work_id == page.c.id) & (t.assets.c.workspace_id == workspace_id),
                 ).outerjoin(
                     t.rights_decisions,
                     (t.rights_decisions.c.id == t.assets.c.rights_decision_id)
@@ -924,9 +908,7 @@ class _Assets(_Base):
         await self._upsert(ASSETS, asset)
 
     async def get_asset(self, workspace_id: UUID, asset_id: UUID) -> Asset | None:
-        return await self._one(
-            ASSETS, self._scope(ASSETS, workspace_id), t.assets.c.id == asset_id
-        )
+        return await self._one(ASSETS, self._scope(ASSETS, workspace_id), t.assets.c.id == asset_id)
 
     async def find_asset_by_digest(
         self,
@@ -1043,9 +1025,7 @@ class _Claims(_Base):
         await self._upsert(CLAIMS, claim)
 
     async def get_claim(self, workspace_id: UUID, claim_id: UUID) -> Claim | None:
-        return await self._one(
-            CLAIMS, self._scope(CLAIMS, workspace_id), t.claims.c.id == claim_id
-        )
+        return await self._one(CLAIMS, self._scope(CLAIMS, workspace_id), t.claims.c.id == claim_id)
 
     async def list_claims(
         self,
@@ -1143,9 +1123,7 @@ class _Releases(_Base):
         conditions = [self._scope(RELEASES, workspace_id)]
         if after_id is not None:
             conditions.append(t.corpus_releases.c.id > after_id)
-        return await self._many(
-            RELEASES, *conditions, order=t.corpus_releases.c.id, limit=limit
-        )
+        return await self._many(RELEASES, *conditions, order=t.corpus_releases.c.id, limit=limit)
 
     async def add_items(self, items: Sequence[ReleaseItem]) -> None:
         for item in items:
@@ -1278,10 +1256,7 @@ class _Tasks(_Base):
                     t.tasks.c.stage == stage_value,
                     (
                         (t.tasks.c.state == TaskState.READY.value)
-                        & (
-                            t.tasks.c.not_before.is_(None)
-                            | (t.tasks.c.not_before <= now)
-                        )
+                        & (t.tasks.c.not_before.is_(None) | (t.tasks.c.not_before <= now))
                     )
                     | (
                         (t.tasks.c.state == TaskState.LEASED.value)
@@ -1327,9 +1302,7 @@ class _Tasks(_Base):
         )
         return {row[0]: row[1] for row in sorted(result.all())}
 
-    async def release_dependencies(
-        self, workspace_id: UUID, completed_task_id: UUID
-    ) -> list[Task]:
+    async def release_dependencies(self, workspace_id: UUID, completed_task_id: UUID) -> list[Task]:
         blocked = await self._many(
             TASKS, self._scope(TASKS, workspace_id), t.tasks.c.state == TaskState.BLOCKED.value
         )
@@ -1415,15 +1388,11 @@ class _Audit(_Base):
         await self._c.execute(insert(t.outbox_events).values(**OUTBOX.to_row(event)))
 
     async def list_unpublished_outbox(self, *, limit: int = 100) -> list[OutboxEvent]:
-        return await self._many(
-            OUTBOX, t.outbox_events.c.published_at.is_(None), limit=limit
-        )
+        return await self._many(OUTBOX, t.outbox_events.c.published_at.is_(None), limit=limit)
 
     async def mark_outbox_published(self, event_id: UUID, *, at: datetime) -> None:
         await self._c.execute(
-            update(t.outbox_events)
-            .where(t.outbox_events.c.id == event_id)
-            .values(published_at=at)
+            update(t.outbox_events).where(t.outbox_events.c.id == event_id).values(published_at=at)
         )
 
 

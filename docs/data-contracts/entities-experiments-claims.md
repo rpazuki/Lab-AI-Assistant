@@ -33,7 +33,7 @@ can find. `0.05` from `p<0.05` is not the same fact.
 ## Comparability
 
 ```python
-left.comparable_with(right)   # same dimension, convertible units, compatible operators
+left.comparable_with(right)  # same dimension, convertible units, compatible operators
 ```
 
 Two claims conflict only when they are comparable *and* disagree. `1.2 g/L` and

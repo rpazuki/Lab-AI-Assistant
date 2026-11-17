@@ -168,9 +168,7 @@ class TestGrants:
         assert engine.allows(with_grants, action=PolicyAction.QUERY, resource=WORK_RESOURCE)
         without = _input(grants=(grants[0],))
         assert engine.allows(without, action=PolicyAction.QUERY, resource=WORK_RESOURCE)
-        assert not engine.allows(
-            without, action=PolicyAction.VIEW_CONTENT, resource=WORK_RESOURCE
-        )
+        assert not engine.allows(without, action=PolicyAction.VIEW_CONTENT, resource=WORK_RESOURCE)
 
     def test_expired_grant_stops_working(self) -> None:
         expired = _grant(PolicyAction.QUERY, valid_until=NOW - timedelta(seconds=1))
@@ -180,9 +178,7 @@ class TestGrants:
 
     def test_resource_scoped_grant_does_not_leak_to_other_resources(self) -> None:
         other = uuid4()
-        grant = _grant(
-            PolicyAction.QUERY, resource_type=ResourceType.WORK, resource_id=other
-        )
+        grant = _grant(PolicyAction.QUERY, resource_type=ResourceType.WORK, resource_id=other)
         assert not PolicyEngine().allows(
             _input(grants=(grant,)), action=PolicyAction.QUERY, resource=WORK_RESOURCE
         )
@@ -216,9 +212,7 @@ class TestGroupRestrictions:
         )
 
     def test_group_member_with_a_group_grant_may_query(self) -> None:
-        group_grant = _grant(
-            PolicyAction.QUERY, subject_type=SubjectType.GROUP, subject_id=GROUP
-        )
+        group_grant = _grant(PolicyAction.QUERY, subject_type=SubjectType.GROUP, subject_id=GROUP)
         assert PolicyEngine().allows(
             _input(grants=(group_grant,), group_ids=(GROUP,)),
             action=PolicyAction.QUERY,
@@ -226,9 +220,7 @@ class TestGroupRestrictions:
         )
 
     def test_non_member_with_the_same_group_grant_is_denied(self) -> None:
-        group_grant = _grant(
-            PolicyAction.QUERY, subject_type=SubjectType.GROUP, subject_id=GROUP
-        )
+        group_grant = _grant(PolicyAction.QUERY, subject_type=SubjectType.GROUP, subject_id=GROUP)
         assert not PolicyEngine().allows(
             _input(grants=(group_grant,)),
             action=PolicyAction.QUERY,

@@ -94,9 +94,7 @@ class AnalyticsService:
             claims=sum(len(item.record.claim_revision_ids) for item in permitted),
             chunks=chunks,
             withheld=(
-                len(items) - len(permitted)
-                if actor.has(Capability.MANAGE_RELEASE)
-                else None
+                len(items) - len(permitted) if actor.has(Capability.MANAGE_RELEASE) else None
             ),
         )
 

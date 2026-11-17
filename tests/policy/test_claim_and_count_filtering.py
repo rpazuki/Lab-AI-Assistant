@@ -78,9 +78,7 @@ async def index() -> MemorySearchIndex:
 
 class TestClaimSearchFiltersBeforeRanking:
     async def test_a_restricted_claim_cannot_fill_the_window(self, index) -> None:
-        rows = await index.claim_search(
-            WORKSPACE, RELEASE, top_k=5, work_ids=[VISIBLE_WORK]
-        )
+        rows = await index.claim_search(WORKSPACE, RELEASE, top_k=5, work_ids=[VISIBLE_WORK])
         assert [row["work_id"] for row in rows] == [str(VISIBLE_WORK)]
 
     async def test_without_the_filter_the_visible_claim_is_pushed_out(self, index) -> None:

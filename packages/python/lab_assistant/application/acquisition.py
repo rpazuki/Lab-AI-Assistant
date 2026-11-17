@@ -124,6 +124,7 @@ def detect_media_type(content: bytes, *, declared: str | None = None) -> str:
 #: large; something that is, is a mistake or an attack.
 DEFAULT_MAX_ASSET_BYTES = 64 * 1024 * 1024
 
+
 class AcquisitionService:
     """Rights decisions, plans, and the assisted upload path."""
 
@@ -500,9 +501,7 @@ class AcquisitionPlanningHandler:
             # exceeded the fixed limit that used to be here, which would have left
             # works unplanned and indistinguishable from works with nothing to fetch.
             works = await collect_pages(
-                lambda after, size: uow.works.list_works(
-                    workspace_id, limit=size, after_id=after
-                )
+                lambda after, size: uow.works.list_works(workspace_id, limit=size, after_id=after)
             )
             included = [w for w in works if w.relevance.is_included and w.is_active]
             assertion_index = {

@@ -134,9 +134,7 @@ async def provisioned(harness: Harness) -> dict[str, Any]:
     workspace, _membership = await accounts.create_workspace(
         slug="rla-lab", display_name="RLA Lab", owner_user_id=steward.id
     )
-    steward_actor = make_actor(
-        user_id=steward.id, workspace_id=workspace.id, role=Role.ADMIN
-    )
+    steward_actor = make_actor(user_id=steward.id, workspace_id=workspace.id, role=Role.ADMIN)
     await accounts.add_member(steward_actor, user_id=researcher.id, role=Role.RESEARCHER)
 
     grants: list[GrantSpec] = []

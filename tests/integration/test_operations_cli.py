@@ -141,7 +141,8 @@ class TestWithdraw:
         service = ReleaseService(deployment["harness"].context)
         with pytest.raises(NotFound):
             await service.withdraw(
-                deployment["actor"], release_id=deployment["workspace"].id  # any absent id
+                deployment["actor"],
+                release_id=deployment["workspace"].id,  # any absent id
             )
 
 
@@ -227,9 +228,7 @@ class TestVerifyRestore:
     ) -> None:
         harness = deployment["harness"]
         async with harness.context.uow_factory() as uow:
-            release = await uow.releases.get(
-                deployment["workspace"].id, deployment["release_id"]
-            )
+            release = await uow.releases.get(deployment["workspace"].id, deployment["release_id"])
             assert release is not None
             release.manifest_sha256 = "f" * 64
             await uow.releases.update(release)
@@ -281,9 +280,7 @@ class TestTaskCommands:
         # Waiting for a human is not a failure, and the command says so explicitly.
         assert '"counts_as_failure": false' in payload
 
-    async def test_cancel_refuses_a_task_that_is_already_terminal(
-        self, deployment, capsys
-    ) -> None:
+    async def test_cancel_refuses_a_task_that_is_already_terminal(self, deployment, capsys) -> None:
         harness, actor = deployment["harness"], deployment["actor"]
         task = await harness.orchestrator.submit(
             workspace_id=actor.workspace_id,
@@ -331,9 +328,7 @@ class TestTaskCommands:
         assert code == 1
         assert "not found" in capsys.readouterr().err
 
-    async def test_queue_reports_depth_without_a_worker_heartbeat(
-        self, deployment, capsys
-    ) -> None:
+    async def test_queue_reports_depth_without_a_worker_heartbeat(self, deployment, capsys) -> None:
         harness, actor = deployment["harness"], deployment["actor"]
         await harness.orchestrator.submit(
             workspace_id=actor.workspace_id,

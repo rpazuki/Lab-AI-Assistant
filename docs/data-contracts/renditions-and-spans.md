@@ -62,7 +62,7 @@ Version 1 applies, in order:
 **Case is never folded.** `Ura3` and `URA3` are different things in this domain.
 
 ```python
-verify_quote(node_text, span)   # True | False, under SPAN_NORMALISATION_VERSION
+verify_quote(node_text, span)  # True | False, under SPAN_NORMALISATION_VERSION
 ```
 
 The version is stored on every span. Changing normalisation means version 2, a

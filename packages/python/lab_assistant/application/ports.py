@@ -154,9 +154,7 @@ class ObjectStore(Protocol):
 
     async def get(self, object_id: UUID) -> bytes: ...
 
-    def stream(
-        self, object_id: UUID, *, chunk_size: int = 1024 * 1024
-    ) -> AsyncIterator[bytes]:
+    def stream(self, object_id: UUID, *, chunk_size: int = 1024 * 1024) -> AsyncIterator[bytes]:
         """Yield the object's bytes, verifying the digest as they pass.
 
         The verification can only fail at the end, by which time the consumer
@@ -659,6 +657,7 @@ class ReleaseRepository(Protocol):
         rows and reporting on the corpus.
         """
         ...
+
     async def add_items(self, items: Sequence[ReleaseItem]) -> None: ...
     async def list_items(self, workspace_id: UUID, release_id: UUID) -> list[ReleaseItem]: ...
     async def get_alias(self, workspace_id: UUID, alias: str) -> SearchAlias | None: ...

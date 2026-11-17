@@ -51,7 +51,7 @@ than inferred later from a suspiciously small count.
 ## Freezing a run
 
 ```python
-blockers = run.freeze_blockers()   # empty tuple means it may freeze
+blockers = run.freeze_blockers()  # empty tuple means it may freeze
 ```
 
 Freezing is refused, with named blockers, when a connector has a non-terminal outcome,

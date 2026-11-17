@@ -284,9 +284,7 @@ class DiscoveryService:
                 )
             await uow.commit()
         return run, (
-            TaskRequest(
-                stage=StageName.RECONCILIATION, inputs={"discovery_run_id": str(run.id)}
-            ),
+            TaskRequest(stage=StageName.RECONCILIATION, inputs={"discovery_run_id": str(run.id)}),
         )
 
 

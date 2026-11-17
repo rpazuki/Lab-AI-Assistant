@@ -31,7 +31,7 @@ class TestNormalisationChain:
             ("0.4–0.5", "0.4-0.5"),
             ("30−C", "30-C"),
             # quotes fold to ASCII
-            ("“yield” and ‘basis’", '"yield" and \'basis\''),
+            ("“yield” and ‘basis’", "\"yield\" and 'basis'"),
             # soft hyphen disappears
             ("experi­ment", "experiment"),
             # hyphenation across a line break rejoins

@@ -425,9 +425,12 @@ class TestSearchProjectionOverSql:
 
         # Policy filtering happens in the candidate SQL: an empty allowlist yields
         # nothing rather than everything.
-        assert await search.lexical_search(
-            workspace.id, release_a, query="lipid", top_k=5, work_ids=[]
-        ) == []
+        assert (
+            await search.lexical_search(
+                workspace.id, release_a, query="lipid", top_k=5, work_ids=[]
+            )
+            == []
+        )
 
         copied = await search.copy_chunks(
             workspace.id, from_release_id=release_a, to_release_id=release_b, work_ids=[work_id]
@@ -578,13 +581,9 @@ class TestSearchProjectionOverSql:
         assert await search.count_chunks(workspace.id, release_id, work_ids=[visible]) == 1
         assert await search.count_chunks(workspace.id, release_id, work_ids=[]) == 0
 
-        claims = await search.claim_search(
-            workspace.id, release_id, top_k=10, work_ids=[visible]
-        )
+        claims = await search.claim_search(workspace.id, release_id, top_k=10, work_ids=[visible])
         assert [claim["work_id"] for claim in claims] == [str(visible)]
-        assert await search.claim_search(
-            workspace.id, release_id, top_k=10, work_ids=[]
-        ) == []
+        assert await search.claim_search(workspace.id, release_id, top_k=10, work_ids=[]) == []
 
 
 class TestEndToEndOverSql:

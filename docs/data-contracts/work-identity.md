@@ -30,8 +30,8 @@ titles by design.
 
 ```python
 assessment = assess_merge(left, right)
-assessment.decision   # merge | conflict | propose | distinct
-assessment.reasons    # ('doi_match',) — or ('doi_conflict', 'pmid_match')
+assessment.decision  # merge | conflict | propose | distinct
+assessment.reasons  # ('doi_match',) — or ('doi_conflict', 'pmid_match')
 ```
 
 ## Conflicts

@@ -100,7 +100,6 @@ class Harness:
         return executed
 
 
-
 async def reset_database(engine: Any) -> None:
     """Empty every table this application declares, leaving the schema in place.
 
@@ -463,9 +462,7 @@ async def publish_demo_corpus(
                 decision = await uow.policies.get_rights_decision(workspace_id, rights.id)
                 assert decision is not None
                 await uow.policies.add_rights_decision(
-                    decision.model_copy(
-                        update={"restricted_to_group_ids": (restricted_group,)}
-                    )
+                    decision.model_copy(update={"restricted_to_group_ids": (restricted_group,)})
                 )
             parse_run = ParseRun(
                 id=context.new_id(),
@@ -590,9 +587,7 @@ def record(
     return {"locator": locator, "assertions": assertions}
 
 
-def fake_source(
-    connector_id: str, pages: list[FixturePage], **kwargs: Any
-) -> FakeSourceConnector:
+def fake_source(connector_id: str, pages: list[FixturePage], **kwargs: Any) -> FakeSourceConnector:
     return FakeSourceConnector(connector_id=connector_id, pages=tuple(pages), **kwargs)
 
 

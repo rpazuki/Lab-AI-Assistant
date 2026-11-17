@@ -341,7 +341,6 @@ async def _extract_and_review(
     return tuple(accepted), tuple(corrected), empty_work_id
 
 
-
 async def _every_target_abstained(context: Any, workspace_id: UUID, work_id: UUID) -> bool:
     """True when extraction searched and reported nothing, for every target."""
     async with context.uow_factory() as uow:

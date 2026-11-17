@@ -38,9 +38,7 @@ def _parser() -> argparse.ArgumentParser:
     print_config = config_sub.add_parser(
         "print", help="print effective configuration with per-key source"
     )
-    print_config.add_argument(
-        "--json", action="store_true", help="emit JSON rather than a table"
-    )
+    print_config.add_argument("--json", action="store_true", help="emit JSON rather than a table")
     config_sub.add_parser(
         "connectors", help="which connectors this deployment has, and their limits"
     )
@@ -242,8 +240,7 @@ def _parser() -> argparse.ArgumentParser:
             sub.add_argument("--digest", required=True, help="sha256 hex digest")
         sub.add_argument(
             "--actor",
-            required=name
-            in ("validate", "publish", "rollback", "withdraw", "retract-work"),
+            required=name in ("validate", "publish", "rollback", "withdraw", "retract-work"),
         )
 
     package = subparsers.add_parser("package", help="export package operations")
@@ -260,9 +257,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     reacquire.add_argument("inventory", type=Path)
 
-    demo = subparsers.add_parser(
-        "demo", help="run the deterministic in-process stack end to end"
-    )
+    demo = subparsers.add_parser("demo", help="run the deterministic in-process stack end to end")
     demo.add_argument("--question", default="What lipid yield was reported?")
 
     return parser
@@ -298,9 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     return 2  # pragma: no cover - argparse rejects anything else
 
 
-def _config_print(
-    settings: Settings, provenance: ConfigProvenance, *, as_json: bool
-) -> int:
+def _config_print(settings: Settings, provenance: ConfigProvenance, *, as_json: bool) -> int:
     """Print effective configuration, redacted, with the source of each key."""
     redacted = settings.redacted()
     sources = provenance.as_dict()
@@ -607,8 +600,7 @@ async def _verify_restore(container: Any, workspace_id: UUID) -> int:
     )
     if problems:
         print(
-            f"{len(problems)} problem(s): do not serve this restore "
-            "until each one is explained",
+            f"{len(problems)} problem(s): do not serve this restore until each one is explained",
             file=sys.stderr,
         )
         return 1
@@ -683,7 +675,6 @@ async def _storage(
         if owned:
             for hook in container.shutdown:
                 await hook()
-
 
 
 def _destination_store(settings: Settings):
@@ -1067,13 +1058,19 @@ async def _release(args: argparse.Namespace, settings: Settings) -> int:
         service = ReleaseService(container.context)
         if args.release_command == "validate":
             report = await service.validate(actor, release_id=UUID(args.release_id))
-            print(json.dumps({"passed": report.passed, "gates": report.gates,
-                              "failures": list(report.failures)}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "passed": report.passed,
+                        "gates": report.gates,
+                        "failures": list(report.failures),
+                    },
+                    indent=2,
+                )
+            )
             return 0 if report.passed else 1
         if args.release_command == "publish":
-            alias = await service.publish(
-                actor, release_id=UUID(args.release_id), alias=args.alias
-            )
+            alias = await service.publish(actor, release_id=UUID(args.release_id), alias=args.alias)
             print(f"alias {alias.alias} -> {alias.release_id}")
             return 0
         if args.release_command == "withdraw":
@@ -1108,9 +1105,7 @@ async def _release_references(container: Any, workspace_id: UUID, *, digest: str
         for release in await uow.releases.list_releases(workspace_id, limit=1_000):
             items = await uow.releases.list_items(workspace_id, release.id)
             works = [
-                str(item.record.work_id)
-                for item in items
-                if item.record.rendition_digest == digest
+                str(item.record.work_id) for item in items if item.record.rendition_digest == digest
             ]
             if works:
                 citing.append(

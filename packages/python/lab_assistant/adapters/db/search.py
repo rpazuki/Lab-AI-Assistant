@@ -357,9 +357,7 @@ class PostgresSearchIndex:
                     "revision_id": str(row["revision_id"]),
                     "claim_id": str(row["claim_id"]),
                     "work_id": str(row["work_id"]),
-                    "experiment_id": (
-                        str(row["experiment_id"]) if row["experiment_id"] else None
-                    ),
+                    "experiment_id": (str(row["experiment_id"]) if row["experiment_id"] else None),
                     "predicate": row["predicate"],
                     "subject": row["subject"],
                     "object_kind": row["object_kind"],
