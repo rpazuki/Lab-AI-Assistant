@@ -205,6 +205,7 @@ class FilesystemObjectStore:
         object_class: str,
         media_type: str = "application/octet-stream",
         max_bytes: int | None = None,
+        created_at: datetime | None = None,
     ) -> StoredObjectRecord:
         """Spool, then move into place. Memory is bounded by the spool size.
 
@@ -214,8 +215,11 @@ class FilesystemObjectStore:
         """
         with await spool_stream(source, max_bytes=max_bytes) as payload:
             return await self._register_spooled(
-                payload, workspace_id=workspace_id, object_class=object_class,
+                payload,
+                workspace_id=workspace_id,
+                object_class=object_class,
                 media_type=media_type,
+                created_at=created_at,
             )
 
     @_synchronised
@@ -226,6 +230,7 @@ class FilesystemObjectStore:
         workspace_id: UUID | None,
         object_class: str,
         media_type: str,
+        created_at: datetime | None = None,
     ) -> StoredObjectRecord:
         object_id = _object_id(workspace_id, payload.sha256)
         existing = self._index.get(object_id)
@@ -254,7 +259,7 @@ class FilesystemObjectStore:
             byte_length=payload.byte_length,
             media_type=media_type,
             object_class=object_class,
-            created_at=self._clock(),
+            created_at=created_at or self._clock(),
             key=key,
         )
         self._index[object_id] = record
@@ -310,6 +315,19 @@ class FilesystemObjectStore:
     @_synchronised
     async def head(self, object_id: UUID) -> StoredObjectRecord | None:
         return self._index.get(object_id)
+
+    async def inventory(self) -> AsyncIterator[StoredObjectRecord]:
+        """Every record this store holds, including ones no database knows.
+
+        Taken as a snapshot under the lock and then yielded, rather than
+        iterating the live index: a writer appending mid-walk would otherwise
+        mutate the dictionary being iterated.
+        """
+        with self._locked():
+            self._load_index()
+            records = list(self._index.values())
+        for record in records:
+            yield record
 
     @_synchronised
     async def verify(self, object_id: UUID) -> bool:
@@ -383,14 +401,19 @@ class InMemoryObjectStore:
         object_class: str,
         media_type: str = "application/octet-stream",
         max_bytes: int | None = None,
+        created_at: datetime | None = None,
     ) -> StoredObjectRecord:
         with await spool_stream(source, max_bytes=max_bytes) as payload:
-            return await self.put(
+            stored = await self.put(
                 payload.read_all(),
                 workspace_id=workspace_id,
                 object_class=object_class,
                 media_type=media_type,
             )
+        if created_at is not None and stored.created_at != created_at:
+            stored = replace(stored, created_at=created_at)
+            self._records[stored.id] = stored
+        return stored
 
     async def stream(
         self, object_id: UUID, *, chunk_size: int = STREAM_CHUNK_BYTES
@@ -422,6 +445,10 @@ class InMemoryObjectStore:
 
     async def head(self, object_id: UUID) -> StoredObjectRecord | None:
         return self._records.get(object_id)
+
+    async def inventory(self) -> AsyncIterator[StoredObjectRecord]:
+        for record in list(self._records.values()):
+            yield record
 
     async def verify(self, object_id: UUID) -> bool:
         record = self._records.get(object_id)

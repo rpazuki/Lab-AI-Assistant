@@ -79,6 +79,7 @@ __all__ = [
     "RenditionRepository",
     "SearchIndex",
     "StoredObject",
+    "SupportsInventory",
     "TaskRepository",
     "UnitOfWork",
     "UserRepository",
@@ -132,6 +133,7 @@ class ObjectStore(Protocol):
         object_class: str,
         media_type: str = "application/octet-stream",
         max_bytes: int | None = None,
+        created_at: datetime | None = None,
     ) -> StoredObject:
         """Store a payload without holding it in memory.
 
@@ -139,6 +141,10 @@ class ObjectStore(Protocol):
         payload is spooled — in memory while it is small, on disk once it is
         not — and the limit is enforced while reading rather than after. Same
         idempotence as ``put``: the same bytes twice are one object.
+
+        ``created_at`` exists for one caller: a migration copying an object
+        between stores, which must not restamp evidence with the hour it was
+        moved. Everything else leaves it unset and takes the store's clock.
         """
         ...
 
@@ -200,6 +206,20 @@ class ObjectReference:
 
 
 @runtime_checkable
+class SupportsInventory(Protocol):
+    """A store that can enumerate what it holds.
+
+    Optional on purpose. A local store keeps an index and can answer cheaply; a
+    bucket answers with LIST, which a deliberately narrow reader credential may
+    not hold at all (audit F15). A migration that assumed every store could
+    enumerate itself would refuse to run under exactly the credentials a careful
+    deployment issues.
+    """
+
+    def inventory(self) -> AsyncIterator[StoredObject]: ...
+
+
+@runtime_checkable
 class ObjectRegistryRepository(Protocol):
     """The database's record of what the object store holds.
 
@@ -232,6 +252,17 @@ class ObjectRegistryRepository(Protocol):
         object_class: str | None = None,
     ) -> list[ObjectRecord]:
         """One keyset page of the registry, for inventory and restore checks."""
+        ...
+
+    async def list_all_objects(
+        self, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[ObjectRecord]:
+        """One keyset page of every object, across every workspace.
+
+        Migration is an installation-wide operation: a sweep scoped to one
+        workspace would leave another workspace's evidence behind, and shared
+        objects — the ones with no workspace at all — behind every time.
+        """
         ...
 
     async def count_objects(self, workspace_id: UUID) -> int: ...

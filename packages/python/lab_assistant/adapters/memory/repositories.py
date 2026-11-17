@@ -411,6 +411,14 @@ class _Objects:
             rows = [record for record in rows if record.id > after_id]
         return rows[:limit]
 
+    async def list_all_objects(
+        self, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[ObjectRecord]:
+        rows = sorted(self._db.objects.values(), key=lambda record: record.id)
+        if after_id is not None:
+            rows = [record for record in rows if record.id > after_id]
+        return rows[:limit]
+
     async def count_objects(self, workspace_id: UUID) -> int:
         return sum(
             1 for record in self._db.objects.values() if record.workspace_id == workspace_id

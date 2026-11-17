@@ -533,6 +533,14 @@ class _Objects(_Base):
             conditions.append(t.objects.c.object_class == object_class)
         return await self._many(OBJECTS, *conditions, order=t.objects.c.id, limit=limit)
 
+    async def list_all_objects(
+        self, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[ObjectRecord]:
+        conditions = []
+        if after_id is not None:
+            conditions.append(t.objects.c.id > after_id)
+        return await self._many(OBJECTS, *conditions, order=t.objects.c.id, limit=limit)
+
     async def count_objects(self, workspace_id: UUID) -> int:
         result = await self._c.execute(
             select(func.count()).select_from(t.objects).where(self._scope(OBJECTS, workspace_id))

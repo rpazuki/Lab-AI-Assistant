@@ -441,6 +441,7 @@ class S3ObjectStore:
         object_class: str,
         media_type: str = "application/octet-stream",
         max_bytes: int | None = None,
+        created_at: datetime | None = None,
     ) -> StoredObjectRecord:
         """Spool to a digest, then upload — in parts when it is large enough.
 
@@ -466,7 +467,7 @@ class S3ObjectStore:
                 byte_length=payload.byte_length,
                 media_type=media_type,
                 object_class=object_class,
-                created_at=self._clock(),
+                created_at=created_at or self._clock(),
                 key=key,
             )
         try:

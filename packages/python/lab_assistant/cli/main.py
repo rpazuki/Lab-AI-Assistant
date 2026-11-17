@@ -16,10 +16,11 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from lab_assistant import __version__
 from lab_assistant.config import ConfigProvenance, Settings, load_settings
+from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 
 __all__ = ["main"]
 
@@ -92,6 +93,34 @@ def _parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="write the rows; without it this reports what it would do",
+    )
+    migrate = storage_sub.add_parser(
+        "migrate", help="copy every object to another store, verifiably and resumably"
+    )
+    migrate.add_argument(
+        "--apply",
+        action="store_true",
+        help="copy; without it this inventories both sides and reports the plan",
+    )
+    migrate.add_argument(
+        "--verify",
+        choices=["none", "metadata", "digest"],
+        default="digest",
+        help="how each copy is confirmed; 'digest' reads the destination back",
+    )
+    migrate.add_argument(
+        "--journal",
+        type=Path,
+        default=None,
+        help="progress file; an interrupted run resumes from it (default: var/migrations)",
+    )
+    migrate.add_argument(
+        "--run-id", default=None, help="resume a named run rather than starting a new one"
+    )
+    migrate.add_argument(
+        "--skip-source-only",
+        action="store_true",
+        help="do not carry payloads the database does not describe",
     )
 
     task = subparsers.add_parser("task", help="inspect and steer queued work")
@@ -532,6 +561,9 @@ async def _storage(
 
         container = build_container(settings)
     try:
+        if args.storage_command == "migrate":
+            return await _storage_migrate(args, settings, container)
+
         workspace_id = await _workspace_id(container, args.workspace)
         if workspace_id is None:
             print(f"workspace {args.workspace!r} not found", file=sys.stderr)
@@ -578,6 +610,112 @@ async def _storage(
         if owned:
             for hook in container.shutdown:
                 await hook()
+
+
+
+def _destination_store(settings: Settings):
+    """Build the migration destination from its own environment namespace.
+
+    ``LAB_MIGRATE_*`` mirrors ``LAB_OBJECT_STORE_*``. A separate namespace
+    because both stores have to be described at once, and credentials stay in
+    the environment rather than on a command line that lands in shell history
+    and process listings.
+    """
+    import os
+
+    kind = os.environ.get("LAB_MIGRATE_OBJECT_STORE_KIND")
+    if not kind:
+        raise LabAssistantError(
+            "no migration destination configured",
+            context={
+                "set": "LAB_MIGRATE_OBJECT_STORE_KIND=filesystem|s3",
+                "then": "LAB_MIGRATE_OBJECT_STORE_ROOT, or the LAB_MIGRATE_OBJECT_STORE_* "
+                "bucket, region, endpoint and credentials",
+            },
+        ).with_class(ErrorClass.INVALID_CONTENT)
+
+    if kind == "filesystem":
+        root = os.environ.get("LAB_MIGRATE_OBJECT_STORE_ROOT")
+        if not root:
+            raise LabAssistantError(
+                "LAB_MIGRATE_OBJECT_STORE_ROOT is required for a filesystem destination"
+            ).with_class(ErrorClass.INVALID_CONTENT)
+        from lab_assistant.adapters.object_store.filesystem import FilesystemObjectStore
+
+        return FilesystemObjectStore(Path(root))
+
+    if kind == "s3":
+        from lab_assistant.adapters.object_store.s3 import S3ObjectStore, S3StoreConfig
+
+        return S3ObjectStore(
+            S3StoreConfig(
+                bucket=os.environ.get("LAB_MIGRATE_OBJECT_STORE_BUCKET"),
+                region=os.environ.get("LAB_MIGRATE_OBJECT_STORE_REGION"),
+                endpoint=os.environ.get("LAB_MIGRATE_OBJECT_STORE_ENDPOINT"),
+                access_key=os.environ.get("LAB_MIGRATE_OBJECT_STORE_ACCESS_KEY"),
+                secret_key=os.environ.get("LAB_MIGRATE_OBJECT_STORE_SECRET_KEY"),
+                session_token=os.environ.get("LAB_MIGRATE_OBJECT_STORE_SESSION_TOKEN"),
+                prefix=os.environ.get("LAB_MIGRATE_OBJECT_STORE_PREFIX", ""),
+                multipart_threshold=settings.object_store_multipart_threshold_bytes,
+            )
+        )
+
+    raise LabAssistantError(
+        f"unknown LAB_MIGRATE_OBJECT_STORE_KIND {kind!r}; expected 'filesystem' or 's3'"
+    ).with_class(ErrorClass.INVALID_CONTENT)
+
+
+async def _storage_migrate(args: argparse.Namespace, settings: Settings, container: Any) -> int:
+    """Inventory both stores, then copy — installation-wide, not per workspace."""
+    from lab_assistant.application.storage_migration import (
+        MigrationJournal,
+        StorageMigrationService,
+        VerifyLevel,
+    )
+
+    destination = _destination_store(settings)
+    run_id = args.run_id or uuid4().hex
+    journal_path = args.journal or (
+        settings.object_store_root.parent / "migrations" / f"{run_id}.jsonl"
+    )
+    journal = MigrationJournal(Path(journal_path))
+    service = StorageMigrationService(container.context, destination=destination)
+
+    report = await service.migrate(
+        journal=journal if args.apply else None,
+        dry_run=not args.apply,
+        verify=VerifyLevel(args.verify),
+        include_source_only=not args.skip_source_only,
+        run_id=run_id,
+    )
+    payload = report.as_dict()
+    payload["journal"] = str(journal.path)
+    print(json.dumps(payload, indent=2))
+
+    close = getattr(destination, "aclose", None)
+    if close is not None:
+        await close()
+
+    if report.problems:
+        print(
+            f"{len(report.problems)} object(s) did not migrate: the old store stays "
+            "primary until each one is explained",
+            file=sys.stderr,
+        )
+        return 1
+    if report.dry_run:
+        print(
+            f"would copy {report.copied} object(s), {report.bytes_copied} bytes; "
+            f"re-run with --apply (resume id {report.run_id})",
+            file=sys.stderr,
+        )
+        return 0
+    print(
+        f"copied {report.copied} object(s), verified {report.verified}; "
+        "the old store is still primary until you change the configuration",
+        file=sys.stderr,
+    )
+    return 0
 
 
 async def _task(

@@ -207,6 +207,14 @@ Work:
   done. Provider version tokens are read for compare-and-swap but not yet surfaced on the
   port; upload limits and role-specific readiness (F15) are outstanding.**
 - Add a verified resumable filesystem-to-cloud migration command and inventory report.
+  **Done:** `lab storage migrate`, installation-wide, with a dry-run plan, a journal
+  that resumes an interrupted run, digest verification by default, and a re-run that
+  copies nothing and verifies everything as the acceptance pass. Identity is preserved
+  by construction and creation time travels with the object. Tombstoned payloads are
+  deliberately not copied — the denial lives in the database, which does not move —
+  and are named in the report. Exercised end to end against PostgreSQL and two
+  filesystem stores; filesystem-to-S3 is the same code through the same port, and
+  has not been run against a live bucket.
 - Add private portable backup/restore commands and manifests; test app/version/extension
   compatibility, volume name discovery, secrets references and one-writer cutover.
 - Repair unsafe schema/code rollback assumptions in deployment tooling before migrations.
@@ -425,6 +433,9 @@ these stages and a persisted progress report:
    a live JSONL registry; copying the file while appending is not a complete protocol.
 6. Verify every required digest and count; run restore/dependency checks. Validate destination
    policy and encryption. Persist a migration manifest including missing optional items.
+   **Implemented as the journal plus the report's `plan` block.** Destination policy and
+   encryption validation are still outstanding: the command checks bytes, not bucket
+   configuration.
 7. Change all API and worker backend settings coherently, start in restricted validation mode,
    run representative search/citation/download checks, then enable serving/workers.
 8. Retain old store read-only until successful acceptance and backup retention requirements

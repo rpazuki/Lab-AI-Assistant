@@ -74,6 +74,67 @@ registered object nothing references — usually a transaction that rolled back 
 its upload — is reported and does not. Reclaiming those is a separate, privileged
 decision that has to account for retention and legal holds.
 
+## Moving the object store
+
+Changing `LAB_OBJECT_STORE_KIND` points the application at an empty bucket. The
+evidence stays where it was, every citation stops resolving, and the next write goes
+somewhere with no history. The configuration change is the *last* step, not the
+operation.
+
+The destination is described by `LAB_MIGRATE_OBJECT_STORE_*`, mirroring
+`LAB_OBJECT_STORE_*`, so both stores are configured at once and credentials stay in
+the environment rather than on a command line that lands in shell history.
+
+```bash
+LAB_MIGRATE_OBJECT_STORE_KIND=s3 LAB_MIGRATE_OBJECT_STORE_BUCKET=... lab storage migrate
+```
+
+That inventories both sides and reports the plan without writing. Then:
+
+```bash
+lab storage migrate --apply
+```
+
+What it does, and what it deliberately does not:
+
+- Copies every object the registry knows, across every workspace and including the
+  shared objects that belong to none — a per-workspace sweep would leave those behind
+  every time.
+- Preserves identity by construction rather than by copying: an object's id is
+  derived from its workspace and digest, so the destination computes the same id from
+  the same bytes. There is no mapping table to get wrong.
+- Carries the original creation time. Evidence restamped with the hour it was moved
+  has lost something real.
+- Verifies each copy. `--verify digest` reads the destination back and recomputes,
+  and is the default because it is the level that catches a truncated transfer.
+  `--verify metadata` is the cheap pass.
+- Journals progress, so an interrupted run resumes. The journal holds object ids and
+  counts — no credentials, no signed URLs — and **belongs in the backup** while a
+  migration is in flight.
+- Carries payloads the database does not describe, usually uploads whose transaction
+  rolled back. `--skip-source-only` leaves them, as a decision rather than an
+  omission.
+- Does **not** copy tombstoned payloads. The denial is recorded in the database,
+  which a migration does not move, so access stays denied either way; copying
+  withdrawn material into a new store would be the wrong default. Their bytes stay in
+  the old store, and the report names them.
+- Does **not** switch the application over, and does **not** make the old store
+  read-only. Both are deliberate operator steps, in that order, after a person has
+  read the verification.
+
+Re-running after a successful migration copies nothing and verifies everything, which
+is the acceptance pass to make before cutover:
+
+```bash
+lab storage migrate --apply --verify digest
+```
+
+Then point `LAB_OBJECT_STORE_*` at the new store for the API and every worker
+together, run `lab db verify-restore` against it, and check search, a citation and a
+download before enabling writes. Keep the old store read-only until acceptance and
+your retention requirements are both satisfied: once new writes land on the new store,
+going back needs a reverse delta, not a configuration change.
+
 If a sweep reports dangling references, `lab storage backfill --workspace <slug>`
 reports what it could rebuild from the store's own metadata, and `--apply` writes the
 rows. Note that PostgreSQL's foreign keys make dangling references impossible to
