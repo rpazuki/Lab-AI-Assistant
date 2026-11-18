@@ -693,6 +693,38 @@ records architecture and an implementation-ready plan only.
             unproven and run as soon as the endpoint enforces signatures. Run them
             against the institutional gateway before S3 carries production evidence.
 - [ ] Phase 2 complete archival format and crash-safe publication accepted.
+      **In progress.**
+      - [x] Catalog contracts and the transitive dependency enumerator.
+            `contracts/archive_catalog.py` defines twelve typed record kinds, aligned
+            field by field with the domain they are built from — the first draft was
+            written from memory and had a title on `Work` (it is reconciled from source
+            assertions), a normalisation version on `Rendition` (it is on the span), a
+            string locator (it is structured) and a name that collided with
+            `contracts/release.py`. `application/archive_catalog.py` walks a release's
+            closure rather than dumping tables: release → entries → works →
+            manifestations → assets → rights decisions → renditions → spans, and
+            entries → pinned claim revisions → claims → reviews, following
+            `supersedes_revision_id` backwards so the reason a number changed travels.
+            Shards are canonical JSONL, sorted by id, digested over the bytes, so two
+            builds of one closure are byte-identical — which is what a later incremental
+            publication rests on.
+      - [x] **First acceptance gate reached: the archive fixture validates without the
+            producer DB.** `application/archive_validate.py` takes a directory and opens
+            nothing else. It checks the manifest digest, every shard's length, digest
+            and row count, every row against its record model, and — the check that
+            distinguishes an archive from a table dump — that every reference resolves
+            *within* the snapshot. The golden fixture passes with zero blocking
+            findings; the two advisories are real (its releases carry no scope version).
+      - [x] `lab archive package / inspect / verify`.
+      - [ ] Projection export: vectors and chunks with profile digest and portable
+            numeric encoding.
+      - [ ] Publication protocol: outbox, staged publication, atomic head
+            compare-and-swap, writer epoch. Nothing here publishes — `package` writes a
+            snapshot and committing one is a separate operation.
+      - [ ] Private stage checkpoints and the result lookup index.
+      - [ ] Signed policy/revocation checkpoints and retention dependency metadata.
+      - [ ] Signatures over the manifest digest: the format carries the fields and
+            nothing signs them yet.
 - [ ] Phase 3 independent reader end-to-end accepted with GET-only cloud identity.
 - [ ] Phase 4 role handover/workhorse tests accepted.
 - [ ] Phase 5 lifecycle/disaster/scale drills accepted.

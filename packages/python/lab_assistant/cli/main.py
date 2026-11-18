@@ -196,6 +196,35 @@ def _parser() -> argparse.ArgumentParser:
         help="how each restored object is confirmed",
     )
 
+    archive = subparsers.add_parser(
+        "archive", help="portable library snapshots (phase 2, in progress)"
+    )
+    archive_sub = archive.add_subparsers(dest="archive_command", required=True)
+    package = archive_sub.add_parser(
+        "package", help="write a published release's closure as a portable snapshot"
+    )
+    package.add_argument("--workspace", required=True, help="workspace slug")
+    package.add_argument("directory", type=Path, help="a new directory for the snapshot")
+    package.add_argument(
+        "--release-id",
+        action="append",
+        default=None,
+        help="package these releases; repeatable. Default: every servable release",
+    )
+    package.add_argument(
+        "--library-id",
+        default=None,
+        help="the library this snapshot belongs to (default: the workspace id)",
+    )
+    inspect_archive = archive_sub.add_parser(
+        "inspect", help="what a snapshot contains, without a database"
+    )
+    inspect_archive.add_argument("directory", type=Path)
+    verify_archive = archive_sub.add_parser(
+        "verify", help="validate a snapshot: digests, rows and every reference"
+    )
+    verify_archive.add_argument("directory", type=Path)
+
     task = subparsers.add_parser("task", help="inspect and steer queued work")
     task_sub = task.add_subparsers(dest="task_command", required=True)
     for name, help_text in (
@@ -298,6 +327,8 @@ def _dispatch(args: argparse.Namespace, settings: Settings, provenance: ConfigPr
             return asyncio.run(_storage(args, settings))
         case "backup":
             return asyncio.run(_backup(args, settings))
+        case "archive":
+            return asyncio.run(_archive(args, settings))
         case "task":
             return asyncio.run(_task(args, settings))
         case "worker":
@@ -956,6 +987,87 @@ def _database_snapshot(container: Any, settings: Settings):
 
         engine = make_engine(settings)
     return PostgresDatabaseSnapshot(engine, database_url=settings.database_url)
+
+
+async def _archive(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """Package a release into a portable snapshot, or check one.
+
+    `inspect` and `verify` take a directory and open no database: that is the
+    importer's position, and a validator that needed the producer's database
+    would be checking the wrong thing.
+    """
+    from lab_assistant.application.archive_validate import validate_snapshot
+
+    if args.archive_command in ("inspect", "verify"):
+        report = validate_snapshot(args.directory)
+        print(json.dumps(report.as_dict(), indent=2, default=str))
+        if args.archive_command == "inspect":
+            # Reporting, not a gate: inspect says what is there, and `verify`
+            # is the one whose exit code a script should branch on.
+            return 0
+        if not report.ok:
+            for finding in report.blocking:
+                print(f"  - {finding.code}: {finding.detail}", file=sys.stderr)
+            print(
+                f"{len(report.blocking)} blocking finding(s): this snapshot cannot be "
+                "imported until each one is explained",
+                file=sys.stderr,
+            )
+            return 1
+        advisory = [f for f in report.findings if not f.blocks]
+        for finding in advisory:
+            print(f"  - {finding.code}: {finding.detail}", file=sys.stderr)
+        print("snapshot valid", file=sys.stderr)
+        return 0
+
+    from lab_assistant.application.archive_catalog import ArchiveCatalogBuilder
+    from lab_assistant.application.backup import installation_identity
+
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        workspace_id = await _workspace_id(container, args.workspace)
+        if workspace_id is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+
+        installation_id, _source = installation_identity(settings)
+        builder = ArchiveCatalogBuilder(
+            container.context,
+            # One library per workspace in v1. Joining several into one, or
+            # importing another lab's, needs a mapping workflow that does not
+            # exist yet, so the default is the identity mapping.
+            library_id=UUID(args.library_id) if args.library_id else workspace_id,
+            installation_id=installation_id,
+            writer_epoch=settings.writer_epoch,
+        )
+        build = await builder.build(
+            workspace_id,
+            args.directory,
+            release_ids=tuple(UUID(value) for value in args.release_id)
+            if args.release_id
+            else None,
+        )
+        print(json.dumps(build.as_dict(), indent=2, default=str))
+        if not build.ok:
+            for problem in build.problems:
+                print(f"  - {problem}", file=sys.stderr)
+            return 1
+        print(
+            f"snapshot {build.snapshot_id} written to {build.directory}. "
+            "Run `lab archive verify` on it before anything depends on it.",
+            file=sys.stderr,
+        )
+        return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
 
 
 async def _task(
