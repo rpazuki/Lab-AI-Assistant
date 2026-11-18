@@ -244,6 +244,18 @@ def _parser() -> argparse.ArgumentParser:
     fetch_archive.add_argument(
         "--library-id", required=True, help="the library to fetch; no database is needed"
     )
+    import_archive = archive_sub.add_parser(
+        "import", help="import a fetched snapshot into this installation's database"
+    )
+    import_archive.add_argument("directory", type=Path, help="what `lab archive fetch` wrote")
+    import_archive.add_argument("--workspace", required=True, help="the local workspace slug")
+    import_archive.add_argument("--library-id", required=True)
+    import_archive.add_argument(
+        "--group-map",
+        action="append",
+        default=[],
+        help="source-group-uuid=local-group-uuid; an unmapped group admits nobody",
+    )
     publish_archive = archive_sub.add_parser(
         "publish", help="upload a snapshot and move the library head to it"
     )
@@ -1229,6 +1241,9 @@ async def _archive(
     if args.archive_command == "fetch":
         return await _archive_fetch(args, settings, container=container)
 
+    if args.archive_command == "import":
+        return await _archive_import(args, settings, container=container)
+
     if args.archive_command == "retention":
         return await _archive_retention(args, settings, container=container)
 
@@ -1322,6 +1337,45 @@ async def _archive(
             file=sys.stderr,
         )
         return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
+
+
+async def _archive_import(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """Import a fetched snapshot. Refuses anything that does not validate."""
+    from lab_assistant.application.archive_import import SnapshotImporter
+
+    group_map: dict[UUID, UUID] = {}
+    for entry in args.group_map:
+        source, _, local = entry.partition("=")
+        group_map[UUID(source)] = UUID(local)
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        workspace_id = await _workspace_id(container, args.workspace)
+        if workspace_id is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+        report = await SnapshotImporter(
+            container.context,
+            library_id=UUID(args.library_id),
+            verifier=_archive_verifier(settings),
+            require_signature=settings.archive_require_signature,
+            group_map=group_map,
+        ).import_snapshot(workspace_id, args.directory)
+        print(json.dumps(report.as_dict(), indent=2))
+        for problem in report.problems:
+            print(f"  - {problem}", file=sys.stderr)
+        for note in report.notes:
+            print(f"  note: {note}", file=sys.stderr)
+        return 0 if report.ok else 1
     finally:
         if owned:
             for hook in container.shutdown:

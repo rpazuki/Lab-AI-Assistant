@@ -24,6 +24,7 @@ from lab_assistant.application.ports import (
     WorkVisibilityRow,
 )
 from lab_assistant.contracts.archive import StageResultEnvelope
+from lab_assistant.contracts.archive_import import ImportRecord, ImportState
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
@@ -109,6 +110,8 @@ class MemoryDatabase:
     releases: dict[UUID, CorpusRelease] = field(default_factory=dict)
     publications: dict[UUID, PublicationRecord] = field(default_factory=dict)
     stage_results: dict[tuple[UUID, str], StageResultEnvelope] = field(default_factory=dict)
+    imports: dict[UUID, ImportRecord] = field(default_factory=dict)
+    work_metadata: dict[tuple[UUID, UUID], dict[str, Any]] = field(default_factory=dict)
     release_items: dict[UUID, ReleaseItem] = field(default_factory=dict)
     aliases: dict[tuple[UUID, str], SearchAlias] = field(default_factory=dict)
     tasks: dict[UUID, Task] = field(default_factory=dict)
@@ -617,6 +620,8 @@ class _Works:
             restricted: list[UUID] = []
             sensitivity = "internal"
             has_decision = False
+            states: list[str] = []
+            due: datetime | None = None
             for asset in self._db.assets.values():
                 if asset.workspace_id != workspace_id or asset.work_id != work.id:
                     continue
@@ -629,6 +634,11 @@ class _Works:
                 restricted.extend(decision.restricted_to_group_ids)
                 if decision.restrictions:
                     sensitivity = "restricted"
+                states.append(decision.status.value)
+                if decision.review_due_at is not None:
+                    due = (
+                        decision.review_due_at if due is None else min(due, decision.review_due_at)
+                    )
             rows.append(
                 WorkVisibilityRow(
                     work_id=work.id,
@@ -637,6 +647,8 @@ class _Works:
                     restricted_to_groups=tuple(dict.fromkeys(restricted)),
                     sensitivity=sensitivity,
                     has_rights_decision=has_decision,
+                    rights_states=tuple(dict.fromkeys(states)),
+                    earliest_review_due=due,
                 )
             )
         return rows
@@ -984,6 +996,43 @@ class _Claims:
             if review.workspace_id == workspace_id
             and (subject_id is None or review.subject_id == subject_id)
         ]
+
+
+class _Imports:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add(self, record: ImportRecord) -> None:
+        self._db.imports[record.id] = record
+
+    async def latest(self, library_id: UUID) -> ImportRecord | None:
+        active = [
+            record
+            for record in self._db.imports.values()
+            if record.library_id == library_id and record.state is ImportState.ACTIVE
+        ]
+        return max(active, key=lambda r: (r.commit_sequence, r.imported_at), default=None)
+
+    async def put_work_metadata(
+        self,
+        workspace_id: UUID,
+        work_id: UUID,
+        *,
+        library_id: UUID,
+        title: str | None,
+        publication_year: int | None,
+        container_title: str | None,
+    ) -> None:
+        self._db.work_metadata[(workspace_id, work_id)] = {
+            "library_id": library_id,
+            "title": title,
+            "publication_year": publication_year,
+            "container_title": container_title,
+        }
+
+    async def get_work_metadata(self, workspace_id: UUID, work_id: UUID) -> dict[str, Any] | None:
+        found = self._db.work_metadata.get((workspace_id, work_id))
+        return dict(found) if found is not None else None
 
 
 class _StageResults:
@@ -1389,6 +1438,7 @@ class MemoryUnitOfWork:
         self.releases = _Releases(db)
         self.publications = _Publications(db)
         self.stage_results = _StageResults(db)
+        self.imports = _Imports(db)
         self.tasks = _Tasks(db)
         self.audit = _Audit(db)
         self.chat = _Chat(db)

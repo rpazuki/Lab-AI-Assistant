@@ -62,7 +62,10 @@ from lab_assistant.contracts.archive_policy import POLICY_DIRECTORY, PolicyCheck
 from lab_assistant.contracts.canonical import sha256_bytes
 from lab_assistant.contracts.publication import HeadDescriptor
 
-__all__ = ["FetchReport", "SnapshotFetcher"]
+__all__ = ["FETCHED_HEAD_NAME", "FetchReport", "SnapshotFetcher"]
+
+#: Where a fetch records the head it followed.
+FETCHED_HEAD_NAME = "head.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +253,9 @@ class SnapshotFetcher:
             return None
         destination.mkdir(parents=True, exist_ok=True)
         existing.write_bytes(data)
+        # The head this snapshot was fetched under. Unsigned, and used only for
+        # its sequence: an importer refuses to step backwards from it (S65).
+        (destination / FETCHED_HEAD_NAME).write_bytes(head.serialise())
         (destination / "MANIFEST.sha256").write_text(
             f"{sha256_bytes(data)}  {MANIFEST_NAME}\n", encoding="utf-8"
         )

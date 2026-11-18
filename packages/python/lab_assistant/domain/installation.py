@@ -77,6 +77,10 @@ class InstallationCapability(StrEnum):
     RECORD_INTERACTION = "record_interaction"
     #: Export packages a member is entitled to, to private storage.
     PRIVATE_EXPORT = "private_export"
+    #: Import a published snapshot into this installation's own database. A
+    #: reader's way of getting a corpus: it writes corpus rows, and only ones a
+    #: signed, validated snapshot carried.
+    IMPORT_LIBRARY = "import_library"
     #: Scope definition, relevance decisions, identity merges and links, review
     #: outcomes — deciding what the corpus contains.
     CURATE_CORPUS = "curate_corpus"
@@ -100,6 +104,7 @@ READER_CAPABILITIES: frozenset[InstallationCapability] = frozenset(
         InstallationCapability.SERVE_CORPUS,
         InstallationCapability.RECORD_INTERACTION,
         InstallationCapability.PRIVATE_EXPORT,
+        InstallationCapability.IMPORT_LIBRARY,
     }
 )
 

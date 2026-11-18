@@ -3,12 +3,12 @@ Owner: operator
 Last verified: 2026-11-18
 Source of truth: `packages/python/lab_assistant/application/archive_fetch.py`
 
-# Runbook: fetching a snapshot onto a reader
+# Runbook: fetching and importing a snapshot onto a reader
 
 **When.** Setting up a reader installation, or refreshing one, from a library a
 publisher has published. Design:
-[ADR-0026](../../architecture/adr/0026-content-replication.md). Importing the fetched
-snapshot into the reader's database is the next phase-3 step and is not a command yet.
+[ADR-0026](../../architecture/adr/0026-content-replication.md) (fetch) and
+[ADR-0029](../../architecture/adr/0029-reader-import.md) (import).
 
 ## Fetch
 
@@ -24,6 +24,18 @@ writing it. It finishes by validating the directory with its payloads, and exits
 non-zero unless the result is complete and valid.
 
 Set `LAB_ARCHIVE_TRUSTED_KEYS` first, or the signature is reported and not checked.
+
+## Import
+
+```bash
+lab archive import /srv/lab/snapshots/next --workspace <slug> --library-id <library-uuid> \
+  --group-map <producer-group-uuid>=<local-group-uuid>
+```
+
+Validates again, re-verifies every evidence span against the imported text, writes the
+rows, and moves the serving alias last. It refuses an older head or policy than the one
+this reader already imported. Map every producer group whose material your members should
+see; an unmapped group admits nobody. Re-running on the same directory changes nothing.
 
 ## When it fails
 

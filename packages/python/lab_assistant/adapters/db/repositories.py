@@ -26,6 +26,7 @@ from lab_assistant.application.ports import (
     WorkVisibilityRow,
 )
 from lab_assistant.contracts.archive import StageResultEnvelope
+from lab_assistant.contracts.archive_import import ImportRecord, ImportState
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
 from lab_assistant.contracts.publication import PublicationRecord, PublicationState
@@ -747,6 +748,8 @@ class _Works(_Base):
                 page.c.identity_status,
                 t.rights_decisions.c.restricted_to_group_ids,
                 t.rights_decisions.c.restrictions,
+                t.rights_decisions.c.status.label("rights_status"),
+                t.rights_decisions.c.review_due_at,
             )
             .select_from(
                 page.outerjoin(
@@ -773,8 +776,18 @@ class _Works(_Base):
                     "groups": [],
                     "sensitivity": "internal",
                     "has_decision": False,
+                    "states": [],
+                    "due": None,
                 },
             )
+            if row["rights_status"] is not None:
+                entry["states"].append(row["rights_status"])
+            if row["review_due_at"] is not None:
+                entry["due"] = (
+                    row["review_due_at"]
+                    if entry["due"] is None
+                    else min(entry["due"], row["review_due_at"])
+                )
             groups = row["restricted_to_group_ids"]
             if groups is not None:
                 entry["has_decision"] = True
@@ -789,6 +802,8 @@ class _Works(_Base):
                 restricted_to_groups=tuple(dict.fromkeys(entry["groups"])),
                 sensitivity=str(entry["sensitivity"]),
                 has_rights_decision=bool(entry["has_decision"]),
+                rights_states=tuple(dict.fromkeys(entry["states"])),
+                earliest_review_due=entry["due"],
             )
             for work_id, entry in sorted(collected.items(), key=lambda pair: str(pair[0]))
         ]
@@ -1523,6 +1538,7 @@ class SqlUnitOfWork:
         self.releases = _Releases(connection)
         self.publications = _SqlPublications(connection)
         self.stage_results = _SqlStageResults(connection)
+        self.imports = _SqlImports(connection)
         self.tasks = _Tasks(connection, dialect=dialect)
         self.audit = _Audit(connection)
         self.chat = _Chat(connection)
@@ -1553,6 +1569,94 @@ class SqlUnitOfWork:
     async def rollback(self) -> None:
         if self._transaction is not None and self._transaction.is_active:
             await self._transaction.rollback()
+
+
+class _SqlImports:
+    def __init__(self, connection) -> None:
+        self._c = connection
+
+    async def add(self, record: ImportRecord) -> None:
+        await self._c.execute(
+            insert(t.archive_imports).values(
+                id=record.id,
+                workspace_id=record.workspace_id,
+                library_id=record.library_id,
+                snapshot_id=record.snapshot_id,
+                commit_sequence=record.commit_sequence,
+                policy_sequence=record.policy_sequence,
+                policy_checkpoint_digest=record.policy_checkpoint_digest,
+                state=record.state.value,
+                detail=record.detail,
+                counts_json=dict(record.counts),
+                imported_at=record.imported_at,
+            )
+        )
+
+    async def latest(self, library_id: UUID) -> ImportRecord | None:
+        result = await self._c.execute(
+            select(t.archive_imports)
+            .where(
+                t.archive_imports.c.library_id == library_id,
+                t.archive_imports.c.state == ImportState.ACTIVE.value,
+            )
+            .order_by(
+                t.archive_imports.c.commit_sequence.desc(), t.archive_imports.c.imported_at.desc()
+            )
+            .limit(1)
+        )
+        row = result.mappings().first()
+        if row is None:
+            return None
+        return ImportRecord(
+            id=row["id"],
+            workspace_id=row["workspace_id"],
+            library_id=row["library_id"],
+            snapshot_id=row["snapshot_id"],
+            commit_sequence=row["commit_sequence"],
+            policy_sequence=row["policy_sequence"],
+            policy_checkpoint_digest=row["policy_checkpoint_digest"],
+            state=ImportState(row["state"]),
+            detail=row["detail"],
+            counts=dict(row["counts_json"] or {}),
+            imported_at=row["imported_at"],
+        )
+
+    async def put_work_metadata(
+        self,
+        workspace_id: UUID,
+        work_id: UUID,
+        *,
+        library_id: UUID,
+        title: str | None,
+        publication_year: int | None,
+        container_title: str | None,
+    ) -> None:
+        values = {
+            "library_id": library_id,
+            "title": title,
+            "publication_year": publication_year,
+            "container_title": container_title,
+        }
+        where = and_(
+            t.work_metadata.c.workspace_id == workspace_id, t.work_metadata.c.work_id == work_id
+        )
+        existing = await self._c.execute(select(t.work_metadata.c.work_id).where(where))
+        if existing.first() is None:
+            await self._c.execute(
+                insert(t.work_metadata).values(workspace_id=workspace_id, work_id=work_id, **values)
+            )
+        else:
+            await self._c.execute(update(t.work_metadata).where(where).values(**values))
+
+    async def get_work_metadata(self, workspace_id: UUID, work_id: UUID) -> dict[str, Any] | None:
+        result = await self._c.execute(
+            select(t.work_metadata).where(
+                t.work_metadata.c.workspace_id == workspace_id,
+                t.work_metadata.c.work_id == work_id,
+            )
+        )
+        row = result.mappings().first()
+        return dict(row) if row is not None else None
 
 
 class _SqlStageResults:

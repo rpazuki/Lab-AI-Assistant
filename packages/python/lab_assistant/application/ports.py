@@ -17,6 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from lab_assistant.contracts.archive import StageResultEnvelope
+from lab_assistant.contracts.archive_import import ImportRecord
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
 from lab_assistant.contracts.publication import PublicationRecord
@@ -65,6 +66,7 @@ from lab_assistant.domain.workspace import (
 __all__ = [
     "ArchiveControlStore",
     "ArchiveDeletionStore",
+    "ArchiveImportRepository",
     "AssetRepository",
     "AuditRepository",
     "ChatRepository",
@@ -577,6 +579,12 @@ class WorkVisibilityRow:
     #: True when at least one asset carries a rights decision. A work with none is
     #: not "unrestricted"; it is undecided, and content actions default to deny.
     has_rights_decision: bool = False
+    #: The status of every rights decision on the work's assets, and the earliest
+    #: review date among them. A revoked or lapsed decision withholds the work
+    #: however its groups read — which retrieval did not check before, so a
+    #: revocation stopped nothing until a successor release (ADR-0029).
+    rights_states: tuple[str, ...] = ()
+    earliest_review_due: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -913,6 +921,7 @@ class ChatRepository(Protocol):
     async def list_workspace_sessions(self, workspace_id: UUID) -> list[ChatSession]:
         """Every member's sessions: what a retraction or a retention plan must see."""
         ...
+
     async def add_message(self, message: ChatMessage) -> None: ...
     async def list_messages(self, workspace_id: UUID, session_id: UUID) -> list[ChatMessage]: ...
     async def get_message(self, workspace_id: UUID, message_id: UUID) -> ChatMessage | None: ...
@@ -949,6 +958,32 @@ class StageResultRepository(Protocol):
     async def find(self, workspace_id: UUID, reuse_fingerprint: str) -> StageResultEnvelope | None:
         """The recorded outcome for this input, if there is one."""
         ...
+
+
+@runtime_checkable
+class ArchiveImportRepository(Protocol):
+    """A reader's record of what it imported, and the metadata it keeps."""
+
+    async def add(self, record: ImportRecord) -> None: ...
+
+    async def latest(self, library_id: UUID) -> ImportRecord | None:
+        """The newest active import: the reader's durable position."""
+        ...
+
+    async def put_work_metadata(
+        self,
+        workspace_id: UUID,
+        work_id: UUID,
+        *,
+        library_id: UUID,
+        title: str | None,
+        publication_year: int | None,
+        container_title: str | None,
+    ) -> None: ...
+
+    async def get_work_metadata(
+        self, workspace_id: UUID, work_id: UUID
+    ) -> dict[str, Any] | None: ...
 
 
 @runtime_checkable
@@ -1015,6 +1050,7 @@ class UnitOfWork(Protocol):
     claims: ClaimRepository
     releases: ReleaseRepository
     publications: PublicationRepository
+    imports: ArchiveImportRepository
     stage_results: StageResultRepository
     tasks: TaskRepository
     audit: AuditRepository

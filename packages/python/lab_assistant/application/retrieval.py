@@ -79,6 +79,20 @@ class RetrievalResult:
         return not self.evidence and not self.claims
 
 
+def _rights_withhold(row, now) -> bool:
+    """A work whose rights were revoked, or whose permission has lapsed."""
+    if {"prohibited", "expired"} & set(row.rights_states):
+        return True
+    due = row.earliest_review_due
+    if due is None:
+        return False
+    if due.tzinfo is None:  # SQLite hands timestamps back naive; they were stored as UTC
+        from datetime import UTC
+
+        due = due.replace(tzinfo=UTC)
+    return now >= due
+
+
 #: Page size for the corpus-wide visibility scan. One page is one query; the number
 #: trades round trips against how much of a page sits in memory at once.
 _VISIBILITY_PAGE_SIZE = 500
@@ -134,8 +148,14 @@ class RetrievalService:
                     actor.workspace_id, limit=size, after_id=after
                 )
 
+            now = context.now()
             async for row in iter_pages(page, page_size=_VISIBILITY_PAGE_SIZE):
                 if not row.is_active or row.relevance == RelevanceState.EXCLUDED.value:
+                    continue
+                if _rights_withhold(row, now):
+                    # Revoked or lapsed: withheld before scoring, and counted,
+                    # whoever is asking and whatever groups say.
+                    denied += 1
                     continue
                 resource = ResourceRef(
                     resource_type=ResourceType.WORK,
@@ -329,8 +349,16 @@ class RetrievalService:
                 label = f"{identifier.scheme.value}:{identifier.value_display}"
                 break
         year = metadata.get("year")
+        title = metadata.get("title")
+        if title is None and not assertions:
+            # A reader has no source assertions, only the reconciliation the
+            # snapshot carried (`application/archive_import.py`).
+            imported = await uow.imports.get_work_metadata(workspace_id, work_id)
+            if imported is not None:
+                title = imported.get("title")
+                year = imported.get("publication_year")
         return {
-            "title": metadata.get("title"),
+            "title": title,
             "year": int(year) if isinstance(year, int) else None,
             "source_label": label,
         }

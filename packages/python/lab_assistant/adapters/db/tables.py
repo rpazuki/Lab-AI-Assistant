@@ -1247,3 +1247,38 @@ def embedding_table_for(dimensions: int) -> Table:
     )
     _EMBEDDING_TABLES[dimensions] = table
     return table
+
+
+archive_imports = Table(
+    "archive_imports",
+    METADATA,
+    Column("id", _UUID, primary_key=True),
+    Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    Column("library_id", _UUID, nullable=False),
+    Column("snapshot_id", _UUID, nullable=False),
+    Column("commit_sequence", Integer, nullable=False),
+    Column("policy_sequence", Integer),
+    Column("policy_checkpoint_digest", Text),
+    Column("state", Text, nullable=False),
+    Column("detail", Text),
+    Column("counts_json", _JSONB, nullable=False, server_default=text("'{}'")),
+    Column("imported_at", DateTime(timezone=True), nullable=False),
+    Index("ix_archive_imports_library", "library_id", "state", "commit_sequence"),
+)
+
+
+#: A reader's titles and years. A producer reconciles them from source
+#: assertions on every request; a reader has no assertions, only the
+#: reconciliation the snapshot carried, so it keeps that here.
+work_metadata = Table(
+    "work_metadata",
+    METADATA,
+    Column(
+        "workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
+    ),
+    Column("work_id", _UUID, ForeignKey("works.id", ondelete="CASCADE"), primary_key=True),
+    Column("library_id", _UUID, nullable=False),
+    Column("title", Text),
+    Column("publication_year", Integer),
+    Column("container_title", Text),
+)

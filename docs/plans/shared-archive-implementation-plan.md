@@ -903,15 +903,40 @@ records architecture and an implementation-ready plan only.
             the inventory withheld but the snapshot contains as blocking.
             17 tests; six deliberate breaks of the new rules each fail the test written
             for it.
-            **Outstanding, in order:** the importer itself — into an empty reader
-            database, through the repositories, with spans re-verified against the
-            imported renditions, vectors imported under a matching profile, groups mapped
-            and the policy overlay applied to the rights rows; titles on a reader, which
-            today come from source assertions it will not have; refresh and policy
-            refresh; least-privilege database roles. Also: an existing corpus's
+            **Outstanding then:** the importer, titles on a reader, refresh, roles —
+            the first three done below. Also: an existing corpus's
             decisions predate `replicate_content` and need a re-evaluation command;
             projection shards are uploaded per snapshot rather than content-addressed;
             payloads are copied through memory.
+      - [x] **The success definition, offline.** `lab archive import` takes a fetched
+            directory into an empty reader — its own database, store and index — and the
+            reader then searches, asks and opens a citation with document embedding and
+            extraction wired to fail if called. Additive under the producer's ids, alias
+            last, one import record per attempt
+            ([ADR-0029](../architecture/adr/0029-reader-import.md), **proposed** — it
+            replaces the plan's two generation strategies with neither, and says why).
+            Validates again; re-verifies every span against the imported rendition
+            bytes; refuses an older head, a fork at one head, or an older policy (S65);
+            imports vectors only under the reader's own profile (S36/S37); maps groups,
+            an unmapped one admitting nobody (S22); writes the *narrowed* rights rows, so
+            a revocation reaches the reader by refetching policy alone (S19/S20 path);
+            and keeps titles in `work_metadata` (migration `0004`), since a reader has
+            no source assertions. Run on the in-memory adapters **and on SQLite with
+            foreign keys enforced**, which found two ordering defects the memory run
+            could not: projections written before their releases, and missing creation
+            times. 14 tests; five deliberate breaks each fail theirs — one only after
+            the test was fixed, because both harnesses mint the same ids and the group
+            mapping had been a no-op.
+            **A pre-existing defect, found here:** retrieval checked a work's group
+            restrictions and never its rights *status*, so `revoke_rights` — documented
+            as "stop serving affected material immediately" — stopped nothing until a
+            successor release, on the producer as well. Retrieval and analytics now
+            withhold revoked or lapsed works before scoring and in the counts.
+            **Outstanding:** least-privilege database roles (a reader's API role can still
+            write corpus tables); a reader-side refresh loop and the readiness policy-age
+            check; reader retention of old releases; analytics years and journals on a
+            reader (still from assertions); UI display of role, sync and policy freshness;
+            and the deployment acceptance with a GET-only cloud identity.
 - [ ] Phase 4 role handover/workhorse tests accepted.
       **Offline core done; acceptance needs two real VMs.**
       - [x] Handover protocol ([ADR-0027](../architecture/adr/0027-publisher-handover.md),

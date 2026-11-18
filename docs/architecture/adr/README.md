@@ -45,3 +45,4 @@ names its successor.
 | [0026](0026-content-replication.md) | Content leaves the producer only under an explicit replication permission (proposed) |
 | [0027](0027-publisher-handover.md) | The right to publish moves by a drained, fenced, operator-run handover (proposed) |
 | [0028](0028-archive-retention.md) | Archive deletion is reachability-based, planned, reviewed and re-verified (proposed) |
+| [0029](0029-reader-import.md) | A reader imports additively, under the producer's ids, and activates by alias (proposed) |

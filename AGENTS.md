@@ -77,6 +77,9 @@ These are constraints, tests, or gates — never comments:
 - content leaves the producer only under `replicate_content`: a payload, its rendition,
   its chunks and their vectors travel to the archive when a governing decision grants it,
   and are recorded as withheld otherwise (ADR-0026);
+- retrieval withholds a work whose rights decision is revoked or past review, before
+  scoring and in counts; a reader imports only what validates, re-verifies every span,
+  and never steps back to an older head or policy (ADR-0029);
 - a policy checkpoint **narrows** a snapshot and never widens it, and a decision it
   does not mention is withheld (`domain/archive_policy.py`, ADR-0025). A widening is
   a publication. A writer checks both library heads before moving either;
