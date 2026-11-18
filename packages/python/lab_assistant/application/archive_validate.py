@@ -56,6 +56,8 @@ from lab_assistant.contracts.archive_projection import (
     vector_problems,
 )
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
+from lab_assistant.contracts.signing import statement_for
+from lab_assistant.domain.signing import evaluate_signature
 
 __all__ = [
     "Severity",
@@ -153,8 +155,18 @@ _LIST_EDGES: dict[RecordKind, tuple[tuple[str, RecordKind, bool], ...]] = {
 }
 
 
-def validate_snapshot(directory: Path) -> ValidationReport:
-    """Validate a snapshot directory. Touches nothing but the directory."""
+def validate_snapshot(
+    directory: Path,
+    *,
+    verifier: Any | None = None,
+    require_signature: bool = False,
+) -> ValidationReport:
+    """Validate a snapshot directory. Touches nothing but the directory.
+
+    ``verifier`` carries the keys this deployment was configured to trust.
+    Without one the signature is reported and not checked, which is honest:
+    "nobody told me whose key to expect" is not "this is fine".
+    """
     directory = Path(directory)
     findings: list[ValidationFinding] = []
 
@@ -168,6 +180,7 @@ def validate_snapshot(directory: Path) -> ValidationReport:
     _check_inventory(directory, manifest, rows, findings)
     _check_releases(manifest, rows, findings)
     counts |= _check_projections(directory, manifest, rows, findings)
+    _check_signature(manifest, findings, verifier=verifier, require=require_signature)
 
     return ValidationReport(
         directory=str(directory),
@@ -484,6 +497,68 @@ def _check_inventory(
                 ),
             )
         )
+
+
+def _check_signature(
+    manifest: SnapshotManifest,
+    findings: list[ValidationFinding],
+    *,
+    verifier: Any | None,
+    require: bool,
+) -> None:
+    """Who approved this, as distinct from whether its bytes survived.
+
+    Every other check in this module establishes integrity. This is the only
+    one that establishes authority, and the difference matters because anyone
+    who can write to the bucket can produce a snapshot whose every digest is
+    correct.
+    """
+    if verifier is None:
+        if manifest.signature:
+            findings.append(
+                ValidationFinding(
+                    code="signature_unchecked",
+                    severity=Severity.BLOCKING if require else Severity.ADVISORY,
+                    detail=(
+                        f"signed by {manifest.key_identifier!r} and this deployment has "
+                        "no trusted keys configured, so the signature was not checked"
+                    ),
+                )
+            )
+        elif require:
+            findings.append(
+                ValidationFinding(
+                    code="signature_required",
+                    severity=Severity.BLOCKING,
+                    detail="this deployment requires a signature and the snapshot has none",
+                )
+            )
+        return
+
+    statement = statement_for(manifest)
+    verdict = evaluate_signature(
+        signature=manifest.signature,
+        key_identifier=manifest.key_identifier,
+        trusted_key_ids=verifier.trusted_key_ids,
+        verify=lambda: verifier.verify(
+            statement.to_bytes(),
+            manifest.signature or "",
+            key_identifier=manifest.key_identifier or "",
+        ),
+    )
+    if verdict.verified:
+        return
+    findings.append(
+        ValidationFinding(
+            code=f"signature_{verdict.status.value}",
+            severity=(
+                Severity.BLOCKING
+                if verdict.blocks(require_signature=require)
+                else Severity.ADVISORY
+            ),
+            detail=verdict.detail,
+        )
+    )
 
 
 def _check_projections(

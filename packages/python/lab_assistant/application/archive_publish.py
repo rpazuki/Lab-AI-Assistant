@@ -424,8 +424,10 @@ def _refusal_steps(verdict: CommitVerdict) -> tuple[str, ...]:
 
 
 def _manifest_digest(manifest: SnapshotManifest) -> str:
-    """The digest of the manifest as it is written, so the head names the
-    manifest it meant rather than whatever is at that key."""
-    from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
+    """What the head records: the digest a signature covers.
 
-    return sha256_bytes(canonical_json(manifest.model_dump(mode="python")))
+    Excludes the signature itself, so signing a snapshot does not change which
+    snapshot it is. An unsigned snapshot and the same snapshot signed have one
+    identity, and a head written before signing still names the right thing.
+    """
+    return manifest.signing_digest()

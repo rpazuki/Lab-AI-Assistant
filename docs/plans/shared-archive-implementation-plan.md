@@ -785,8 +785,28 @@ records architecture and an implementation-ready plan only.
             the private checkpoint storage of phase 3. `error_class` was added to the
             envelope contract and its committed schema regenerated.
       - [ ] Signed policy/revocation checkpoints and retention dependency metadata.
-      - [ ] Signatures over the manifest digest: the format carries the fields and
-            nothing signs them yet.
+      - [x] Manifest signatures. Ed25519 — deterministic, so there is no per-signature
+            nonce to leak a key through. `lab_assistant.adapters.signing` signs and
+            verifies; `domain/signing.py` decides whose key counts.
+            **Keys are pinned in configuration, never learned from the archive**: a
+            key fetched from beside the manifest is a key the manifest's author chose,
+            and trust has to enter from outside the artifact being trusted. Rotation
+            is an operator listing both keys for the overlap, which is an
+            authenticated transition because changing configuration is one.
+            Unsigned is advisory so signing can be adopted incrementally, and
+            `LAB_ARCHIVE_REQUIRE_SIGNATURE` makes it blocking; a signature that *fails*
+            to verify always blocks, as does one in an algorithm this version cannot
+            check — "I cannot check this" must not read as "this is fine".
+            **A correction worth recording:** the signed statement restates the
+            library, snapshot, installation, epoch and sequence, and the first write-up
+            of this claimed that was what stopped a replay. It is not. Those fields are
+            already inside the manifest, so `signing_digest()` covers them and the
+            digest alone defeats the replay. Reducing the statement to a bare digest
+            and watching every replay test still pass is how that was found. The
+            restatement is kept as insurance against a later version narrowing the
+            digest, and `test_the_signing_digest_covers_identity` is the test that
+            fails if one does — verified by narrowing it.
+            `cryptography` was present transitively and is now a declared dependency.
 - [ ] Phase 3 independent reader end-to-end accepted with GET-only cloud identity.
 - [ ] Phase 4 role handover/workhorse tests accepted.
 - [ ] Phase 5 lifecycle/disaster/scale drills accepted.

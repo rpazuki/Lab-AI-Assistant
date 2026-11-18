@@ -83,6 +83,7 @@ from lab_assistant.contracts.archive_projection import (
     projection_record_id,
 )
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
+from lab_assistant.contracts.signing import statement_for
 
 __all__ = [
     "CATALOG_DIRECTORY",
@@ -170,11 +171,15 @@ class ArchiveCatalogBuilder:
         library_id: UUID,
         installation_id: UUID,
         writer_epoch: int = 0,
+        signer: Any | None = None,
     ) -> None:
         self._context = context
         self._library_id = library_id
         self._installation_id = installation_id
         self._writer_epoch = writer_epoch
+        #: Optional. A library published by an installation with no key yet is
+        #: readable; it simply carries no statement about who approved it.
+        self._signer = signer
 
     async def build(
         self,
@@ -228,6 +233,7 @@ class ArchiveCatalogBuilder:
             package_refs=self._package_refs(closure),
             required_object_inventory_digest=_inventory_digest(closure.artifacts.values()),
         )
+        manifest = self._sign(manifest)
         _write_manifest(destination, manifest)
 
         return CatalogBuild(
@@ -722,6 +728,24 @@ class ArchiveCatalogBuilder:
             byte_length=sum(len(row) for row in serialised),
             row_count=len(serialised),
             location=location,
+        )
+
+    def _sign(self, manifest: SnapshotManifest) -> SnapshotManifest:
+        """Attach a signature over the manifest digest *and* its identity.
+
+        The digest alone would be replayable: the catalog is built
+        deterministically, so the same bytes can appear under another library
+        or sequence and an digest-only signature would vouch for them there
+        too. `statement_for` binds the two together.
+        """
+        if self._signer is None:
+            return manifest
+        statement = statement_for(manifest)
+        return manifest.model_copy(
+            update={
+                "signature": self._signer.sign(statement.to_bytes()),
+                "key_identifier": self._signer.key_identifier,
+            }
         )
 
     async def _write_projections(

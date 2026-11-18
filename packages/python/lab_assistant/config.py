@@ -60,6 +60,7 @@ __all__ = [
 _SECRET_KEYS = frozenset(
     {
         "secret_key",
+        "archive_signing_key_path",
         "database_url",
         "postgres_password",
         "llm_api_key",
@@ -137,6 +138,28 @@ class Settings(BaseSettings):
     #: makes it durable; today it is configuration, recorded so a backup taken
     #: now is readable by the implementation that does.
     writer_epoch: int = 0
+
+    # ── archive signing ─────────────────────────────────────────────────────
+    # A digest proves the bytes did not rot; a signature establishes who
+    # approved them. Anyone who can write to the bucket can write a correct
+    # digest, so bucket administration is not evidence that a steward reviewed
+    # a claim.
+    #
+    # The private key is a path rather than a value: an environment variable
+    # reaches process listings, crash dumps and support bundles, and a signing
+    # key that has been in one is a key to rotate.
+    archive_signing_key_path: Path | None = None
+    archive_signing_key_id: str | None = None
+    #: Public keys this deployment trusts, as `id=base64` entries. Pinned in
+    #: configuration and never resolved from the archive: a key fetched from
+    #: beside the manifest is a key the manifest's author chose. Rotation means
+    #: an operator adds the new id here, which is an authenticated transition
+    #: because changing configuration is one.
+    archive_trusted_keys: dict[str, str] = Field(default_factory=dict)
+    #: Refuse a snapshot that is unsigned or signed by an unknown key. Off by
+    #: default so signing can be adopted without making everything published
+    #: before it unreadable; a bad signature always blocks regardless.
+    archive_require_signature: bool = False
 
     # ── database ────────────────────────────────────────────────────────────
     # Owner of this address: Settings (local) and the compose `environment:`
@@ -247,6 +270,26 @@ class Settings(BaseSettings):
 
     #: Keys whose values must never be printed or logged.
     secret_field_names: ClassVar[frozenset[str]] = _SECRET_KEYS
+
+    @field_validator("archive_trusted_keys", mode="before")
+    @classmethod
+    def _split_trusted_keys(cls, value: Any) -> Any:
+        """Accept `id=base64,id2=base64` so a deployment can pin keys in one
+        environment entry without a config file."""
+        if not isinstance(value, str):
+            return value
+        pairs: dict[str, str] = {}
+        for entry in value.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            identifier, _, key = entry.partition("=")
+            if not identifier or not key:
+                raise ValueError(
+                    "LAB_ARCHIVE_TRUSTED_KEYS entries are 'id=base64', separated by commas"
+                )
+            pairs[identifier.strip()] = key.strip()
+        return pairs
 
     @field_validator("cors_origins", mode="before")
     @classmethod

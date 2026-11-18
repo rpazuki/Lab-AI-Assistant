@@ -328,6 +328,21 @@ class SnapshotManifest(BaseModel):
     signature: str | None = None
     key_identifier: str | None = None
 
+    def signing_digest(self) -> str:
+        """The digest a signature covers: everything *except* the signature.
+
+        Excluded because a signature inside the thing it signs changes that
+        thing. It is also the digest the head records, so a snapshot's identity
+        does not shift when somebody signs it — an unsigned snapshot and the
+        same snapshot signed are the same snapshot.
+        """
+        from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
+
+        payload = self.model_dump(mode="python")
+        payload.pop("signature", None)
+        payload.pop("key_identifier", None)
+        return sha256_bytes(canonical_json(payload))
+
     @property
     def is_signed(self) -> bool:
         return bool(self.signature and self.key_identifier)
