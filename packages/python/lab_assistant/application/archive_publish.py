@@ -42,10 +42,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from lab_assistant.application.archive_catalog import MANIFEST_NAME
+from lab_assistant.application.archive_control import library_prefix, read_policy_head
 from lab_assistant.application.archive_validate import validate_snapshot
 from lab_assistant.application.context import ServiceContext
 from lab_assistant.application.ports import ArchiveControlStore
 from lab_assistant.contracts.archive import SnapshotManifest
+from lab_assistant.contracts.archive_policy import policy_location
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.contracts.publication import (
     HEAD_LOCATION,
@@ -53,22 +55,19 @@ from lab_assistant.contracts.publication import (
     PublicationRecord,
     PublicationState,
 )
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.publication import (
+    CommitRefusal,
     CommitVerdict,
     ReconcileAction,
     ReconcileVerdict,
+    authority_refusal,
     evaluate_commit,
     next_head,
     reconcile,
 )
 
 __all__ = ["PublicationReport", "PublicationService", "library_prefix"]
-
-
-def library_prefix(library_id: UUID) -> str:
-    """Where a library's objects live. One namespace per library, because
-    deduplication across libraries would couple their rights and retention."""
-    return f"libraries/{library_id}/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,12 +121,18 @@ class PublicationService:
         library_id: UUID,
         installation_id: UUID,
         writer_epoch: int = 0,
+        verifier: Any | None = None,
+        require_signature: bool = False,
     ) -> None:
         self._context = context
         self._control = control
         self._library_id = library_id
         self._installation_id = installation_id
         self._writer_epoch = writer_epoch
+        #: The keys this deployment trusts, so a snapshot is checked for who
+        #: signed it before it is uploaded rather than after a reader refuses it.
+        self._verifier = verifier
+        self._require_signature = require_signature
 
     # ── the head ───────────────────────────────────────────────────────────
 
@@ -162,6 +167,7 @@ class PublicationService:
         self, workspace_id: UUID, snapshot_directory: Path, *, dry_run: bool = False
     ) -> PublicationReport:
         """Validate, check the head, upload, and swap. In that order."""
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         snapshot_directory = Path(snapshot_directory)
         manifest, problems = self._load(snapshot_directory)
         if manifest is None:
@@ -175,6 +181,8 @@ class PublicationService:
             writer_epoch=self._writer_epoch,
             snapshot_id=manifest.snapshot_id,
         )
+        if verdict.permitted:
+            verdict = await self._check_policy_head(manifest) or verdict
         if not verdict.permitted:
             return PublicationReport(
                 snapshot_id=manifest.snapshot_id,
@@ -346,6 +354,8 @@ class PublicationService:
         is the authority: an attempt that believes it committed while the head
         says otherwise did not commit.
         """
+        if apply:
+            self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         head, _version = await self.read_head()
         async with self._context.uow_factory() as uow:
             open_attempts = await uow.publications.list_open(self._library_id)
@@ -383,10 +393,68 @@ class PublicationService:
 
     # ── internals ──────────────────────────────────────────────────────────
 
+    async def _check_policy_head(self, manifest: SnapshotManifest) -> CommitVerdict | None:
+        """The policy head beside the catalog head: fenced together, and bound.
+
+        Fenced together, because a handover moves the two heads one after the
+        other and may stop between them; whichever it reached first must fence
+        this writer from both (`authority_refusal`). And bound, because a
+        snapshot names the checkpoint that was current when it was built, and a
+        reader will fetch exactly that one. A snapshot naming a checkpoint the
+        archive does not hold would be published unreadable.
+        """
+        policy_head, _ = await read_policy_head(self._control, self._library_id)
+        refused = authority_refusal(
+            policy_head,
+            library_id=self._library_id,
+            owner_installation_id=self._installation_id,
+            writer_epoch=self._writer_epoch,
+        )
+        if refused is not None:
+            return CommitVerdict(
+                permitted=False,
+                refusal=refused.refusal,
+                detail=f"the policy head refuses this writer: {refused.detail}",
+            )
+
+        if manifest.policy_sequence == 0:
+            return None
+        if policy_head is None or policy_head.policy_sequence < manifest.policy_sequence:
+            return CommitVerdict(
+                permitted=False,
+                refusal=CommitRefusal.POLICY_UNRESOLVED,
+                detail=(
+                    f"the snapshot was built under policy sequence {manifest.policy_sequence} "
+                    "and the library's policy head has not reached it: a head that went "
+                    "backwards is a restored or replayed archive, not a publication target"
+                ),
+            )
+        key = (
+            f"{library_prefix(self._library_id)}"
+            f"{policy_location(manifest.policy_sequence, manifest.policy_artifact_digest or '')}"
+        )
+        if await self._control.read(key) is None:
+            return CommitVerdict(
+                permitted=False,
+                refusal=CommitRefusal.POLICY_UNRESOLVED,
+                detail=(
+                    f"the snapshot names policy checkpoint {manifest.policy_sequence} "
+                    f"({(manifest.policy_artifact_digest or '')[:12]}…), which the archive "
+                    "does not hold: a reader could not fetch the policy it was built under"
+                ),
+            )
+        return None
+
     def _load(self, directory: Path) -> tuple[SnapshotManifest | None, list[str]]:
         """Validate before anything else. A snapshot that does not validate
-        locally must not reach the archive, where fixing it is expensive."""
-        report = validate_snapshot(directory)
+        locally must not reach the archive, where fixing it is expensive.
+
+        The signature is checked too, against this deployment's trusted keys,
+        so a snapshot a reader would refuse is refused here first.
+        """
+        report = validate_snapshot(
+            directory, verifier=self._verifier, require_signature=self._require_signature
+        )
         if report.manifest is None or report.blocking:
             return None, [
                 "the snapshot does not validate, so it was not uploaded",
@@ -419,6 +487,11 @@ def _refusal_steps(verdict: CommitVerdict) -> tuple[str, ...]:
         return (
             "two installations claim this library. Establish which is the publisher "
             "before either publishes again",
+        )
+    if verdict.refusal is CommitRefusal.POLICY_UNRESOLVED:
+        return (
+            "issue the policy checkpoint first (`lab archive policy publish --apply`), then "
+            "package the snapshot again so it names a checkpoint readers can fetch",
         )
     return ("resolve the refusal before retrying",)
 

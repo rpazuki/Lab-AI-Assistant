@@ -52,6 +52,7 @@ __all__ = [
     "CommitVerdict",
     "ReconcileAction",
     "ReconcileVerdict",
+    "authority_refusal",
     "evaluate_commit",
     "next_head",
     "reconcile",
@@ -78,6 +79,10 @@ class CommitRefusal(StrEnum):
     SEQUENCE_NOT_NEXT = "sequence_not_next"
     #: This exact snapshot is already what the head points at.
     ALREADY_PUBLISHED = "already_published"
+    #: The snapshot names a policy checkpoint the archive cannot produce — not
+    #: uploaded, or ahead of a policy head that went backwards. Published, it
+    #: would send every reader looking for policy that is not there.
+    POLICY_UNRESOLVED = "policy_unresolved"
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,15 +123,9 @@ def evaluate_commit(
         # to one winner rather than to a silent overwrite.
         return CommitVerdict(permitted=True, commit_sequence=1)
 
-    if head.library_id != library_id:
-        return CommitVerdict(
-            permitted=False,
-            refusal=CommitRefusal.FOREIGN_OWNER,
-            detail=(
-                f"the head at this location belongs to library {head.library_id}, not "
-                f"{library_id}: this is the wrong archive, not a conflict"
-            ),
-        )
+    refused = _library_refusal(head, library_id=library_id)
+    if refused is not None:
+        return refused
 
     if head.snapshot_id == snapshot_id:
         return CommitVerdict(
@@ -138,6 +137,61 @@ def evaluate_commit(
             ),
         )
 
+    refused = _writer_refusal(
+        head, owner_installation_id=owner_installation_id, writer_epoch=writer_epoch
+    )
+    if refused is not None:
+        return refused
+
+    return CommitVerdict(permitted=True, commit_sequence=head.commit_sequence + 1)
+
+
+def authority_refusal(
+    record,
+    *,
+    library_id: UUID,
+    owner_installation_id: UUID,
+    writer_epoch: int,
+) -> CommitVerdict | None:
+    """Why this writer has no authority over a control record, if it has none.
+
+    Any control record carrying ``library_id``, ``owner_installation_id`` and
+    ``writer_epoch`` — the catalog head or the policy head. A library has two
+    and one writer, and the two cannot be swapped atomically: a handover moves
+    one and then the other, and can crash in between. So a writer checks
+    *both* before moving either, and whichever record a handover reached first
+    fences the old writer from the pair. Checking only the record about to be
+    moved would let a half-finished handover leave the old publisher issuing
+    policy for a library it no longer owns.
+    """
+    if record is None:
+        return None
+    return _library_refusal(record, library_id=library_id) or _writer_refusal(
+        record, owner_installation_id=owner_installation_id, writer_epoch=writer_epoch
+    )
+
+
+def _library_refusal(record, *, library_id: UUID) -> CommitVerdict | None:
+    if record.library_id == library_id:
+        return None
+    return CommitVerdict(
+        permitted=False,
+        refusal=CommitRefusal.FOREIGN_OWNER,
+        detail=(
+            f"the control record at this location belongs to library {record.library_id}, "
+            f"not {library_id}: this is the wrong archive, not a conflict"
+        ),
+    )
+
+
+def _writer_refusal(
+    head, *, owner_installation_id: UUID, writer_epoch: int
+) -> CommitVerdict | None:
+    """The epoch and owner rules, shared by every control record.
+
+    One copy, because two copies of a fencing rule drift, and the one that
+    drifts is the one an old publisher talks its way past.
+    """
     if writer_epoch < head.writer_epoch:
         return CommitVerdict(
             permitted=False,
@@ -173,7 +227,7 @@ def evaluate_commit(
             ),
         )
 
-    return CommitVerdict(permitted=True, commit_sequence=head.commit_sequence + 1)
+    return None
 
 
 def next_head(

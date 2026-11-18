@@ -224,6 +224,13 @@ def _parser() -> argparse.ArgumentParser:
         "verify", help="validate a snapshot: digests, rows and every reference"
     )
     verify_archive.add_argument("directory", type=Path)
+    for sub in (inspect_archive, verify_archive):
+        sub.add_argument(
+            "--policy",
+            type=Path,
+            default=None,
+            help="a policy checkpoint file to apply: reports what current policy withholds",
+        )
     publish_archive = archive_sub.add_parser(
         "publish", help="upload a snapshot and move the library head to it"
     )
@@ -243,6 +250,31 @@ def _parser() -> argparse.ArgumentParser:
     reconcile_archive.add_argument(
         "--apply", action="store_true", help="record the outcome of each judgement"
     )
+    policy_archive = archive_sub.add_parser(
+        "policy", help="signed policy checkpoints: revocations, withdrawals, freshness"
+    )
+    policy_sub = policy_archive.add_subparsers(dest="policy_command", required=True)
+    publish_policy = policy_sub.add_parser(
+        "publish", help="issue the next checkpoint and move the policy head to it"
+    )
+    publish_policy.add_argument("--workspace", required=True, help="workspace slug")
+    publish_policy.add_argument("--library-id", default=None)
+    publish_policy.add_argument(
+        "--apply",
+        action="store_true",
+        help="issue it; without this, build and report what would be issued",
+    )
+    status_policy = policy_sub.add_parser(
+        "status", help="the current checkpoint as a reader would fetch it, and how fresh it is"
+    )
+    status_policy.add_argument("--workspace", required=True, help="workspace slug")
+    status_policy.add_argument("--library-id", default=None)
+    for name, help_text in (
+        ("inspect", "what a checkpoint file says, without a database"),
+        ("verify", "validate a checkpoint file: digest, signature, sequence, freshness"),
+    ):
+        sub = policy_sub.add_parser(name, help=help_text)
+        sub.add_argument("file", type=Path)
 
     task = subparsers.add_parser("task", help="inspect and steer queued work")
     task_sub = task.add_subparsers(dest="task_command", required=True)
@@ -1022,6 +1054,8 @@ async def _archive_publish(
             library_id=library_id,
             installation_id=installation_id,
             writer_epoch=settings.writer_epoch,
+            verifier=_archive_verifier(settings),
+            require_signature=settings.archive_require_signature,
         )
 
         if args.archive_command == "reconcile":
@@ -1047,6 +1081,35 @@ async def _archive_publish(
         if owned:
             for hook in container.shutdown:
                 await hook()
+
+
+def _archive_signer(settings: Settings):
+    """The publisher's signing key, when this deployment was given one.
+
+    Settings that are present and never read are the F18 pattern, and these
+    were: until this was wired, configuring a key signed nothing.
+    """
+    if settings.archive_signing_key_path is None:
+        return None
+    if not settings.archive_signing_key_id:
+        raise LabAssistantError(
+            "LAB_ARCHIVE_SIGNING_KEY_PATH is set and LAB_ARCHIVE_SIGNING_KEY_ID is not",
+            context={"hint": "a reader pins keys by identifier, so a signature needs one"},
+        ).with_class(ErrorClass.INVALID_QUERY)
+    from lab_assistant.adapters.signing import Ed25519Signer
+
+    return Ed25519Signer.from_path(
+        settings.archive_signing_key_path, key_identifier=settings.archive_signing_key_id
+    )
+
+
+def _archive_verifier(settings: Settings):
+    """The keys this deployment trusts, or ``None`` when it was told of none."""
+    if not settings.archive_trusted_keys:
+        return None
+    from lab_assistant.adapters.signing import Ed25519Verifier
+
+    return Ed25519Verifier(settings.archive_trusted_keys)
 
 
 def _archive_control(settings: Settings):
@@ -1098,8 +1161,22 @@ async def _archive(
     """
     from lab_assistant.application.archive_validate import validate_snapshot
 
+    if args.archive_command == "policy":
+        return await _archive_policy(args, settings, container=container)
+
     if args.archive_command in ("inspect", "verify"):
-        report = validate_snapshot(args.directory)
+        policy = None
+        if args.policy is not None:
+            policy = _load_checkpoint(args.policy)
+            if policy is None:
+                return 1
+        report = validate_snapshot(
+            args.directory,
+            verifier=_archive_verifier(settings),
+            require_signature=settings.archive_require_signature,
+            policy=policy,
+            now=_now(container),
+        )
         print(json.dumps(report.as_dict(), indent=2, default=str))
         if args.archive_command == "inspect":
             # Reporting, not a gate: inspect says what is there, and `verify`
@@ -1138,21 +1215,32 @@ async def _archive(
             return 1
 
         installation_id, _source = installation_identity(settings)
+        # One library per workspace in v1. Joining several into one, or
+        # importing another lab's, needs a mapping workflow that does not
+        # exist yet, so the default is the identity mapping.
+        library_id = UUID(args.library_id) if args.library_id else workspace_id
         builder = ArchiveCatalogBuilder(
             container.context,
-            # One library per workspace in v1. Joining several into one, or
-            # importing another lab's, needs a mapping workflow that does not
-            # exist yet, so the default is the identity mapping.
-            library_id=UUID(args.library_id) if args.library_id else workspace_id,
+            library_id=library_id,
             installation_id=installation_id,
             writer_epoch=settings.writer_epoch,
+            signer=_archive_signer(settings),
         )
+        # The checkpoint current now, so the snapshot names the policy it was
+        # built under. Read from the archive, and a failure to read it raises:
+        # a snapshot that recorded "no policy" because the head was unreadable
+        # would let a reader apply an older checkpoint than it should.
+        from lab_assistant.application.archive_control import read_policy_head
+
+        policy_head, _version = await read_policy_head(_archive_control(settings), library_id)
         build = await builder.build(
             workspace_id,
             args.directory,
             release_ids=tuple(UUID(value) for value in args.release_id)
             if args.release_id
             else None,
+            policy_sequence=policy_head.policy_sequence if policy_head else 0,
+            policy_artifact_digest=policy_head.checkpoint_digest if policy_head else None,
         )
         print(json.dumps(build.as_dict(), indent=2, default=str))
         if not build.ok:
@@ -1169,6 +1257,164 @@ async def _archive(
         if owned:
             for hook in container.shutdown:
                 await hook()
+
+
+def _now(container: Any | None):
+    """The composition root's clock when there is one, the system's otherwise.
+
+    Freshness is a statement about a moment. A command that drives services
+    through a container asks that container's clock, so the command and the
+    services agree about what time it is — in production both are the system
+    clock, and under test both are the harness's.
+    """
+    if container is not None:
+        return container.context.now()
+    from lab_assistant.contracts.runtime import system_clock
+
+    return system_clock()
+
+
+def _load_checkpoint(path: Path):
+    """A checkpoint file parsed, or ``None`` with the reason on stderr."""
+    from lab_assistant.contracts.archive_policy import PolicyCheckpoint
+
+    try:
+        return PolicyCheckpoint.model_validate(json.loads(Path(path).read_bytes()))
+    except (OSError, ValueError) as exc:
+        print(f"{path} is not a readable policy checkpoint ({exc})", file=sys.stderr)
+        return None
+
+
+async def _archive_policy(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """Issue, fetch, or check policy checkpoints.
+
+    `inspect` and `verify` take a file and open no database, for the reason the
+    snapshot commands do. `status` reads the archive the way a reader will —
+    the head, then the checkpoint it names — and exits non-zero unless that
+    checkpoint is current, so a monitor can alert before readers go quiet.
+    """
+    from lab_assistant.application.archive_validate import validate_policy_checkpoint
+
+    if args.policy_command in ("inspect", "verify"):
+        report = validate_policy_checkpoint(
+            args.file,
+            verifier=_archive_verifier(settings),
+            require_signature=settings.archive_require_signature,
+            now=_now(container),
+        )
+        print(json.dumps(report.as_dict(), indent=2, default=str))
+        if args.policy_command == "inspect":
+            return 0
+        for finding in report.findings:
+            print(f"  - {finding.code}: {finding.detail}", file=sys.stderr)
+        if not report.ok:
+            print(
+                f"{len(report.blocking)} blocking finding(s): a reader must not apply this "
+                "checkpoint",
+                file=sys.stderr,
+            )
+            return 1
+        print("checkpoint valid", file=sys.stderr)
+        return 0
+
+    from datetime import timedelta
+
+    from lab_assistant.application.archive_policy import PolicyCheckpointBuilder, PolicyService
+    from lab_assistant.application.backup import installation_identity
+
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        workspace_id = await _workspace_id(container, args.workspace)
+        if workspace_id is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+
+        installation_id, _source = installation_identity(settings)
+        library_id = UUID(args.library_id) if args.library_id else workspace_id
+        public_hours = settings.archive_policy_public_validity_hours
+        service = PolicyService(
+            container.context,
+            control=_archive_control(settings),
+            builder=PolicyCheckpointBuilder(
+                container.context,
+                library_id=library_id,
+                installation_id=installation_id,
+                writer_epoch=settings.writer_epoch,
+                validity=timedelta(hours=settings.archive_policy_validity_hours),
+                public_validity=timedelta(hours=public_hours) if public_hours else None,
+                signer=_archive_signer(settings),
+            ),
+            library_id=library_id,
+            installation_id=installation_id,
+            writer_epoch=settings.writer_epoch,
+        )
+
+        if args.policy_command == "status":
+            return await _archive_policy_status(
+                service, settings, library_id, now=container.context.now()
+            )
+
+        issued = await service.issue(workspace_id, dry_run=not args.apply)
+        print(json.dumps(issued.as_dict(), indent=2, default=str))
+        for step in issued.next_steps:
+            print(f"  next: {step}", file=sys.stderr)
+        if not issued.ok:
+            for problem in issued.problems:
+                print(f"  - {problem}", file=sys.stderr)
+            return 1
+        return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
+
+
+async def _archive_policy_status(
+    service: Any, settings: Settings, library_id: UUID, *, now: Any
+) -> int:
+    from lab_assistant.application.archive_validate import validate_policy_payload
+
+    head, _version = await service.read_head()
+    if head is None:
+        print(
+            json.dumps({"library_id": str(library_id), "policy_head": None}, indent=2),
+        )
+        print(
+            "no policy checkpoint has been issued for this library; "
+            "`lab archive policy publish --apply` issues the first",
+            file=sys.stderr,
+        )
+        return 1
+    # The bytes a reader would fetch, through the checks `verify` runs, rather
+    # than through a second implementation of them.
+    report = validate_policy_payload(
+        await service.fetch_bytes(head),
+        name=Path(head.location).name,
+        location=head.location,
+        verifier=_archive_verifier(settings),
+        require_signature=settings.archive_require_signature,
+        now=now,
+        library_id=library_id,
+    )
+    if report.checkpoint is not None and report.checkpoint.signing_digest() != (
+        head.checkpoint_digest
+    ):
+        print(
+            "the checkpoint does not digest to what the policy head records",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps({"policy_head": head.model_dump(mode="json"), **report.as_dict()}, indent=2))
+    for finding in report.findings:
+        print(f"  - {finding.code}: {finding.detail}", file=sys.stderr)
+    current = report.ok and report.verdict is not None and report.verdict.serves(public=False)
+    return 0 if current else 1
 
 
 async def _task(

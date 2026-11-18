@@ -54,6 +54,9 @@ def test_the_draft_archive_schemas_say_they_are_drafts() -> None:
     for relative in (
         "archive/snapshot-manifest.schema.json",
         "archive/stage-result-envelope.schema.json",
+        "archive/artifact-ref.schema.json",
+        "archive/policy-checkpoint.schema.json",
+        "archive/policy-head.schema.json",
     ):
         assert relative in TARGETS
         assert TARGETS[relative][1].endswith("-draft")

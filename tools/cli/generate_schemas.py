@@ -13,7 +13,8 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from lab_assistant.contracts.archive import SnapshotManifest, StageResultEnvelope
+from lab_assistant.contracts.archive import ArtifactRef, SnapshotManifest, StageResultEnvelope
+from lab_assistant.contracts.archive_policy import PolicyCheckpoint, PolicyHeadDescriptor
 from lab_assistant.contracts.backup import BackupManifest
 from lab_assistant.contracts.extraction import ClaimProposal, TemplateVersionSpec
 from lab_assistant.contracts.parsing import RenditionDocument
@@ -40,6 +41,11 @@ TARGETS = {
     # change, and so the fixture and the format are designed against each other.
     "archive/snapshot-manifest.schema.json": (SnapshotManifest, "1.0.0-draft"),
     "archive/stage-result-envelope.schema.json": (StageResultEnvelope, "1.0.0-draft"),
+    # One row of a snapshot's artifact inventory, including its retention edges.
+    "archive/artifact-ref.schema.json": (ArtifactRef, "1.0.0-draft"),
+    # The policy stream: a checkpoint and the head that names the current one.
+    "archive/policy-checkpoint.schema.json": (PolicyCheckpoint, "1.0.0-draft"),
+    "archive/policy-head.schema.json": (PolicyHeadDescriptor, "1.0.0-draft"),
 }
 
 

@@ -1,0 +1,304 @@
+{
+  "$defs": {
+    "ReleaseStanding": {
+      "additionalProperties": false,
+      "description": "The lifecycle state of a release that was published at some point.\n\nA withdrawn release is the case this exists for: a reader that imported it\nmust stop serving it, and nothing in an immutable snapshot can say so.\nReleases that were never published are absent: a reader cannot hold them,\nand listing them would disclose drafts.",
+      "properties": {
+        "release_id": {
+          "format": "uuid",
+          "title": "Release Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "release_id",
+        "status"
+      ],
+      "title": "ReleaseStanding",
+      "type": "object"
+    },
+    "RightsStanding": {
+      "additionalProperties": false,
+      "description": "The current state of one rights decision.\n\nThe same decision a snapshot froze as a `RightsDecisionRecord`, as it stands\nnow. A reader intersects the two rather than choosing one, so a revocation\nhere withdraws what the snapshot granted and nothing here can grant what the\nsnapshot did not.",
+      "properties": {
+        "allowed_actions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Actions",
+          "type": "array"
+        },
+        "decided_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decided At"
+        },
+        "decision_id": {
+          "format": "uuid",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "restricted_to_group_ids": {
+          "default": [],
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Restricted To Group Ids",
+          "type": "array"
+        },
+        "restrictions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Restrictions",
+          "type": "array"
+        },
+        "review_due_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Review Due At"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_id",
+        "status"
+      ],
+      "title": "RightsStanding",
+      "type": "object"
+    },
+    "TombstonedArtifact": {
+      "additionalProperties": false,
+      "description": "A payload the library has disowned, by digest.\n\nBy digest rather than by object id: a reader holds bytes it fetched by\ndigest, and a tombstone it could not match against its own cache would\nwithhold nothing.",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256"
+      ],
+      "title": "TombstonedArtifact",
+      "type": "object"
+    },
+    "WorkStanding": {
+      "additionalProperties": false,
+      "description": "A work whose standing changed in a way a reader must show.\n\nOnly works with something to say travel: an entry per work would make the\ncheckpoint a copy of the catalog. A retraction does not withhold the work \u2014\na retracted paper is still part of the record \u2014 it changes how a reader\nmust present it.",
+      "properties": {
+        "correction_status": {
+          "title": "Correction Status",
+          "type": "string"
+        },
+        "retraction_status": {
+          "title": "Retraction Status",
+          "type": "string"
+        },
+        "work_id": {
+          "format": "uuid",
+          "title": "Work Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "work_id",
+        "retraction_status",
+        "correction_status"
+      ],
+      "title": "WorkStanding",
+      "type": "object"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/archive/policy-checkpoint.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One signed statement of a library's current policy.",
+  "properties": {
+    "checkpoint_id": {
+      "format": "uuid",
+      "title": "Checkpoint Id",
+      "type": "string"
+    },
+    "format_name": {
+      "default": "lab-assistant-library-policy",
+      "title": "Format Name",
+      "type": "string"
+    },
+    "format_version": {
+      "default": "1.0",
+      "title": "Format Version",
+      "type": "string"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "title": "Issued At",
+      "type": "string"
+    },
+    "key_identifier": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Key Identifier"
+    },
+    "library_id": {
+      "format": "uuid",
+      "title": "Library Id",
+      "type": "string"
+    },
+    "origin_installation_id": {
+      "format": "uuid",
+      "title": "Origin Installation Id",
+      "type": "string"
+    },
+    "parent_checkpoint_digest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Checkpoint Digest"
+    },
+    "policy_sequence": {
+      "minimum": 1,
+      "title": "Policy Sequence",
+      "type": "integer"
+    },
+    "public_valid_until": {
+      "format": "date-time",
+      "title": "Public Valid Until",
+      "type": "string"
+    },
+    "releases": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ReleaseStanding"
+      },
+      "title": "Releases",
+      "type": "array"
+    },
+    "rights": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RightsStanding"
+      },
+      "title": "Rights",
+      "type": "array"
+    },
+    "signature": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Signature"
+    },
+    "source_workspace_id": {
+      "format": "uuid",
+      "title": "Source Workspace Id",
+      "type": "string"
+    },
+    "tombstones": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TombstonedArtifact"
+      },
+      "title": "Tombstones",
+      "type": "array"
+    },
+    "valid_until": {
+      "format": "date-time",
+      "title": "Valid Until",
+      "type": "string"
+    },
+    "works": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WorkStanding"
+      },
+      "title": "Works",
+      "type": "array"
+    },
+    "writer_epoch": {
+      "title": "Writer Epoch",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "library_id",
+    "source_workspace_id",
+    "checkpoint_id",
+    "policy_sequence",
+    "origin_installation_id",
+    "writer_epoch",
+    "issued_at",
+    "valid_until",
+    "public_valid_until"
+  ],
+  "title": "PolicyCheckpoint",
+  "type": "object",
+  "x-semantic-version": "1.0.0-draft"
+}

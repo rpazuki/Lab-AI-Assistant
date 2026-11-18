@@ -38,9 +38,12 @@ correction and the retraction — which is most of what makes the corpus evidenc
 rather than a table of numbers.
 
 What this draft does **not** attempt: the publication protocol (prepared →
-committed → published, the head compare-and-swap, writer epochs), the importer's
-staging and generation activation, and the policy/revocation stream. Those are
-phase 2 and phase 3, and each needs its own contract.
+committed → published, the head compare-and-swap, writer epochs) and the
+importer's staging and generation activation. The policy and revocation stream
+has its own contract in `archive_policy.py`, because it moves on its own
+sequence: a snapshot records which checkpoint was current when it was built
+(`policy_sequence`, `policy_artifact_digest`), and a reader applies that one or
+a later one, never an earlier one.
 """
 
 from __future__ import annotations
@@ -137,7 +140,20 @@ class ArtifactRef(BaseModel):
     unavailable: UnavailableReason | None = None
     #: What this artifact needs in order to mean anything: a rendition's asset,
     #: an evidence span's rendition. Resolved within the snapshot closure.
+    #:
+    #: Also the retention edge. Derived bytes inherit their source's fate: a
+    #: rendition of an asset the library may no longer serve is that asset's
+    #: text, and withholding the PDF while serving its rendition withholds
+    #: nothing.
     depends_on: tuple[UUID, ...] = ()
+    #: The rights decisions whose standing decides whether these bytes may be
+    #: served or kept, as catalog record ids. An asset names its own decision;
+    #: a rendition inherits its asset's. Carried on the inventory rather than
+    #: left to be re-derived, so a revocation in a later policy checkpoint
+    #: resolves to the exact set of bytes it withholds from the inventory
+    #: alone — which is what a reader's cache eviction and an eventual purge
+    #: both need, without the producer's database.
+    governed_by: tuple[UUID, ...] = ()
     #: The provider's version token, if the producer recorded one. Never a
     #: substitute for ``sha256``: an ETag is not the digest of a multipart upload.
     storage_version: str | None = None
@@ -310,7 +326,14 @@ class SnapshotManifest(BaseModel):
     #: Rights can become stricter after a release is published, so policy travels
     #: on its own sequence and a reader checks its freshness independently of the
     #: catalog. A scientific rollback must not restore revoked permissions.
+    #:
+    #: These name the checkpoint that was current when the snapshot was built
+    #: (`contracts/archive_policy.py`). A reader applies that checkpoint or a
+    #: later one and never an earlier one, so importing an old snapshot cannot
+    #: pull a reader's policy backwards. Zero means no checkpoint had been
+    #: issued, which is advisory: the snapshot's own rights records still apply.
     policy_sequence: int = 0
+    #: The checkpoint's signing digest, which is also part of its key.
     policy_artifact_digest: str | None = None
 
     catalog_shards: tuple[CatalogShardRef, ...] = ()

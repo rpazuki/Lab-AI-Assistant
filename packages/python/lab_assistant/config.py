@@ -161,6 +161,19 @@ class Settings(BaseSettings):
     #: before it unreadable; a bad signature always blocks regardless.
     archive_require_signature: bool = False
 
+    # ── archive policy checkpoints ──────────────────────────────────────────
+    # How long a checkpoint this publisher issues may be relied on. A reader
+    # that cannot refresh policy stops serving restricted material when the
+    # window closes, so this is the bound on how long a revocation can go
+    # unseen — and the publisher has to re-issue inside it, on a timer, or
+    # readers stop serving restricted material for want of a fresh checkpoint.
+    archive_policy_validity_hours: int = Field(default=24, gt=0)
+    #: An offline window for *unrestricted* material, longer than the one
+    #: above. 0 means none: public material is held to the same bound. It is
+    #: written into the signed checkpoint, so it is the publisher's steward who
+    #: approves it, not each reader's operator.
+    archive_policy_public_validity_hours: int = Field(default=0, ge=0)
+
     # ── database ────────────────────────────────────────────────────────────
     # Owner of this address: Settings (local) and the compose `environment:`
     # block (compose/server). Never restated in an address file with a password.

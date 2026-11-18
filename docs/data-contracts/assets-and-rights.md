@@ -1,6 +1,6 @@
 Status: active
 Owner: data steward + admin
-Last verified: 2026-08-12
+Last verified: 2026-11-18
 Source of truth: `packages/python/lab_assistant/policy/rights.py`, `application/acquisition.py`
 
 # Assets and rights
@@ -46,6 +46,17 @@ licence ends up in a provider's request body.
 Every verdict carries its evidence: which rule matched, which licence statement, which
 policy version, and when it expires. **`unknown` is not `permitted`.** An unknown
 verdict blocks content actions and asks a human.
+
+## Rights after publication
+
+A release is immutable and a decision is not: `revoke_rights` rewrites the decision row,
+and a snapshot already imported elsewhere cannot hear about it. Current standing therefore
+travels separately, as signed policy checkpoints
+([ADR-0025](../architecture/adr/0025-policy-checkpoints.md)). A reader applies the
+**intersection** of the decision a snapshot froze and the checkpoint's standing, so a
+checkpoint can withdraw a permission and never add one; a decision it does not mention is
+withheld. Lifting an embargo or renewing a review date is a widening, and reaches readers
+with the next snapshot.
 
 ## The acquisition ladder
 

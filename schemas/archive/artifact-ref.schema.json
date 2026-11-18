@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "ArtifactClass": {
+      "description": "What an artifact is, which decides how an importer may use it.\n\nDeliberately not the object store's ``object_class``: that records what one\nwriter called a payload, while this records the role the payload plays in\nthis package. The same bytes can be both an acquired asset here and a cited\nattachment there, and a single label on the payload would erase one of them.",
+      "enum": [
+        "source_response",
+        "canonical_record",
+        "asset",
+        "rendition",
+        "evidence_context",
+        "model_envelope",
+        "release_manifest",
+        "validation_report",
+        "projection_shard",
+        "policy_checkpoint",
+        "catalog_shard"
+      ],
+      "title": "ArtifactClass",
+      "type": "string"
+    },
+    "UnavailableReason": {
+      "description": "Why an artifact's bytes are not in this archive.\n\n``WITHHELD_BY_RIGHTS`` is the one that matters most: it is not an error, and\nan importer that treated it as one would refuse a valid archive, while one\nthat treated it as ``MISSING`` would report corruption to an operator who\nwould then go looking for a bug.",
+      "enum": [
+        "withheld_by_rights",
+        "withheld_by_retention",
+        "superseded",
+        "expired",
+        "tombstoned",
+        "missing"
+      ],
+      "title": "UnavailableReason",
+      "type": "string"
+    }
+  },
+  "$id": "https://lab-ai-assistant.invalid/schemas/archive/artifact-ref.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One immutable payload, named by content rather than by location.",
+  "properties": {
+    "artifact_class": {
+      "$ref": "#/$defs/ArtifactClass"
+    },
+    "artifact_id": {
+      "format": "uuid",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "byte_length": {
+      "title": "Byte Length",
+      "type": "integer"
+    },
+    "depends_on": {
+      "default": [],
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Depends On",
+      "type": "array"
+    },
+    "governed_by": {
+      "default": [],
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Governed By",
+      "type": "array"
+    },
+    "library_id": {
+      "format": "uuid",
+      "title": "Library Id",
+      "type": "string"
+    },
+    "media_type": {
+      "title": "Media Type",
+      "type": "string"
+    },
+    "required": {
+      "default": true,
+      "title": "Required",
+      "type": "boolean"
+    },
+    "sha256": {
+      "title": "Sha256",
+      "type": "string"
+    },
+    "storage_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Storage Version"
+    },
+    "unavailable": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UnavailableReason"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "artifact_id",
+    "artifact_class",
+    "sha256",
+    "byte_length",
+    "media_type",
+    "library_id"
+  ],
+  "title": "ArtifactRef",
+  "type": "object",
+  "x-semantic-version": "1.0.0-draft"
+}

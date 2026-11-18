@@ -18,6 +18,7 @@ One page per situation. Each states the symptom, what to check, what to do, and 
 | [Disk pressure](disk-pressure.md) | the VM is running out of space |
 | [Audit chain failure](audit-chain-failure.md) | chain verification does not pass |
 | [Suspected access breach](suspected-access-breach.md) | data may have crossed a boundary |
+| [Policy checkpoints](policy-checkpoints.md) | a revocation must reach readers, or policy is going stale |
 
 ## Rules for all of them
 

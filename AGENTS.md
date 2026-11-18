@@ -74,6 +74,9 @@ These are constraints, tests, or gates — never comments:
 - a projection is joined on its full key, `(workspace_id, release_id, chunk_key)`:
   copied chunks share keys across releases by design;
 - a published release is immutable; a correction is a successor release;
+- a policy checkpoint **narrows** a snapshot and never widens it, and a decision it
+  does not mention is withheld (`domain/archive_policy.py`, ADR-0025). A widening is
+  a publication. A writer checks both library heads before moving either;
 - an **installation role** is not a user role: a reader may serve, record
   interactions and export, and may not acquire, process, curate or publish, whoever
   is asking (`domain/installation.py`). Enforcement is at four layers — composition,

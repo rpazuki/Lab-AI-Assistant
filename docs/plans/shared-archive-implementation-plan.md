@@ -1,6 +1,6 @@
 Status: proposed
 Owner: technical owner + operator + data steward
-Last verified: 2026-11-17
+Last verified: 2026-11-18
 Source of truth: implementation handoff for design based on commit `927c5ed`; phase 0 in progress
 
 # Shared archive implementation handoff
@@ -784,7 +784,70 @@ records architecture and an implementation-ready plan only.
             reuse does not cross installations — the plan asks for that and it needs
             the private checkpoint storage of phase 3. `error_class` was added to the
             envelope contract and its committed schema regenerated.
-      - [ ] Signed policy/revocation checkpoints and retention dependency metadata.
+      - [x] Signed policy/revocation checkpoints and retention dependency metadata
+            ([ADR-0025](../architecture/adr/0025-policy-checkpoints.md), **proposed**).
+            `lab archive policy publish / status / verify / inspect` over
+            `contracts/archive_policy.py`: a checkpoint is the publisher's signed
+            statement of *current* standing for the published closure — rights
+            decisions reachable from any release ever published, those releases'
+            states (a withdrawn one included), retracted or corrected works, and
+            tombstones on their payloads. Drafts are left out on purpose: a reader
+            cannot hold them, and listing them would disclose them. Checkpoints sit at
+            `policy/<sequence>-<digest>.json` behind a `control/policy-head.json`
+            fenced exactly like the catalog head.
+            **A checkpoint narrows and never widens.** A reader applies the
+            intersection of the decision a snapshot froze and the standing the
+            checkpoint reports, and a decision the checkpoint does not mention is
+            withheld. That is what keeps the stream's failure modes safe: a stale or
+            replayed checkpoint can be out of date about a revocation and can never
+            grant what the publisher signed away. The price is stated in the ADR: an
+            embargo lifting or a review date renewed is a *widening*, and reaches
+            readers with the next snapshot rather than the next checkpoint.
+            **Freshness is signed**: `valid_until` for restricted material and an
+            optional, steward-approved `public_valid_until` for unrestricted
+            material, so a reader may shorten the window and never extend it (S20).
+            Sequence plus parent digest makes a replay or a fork a refusal (S65), and
+            `lab archive package` now records the policy head in the manifest so a
+            reader never applies an older checkpoint than a snapshot was built under;
+            `lab archive publish` refuses a snapshot naming one the archive does not
+            hold. Rolling back to release 1 still applies today's revocation (S19).
+            **Both heads fence the writer.** The epoch and owner rules are one
+            function, `authority_refusal`, and a writer checks the catalog head and
+            the policy head before moving either, because a handover cannot move the
+            two atomically and may stop between them.
+            **Retention edges on the inventory**: every `ArtifactRef` now records
+            `depends_on` (a rendition depends on its asset) and `governed_by` (the
+            decisions governing those bytes), and the validator refuses an inventory
+            whose edges do not resolve or understate what the records say. A record is
+            withheld by its own acquisition's decision; *bytes* are withheld only when
+            every governing decision withholds them, so revoking one acquisition of a
+            shared PDF leaves the other its evidence (S14, S40). Renditions and the
+            chunks searched out of them inherit their asset's fate.
+            Checkpoints refuse fields they do not declare — stricter than the catalog,
+            because in a deny-only stream an ignored field is most likely a denial
+            ignored — and the signed statement is domain-separated from the snapshot
+            statement, since one key signs both. 50 tests; seven deliberate breaks of
+            the rules (replace instead of intersect, absent inherited, either head
+            unchecked, *any* instead of *all* for shared bytes, no dependency
+            inheritance, no role check) each fail the test written for it.
+            **Two defects found on the way, both fixed.** The signing settings the
+            previous step added were read by nothing: `lab archive package` never
+            signed and `verify` / `publish` never checked, whatever
+            `LAB_ARCHIVE_SIGNING_KEY_PATH`, `LAB_ARCHIVE_TRUSTED_KEYS` and
+            `LAB_ARCHIVE_REQUIRE_SIGNATURE` said — the F18 pattern again. And
+            `PublicationService` did not check the installation role, so a reader
+            could reach the catalog head; the owner check would usually have refused
+            it, but only at the head, and not for an empty library.
+            **Outstanding:** readers enforce none of this until phase 3, including
+            the durable last-seen sequence and the readiness policy-age check (F15);
+            nothing schedules the re-issue a validity window requires;
+            `withheld_by_retention` is not derived, because whether a reader may keep
+            bytes needs an explicit remote-storage permission the steward has not
+            defined; no audit row is written for an issue (nor for a snapshot
+            publication); and no checkpoint has been written to a real bucket.
+            Snapshots packaged before this change have no retention edges and now
+            fail `verify`: re-package them, since the format is a draft and none has
+            reached a real archive.
       - [x] Manifest signatures. Ed25519 — deterministic, so there is no per-signature
             nonce to leak a key through. `lab_assistant.adapters.signing` signs and
             verifies; `domain/signing.py` decides whose key counts.

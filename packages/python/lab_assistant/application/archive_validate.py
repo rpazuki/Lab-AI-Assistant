@@ -22,6 +22,16 @@ What it establishes, in the order a reader would need it:
    a table dump: a release entry naming a work that did not travel is an
    archive that cannot be served, and the producer's database is exactly what
    is not available to notice it later.
+5. **The retention edges close too.** Every payload in the inventory names
+   what it was derived from and which rights decisions govern it, and both
+   resolve. An inventory that understated what governs a payload is how a
+   revocation misses bytes, or how a purge removes bytes another acquisition
+   still needs.
+6. **Under a policy checkpoint, if one is given.** The checkpoint is checked on
+   its own terms — signature, sequence, freshness — and then applied, and the
+   report says what it withholds from this snapshot and why. A snapshot is not
+   *invalid* because current policy withholds some of it; it is served
+   narrower, and an operator should know by how much.
 
 Severity is a decision about the importer, not a feeling about the finding.
 **Blocking** means a reader that imported this would serve something wrong or
@@ -35,7 +45,10 @@ is blocking, because there is no reading of it that serves.
 from __future__ import annotations
 
 import json
+import re
+from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -49,6 +62,7 @@ from lab_assistant.application.archive_catalog import (
 )
 from lab_assistant.contracts.archive import ArtifactRef, SnapshotManifest
 from lab_assistant.contracts.archive_catalog import RecordKind, record_for
+from lab_assistant.contracts.archive_policy import POLICY_FORMAT_NAME, PolicyCheckpoint
 from lab_assistant.contracts.archive_projection import (
     VECTOR_ENCODING,
     ProjectionChunkRecord,
@@ -56,13 +70,23 @@ from lab_assistant.contracts.archive_projection import (
     vector_problems,
 )
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
-from lab_assistant.contracts.signing import statement_for
+from lab_assistant.contracts.signing import policy_statement_for, statement_for
+from lab_assistant.domain.archive_policy import (
+    CheckpointStatus,
+    CheckpointVerdict,
+    PolicyOverlay,
+    evaluate_checkpoint,
+    overlay,
+)
 from lab_assistant.domain.signing import evaluate_signature
 
 __all__ = [
+    "PolicyValidationReport",
     "Severity",
     "ValidationFinding",
     "ValidationReport",
+    "validate_policy_checkpoint",
+    "validate_policy_payload",
     "validate_snapshot",
 ]
 
@@ -92,6 +116,9 @@ class ValidationReport:
     manifest: SnapshotManifest | None = None
     counts: dict[str, int] = field(default_factory=dict)
     findings: tuple[ValidationFinding, ...] = ()
+    #: What the policy checkpoint withholds from this snapshot, when one was
+    #: given and could be relied on.
+    policy: PolicyOverlay | None = None
 
     @property
     def blocking(self) -> tuple[ValidationFinding, ...]:
@@ -106,7 +133,53 @@ class ValidationReport:
             "directory": self.directory,
             "snapshot_id": str(self.manifest.snapshot_id) if self.manifest else None,
             "format_version": self.manifest.format_version if self.manifest else None,
+            "policy_sequence": self.manifest.policy_sequence if self.manifest else None,
             "counts": dict(sorted(self.counts.items())),
+            "findings": [finding.as_dict() for finding in self.findings],
+            "policy": self.policy.as_dict() if self.policy else None,
+            "blocking": len(self.blocking),
+            "valid": self.ok,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyValidationReport:
+    """One checkpoint, checked on its own terms."""
+
+    location: str
+    checkpoint: PolicyCheckpoint | None = None
+    verdict: CheckpointVerdict | None = None
+    findings: tuple[ValidationFinding, ...] = ()
+
+    @property
+    def blocking(self) -> tuple[ValidationFinding, ...]:
+        return tuple(finding for finding in self.findings if finding.blocks)
+
+    @property
+    def ok(self) -> bool:
+        return self.checkpoint is not None and not self.blocking
+
+    def as_dict(self) -> dict[str, Any]:
+        checkpoint = self.checkpoint
+        return {
+            "location": self.location,
+            "library_id": str(checkpoint.library_id) if checkpoint else None,
+            "policy_sequence": checkpoint.policy_sequence if checkpoint else None,
+            "digest": checkpoint.signing_digest() if checkpoint else None,
+            "issued_at": checkpoint.issued_at.isoformat() if checkpoint else None,
+            "valid_until": checkpoint.valid_until.isoformat() if checkpoint else None,
+            "public_valid_until": (
+                checkpoint.public_valid_until.isoformat() if checkpoint else None
+            ),
+            "counts": {
+                "rights": len(checkpoint.rights),
+                "works": len(checkpoint.works),
+                "releases": len(checkpoint.releases),
+                "tombstones": len(checkpoint.tombstones),
+            }
+            if checkpoint
+            else {},
+            "verdict": self.verdict.as_dict() if self.verdict else None,
             "findings": [finding.as_dict() for finding in self.findings],
             "blocking": len(self.blocking),
             "valid": self.ok,
@@ -160,12 +233,18 @@ def validate_snapshot(
     *,
     verifier: Any | None = None,
     require_signature: bool = False,
+    policy: PolicyCheckpoint | None = None,
+    now: datetime | None = None,
 ) -> ValidationReport:
     """Validate a snapshot directory. Touches nothing but the directory.
 
     ``verifier`` carries the keys this deployment was configured to trust.
     Without one the signature is reported and not checked, which is honest:
     "nobody told me whose key to expect" is not "this is fine".
+
+    ``policy`` is a checkpoint to apply, and ``now`` is when: freshness is a
+    statement about a moment, so the caller names it rather than this module
+    reading a clock.
     """
     directory = Path(directory)
     findings: list[ValidationFinding] = []
@@ -178,14 +257,148 @@ def validate_snapshot(
     rows, counts = _read_shards(directory, manifest, findings)
     _check_closure(rows, findings)
     _check_inventory(directory, manifest, rows, findings)
+    _check_retention_edges(rows, findings)
     _check_releases(manifest, rows, findings)
-    counts |= _check_projections(directory, manifest, rows, findings)
+    chunk_renditions: dict[str, tuple[UUID, UUID]] = {}
+    counts |= _check_projections(directory, manifest, rows, findings, chunk_renditions)
     _check_signature(manifest, findings, verifier=verifier, require=require_signature)
+
+    applied = None
+    if policy is not None:
+        applied = _apply_policy(
+            manifest,
+            rows,
+            policy,
+            findings,
+            chunk_renditions=chunk_renditions,
+            verifier=verifier,
+            require=require_signature,
+            now=now if now is not None else policy.issued_at,
+        )
+        if applied is not None:
+            counts |= applied.counts()
+            counts["policy_withheld_chunk"] = sum(
+                1
+                for release_id, rendition_id in chunk_renditions.values()
+                if rendition_id in applied.withheld_renditions
+                or release_id in applied.withdrawn_releases
+            )
+    elif manifest.policy_sequence == 0:
+        findings.append(
+            ValidationFinding(
+                code="policy_not_issued",
+                severity=Severity.ADVISORY,
+                detail=(
+                    "this snapshot was built before the library issued any policy "
+                    "checkpoint; a reader applies its own rights records until one exists"
+                ),
+            )
+        )
 
     return ValidationReport(
         directory=str(directory),
         manifest=manifest,
         counts=counts,
+        findings=tuple(findings),
+        policy=applied,
+    )
+
+
+def validate_policy_checkpoint(
+    path: Path,
+    *,
+    verifier: Any | None = None,
+    require_signature: bool = False,
+    now: datetime | None = None,
+    library_id: UUID | None = None,
+    last_seen_sequence: int | None = None,
+    last_seen_digest: str | None = None,
+) -> PolicyValidationReport:
+    """Check one checkpoint file. Touches nothing but the file.
+
+    What a reader asks before it applies a checkpoint: does it parse, is it the
+    object its name says, did a key this deployment trusts sign it, and does it
+    move policy forward rather than back. ``now`` defaults to the moment it
+    was issued, which answers "was this ever valid" rather than "is it still".
+    """
+    path = Path(path)
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        return PolicyValidationReport(
+            location=str(path),
+            findings=(
+                ValidationFinding(
+                    code="policy_absent",
+                    severity=Severity.BLOCKING,
+                    detail=f"{path.name} cannot be read ({exc})",
+                ),
+            ),
+        )
+    return validate_policy_payload(
+        payload,
+        name=path.name,
+        location=str(path),
+        verifier=verifier,
+        require_signature=require_signature,
+        now=now,
+        library_id=library_id,
+        last_seen_sequence=last_seen_sequence,
+        last_seen_digest=last_seen_digest,
+    )
+
+
+def validate_policy_payload(
+    payload: bytes,
+    *,
+    name: str,
+    location: str | None = None,
+    verifier: Any | None = None,
+    require_signature: bool = False,
+    now: datetime | None = None,
+    library_id: UUID | None = None,
+    last_seen_sequence: int | None = None,
+    last_seen_digest: str | None = None,
+) -> PolicyValidationReport:
+    """The same checks over bytes, for a checkpoint fetched from the archive.
+
+    Over the bytes as fetched rather than a re-serialisation of a parsed copy:
+    the bytes are what was signed, and what a reader actually holds.
+    """
+    findings: list[ValidationFinding] = []
+    try:
+        checkpoint = PolicyCheckpoint.model_validate(json.loads(payload))
+    except Exception as exc:
+        return PolicyValidationReport(
+            location=location or name,
+            findings=(
+                ValidationFinding(
+                    code="policy_unparseable",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"{name} does not parse as a policy checkpoint this version can read "
+                        f"({exc}). A field this version does not know is refused rather "
+                        "than ignored: in a stream that withholds, it is most likely a denial"
+                    ),
+                ),
+            ),
+        )
+
+    verdict = _check_checkpoint(
+        checkpoint,
+        findings,
+        name=name,
+        verifier=verifier,
+        require=require_signature,
+        library_id=library_id or checkpoint.library_id,
+        now=now if now is not None else checkpoint.issued_at,
+        last_seen_sequence=last_seen_sequence,
+        last_seen_digest=last_seen_digest,
+    )
+    return PolicyValidationReport(
+        location=location or name,
+        checkpoint=checkpoint,
+        verdict=verdict,
         findings=tuple(findings),
     )
 
@@ -499,6 +712,85 @@ def _check_inventory(
         )
 
 
+def _check_retention_edges(
+    rows: dict[Any, dict[UUID, Any]], findings: list[ValidationFinding]
+) -> None:
+    """Every payload's retention edges resolve, and say what the records say.
+
+    These are what turn "decision D was revoked" into "these bytes are
+    withheld" without the producer's database: a reader evicting its cache, and
+    eventually a purge, work from the inventory. So an edge that names nothing
+    is blocking, and so is one that is missing where a record says it should
+    exist — an inventory that understates what governs a payload is how a
+    revocation misses bytes, or how a purge removes bytes another acquisition
+    still needs.
+    """
+    inventory: dict[UUID, ArtifactRef] = rows.get(INVENTORY_KIND, {})
+    decisions = rows.get(RecordKind.RIGHTS_DECISION, {})
+
+    for ref in inventory.values():
+        for dependency in ref.depends_on:
+            if dependency not in inventory:
+                findings.append(
+                    ValidationFinding(
+                        code="retention_dependency_unresolved",
+                        severity=Severity.BLOCKING,
+                        detail=(
+                            f"artifact {ref.artifact_id} depends on {dependency}, which the "
+                            "inventory does not list: its retention cannot be decided"
+                        ),
+                    )
+                )
+        for decision_id in ref.governed_by:
+            if decision_id not in decisions:
+                findings.append(
+                    ValidationFinding(
+                        code="retention_decision_unresolved",
+                        severity=Severity.BLOCKING,
+                        detail=(
+                            f"artifact {ref.artifact_id} is governed by rights decision "
+                            f"{decision_id}, which did not travel in this snapshot"
+                        ),
+                    )
+                )
+
+    assets = rows.get(RecordKind.ASSET, {})
+    for asset in assets.values():
+        held = inventory.get(asset.artifact_id) if asset.artifact_id else None
+        if held is None or asset.rights_decision_id is None:
+            continue
+        if asset.rights_decision_id not in held.governed_by:
+            findings.append(
+                ValidationFinding(
+                    code="retention_edge_missing",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"asset {asset.record_id} is governed by rights decision "
+                        f"{asset.rights_decision_id} and its artifact does not say so: a "
+                        "revocation of that decision would not reach these bytes"
+                    ),
+                )
+            )
+
+    for rendition in rows.get(RecordKind.RENDITION, {}).values():
+        held = inventory.get(rendition.artifact_id) if rendition.artifact_id else None
+        source = assets.get(rendition.asset_id)
+        if held is None or source is None or source.artifact_id is None:
+            continue
+        if source.artifact_id not in held.depends_on:
+            findings.append(
+                ValidationFinding(
+                    code="retention_edge_missing",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"rendition {rendition.record_id} is the text of asset "
+                        f"{rendition.asset_id} and its artifact does not depend on that "
+                        "asset's: withholding the asset would leave its text servable"
+                    ),
+                )
+            )
+
+
 def _check_signature(
     manifest: SnapshotManifest,
     findings: list[ValidationFinding],
@@ -535,22 +827,41 @@ def _check_signature(
             )
         return
 
-    statement = statement_for(manifest)
-    verdict = evaluate_signature(
+    _verify_statement(
+        statement_for(manifest).to_bytes(),
         signature=manifest.signature,
         key_identifier=manifest.key_identifier,
+        findings=findings,
+        verifier=verifier,
+        require=require,
+        code_prefix="signature",
+    )
+
+
+def _verify_statement(
+    statement: bytes,
+    *,
+    signature: str | None,
+    key_identifier: str | None,
+    findings: list[ValidationFinding],
+    verifier: Any,
+    require: bool,
+    code_prefix: str,
+) -> None:
+    """One trust policy for every signed thing: `domain/signing.py` decides."""
+    verdict = evaluate_signature(
+        signature=signature,
+        key_identifier=key_identifier,
         trusted_key_ids=verifier.trusted_key_ids,
         verify=lambda: verifier.verify(
-            statement.to_bytes(),
-            manifest.signature or "",
-            key_identifier=manifest.key_identifier or "",
+            statement, signature or "", key_identifier=key_identifier or ""
         ),
     )
     if verdict.verified:
         return
     findings.append(
         ValidationFinding(
-            code=f"signature_{verdict.status.value}",
+            code=f"{code_prefix}_{verdict.status.value}",
             severity=(
                 Severity.BLOCKING
                 if verdict.blocks(require_signature=require)
@@ -566,6 +877,7 @@ def _check_projections(
     manifest: SnapshotManifest,
     rows: dict[Any, dict[UUID, Any]],
     findings: list[ValidationFinding],
+    chunk_renditions: dict[str, tuple[UUID, UUID]] | None = None,
 ) -> dict[str, int]:
     """Chunks and vectors, decoded and checked rather than taken on trust.
 
@@ -630,14 +942,20 @@ def _check_projections(
             counts[shard.kind] = counts.get(shard.kind, 0) + len(lines)
 
             if shard.kind == PROJECTION_CHUNK_KIND:
-                chunk_keys |= _check_chunk_shard(shard.location, lines, findings)
+                chunk_keys |= _check_chunk_shard(
+                    shard.location, lines, findings, chunk_renditions=chunk_renditions
+                )
             elif shard.kind == PROJECTION_VECTOR_KIND:
                 _check_vector_shard(shard.location, lines, ref, chunk_keys, findings)
     return counts
 
 
 def _check_chunk_shard(
-    location: str, lines: list[bytes], findings: list[ValidationFinding]
+    location: str,
+    lines: list[bytes],
+    findings: list[ValidationFinding],
+    *,
+    chunk_renditions: dict[str, tuple[UUID, UUID]] | None = None,
 ) -> set[str]:
     keys: set[str] = set()
     for number, line in enumerate(lines, start=1):
@@ -653,6 +971,13 @@ def _check_chunk_shard(
             )
             continue
         keys.add(record.chunk_key)
+        if chunk_renditions is not None:
+            # Keyed by release as well: copied chunks share keys across
+            # releases by design, and a projection is joined on its full key.
+            chunk_renditions[f"{record.release_id}:{record.chunk_key}"] = (
+                record.release_id,
+                record.rendition_id,
+            )
         if sha256_bytes(record.content.encode("utf-8")) != record.content_sha256:
             findings.append(
                 ValidationFinding(
@@ -785,3 +1110,220 @@ def _check_releases(
                     ),
                 )
             )
+
+
+# ── policy ─────────────────────────────────────────────────────────────────
+
+#: `<sequence>-<digest>.json`, the name `policy_location` gives a checkpoint.
+_CHECKPOINT_NAME = re.compile(r"^(?P<sequence>\d{12})-(?P<digest>[0-9a-f]{64})\.json$")
+
+
+def _check_checkpoint(
+    checkpoint: PolicyCheckpoint,
+    findings: list[ValidationFinding],
+    *,
+    name: str | None,
+    verifier: Any | None,
+    require: bool,
+    library_id: UUID,
+    now: datetime,
+    last_seen_sequence: int | None = None,
+    last_seen_digest: str | None = None,
+    minimum_sequence: int = 0,
+    minimum_digest: str | None = None,
+) -> CheckpointVerdict:
+    """A checkpoint on its own terms: what it is, who signed it, what it is worth."""
+    if checkpoint.format_name != POLICY_FORMAT_NAME:
+        findings.append(
+            ValidationFinding(
+                code="policy_format_unknown",
+                severity=Severity.BLOCKING,
+                detail=f"{checkpoint.format_name!r} is not a policy checkpoint format",
+            )
+        )
+    major = checkpoint.format_version.split(".")[0]
+    if major != "1":
+        findings.append(
+            ValidationFinding(
+                code="policy_format_unsupported",
+                severity=Severity.BLOCKING,
+                detail=(f"policy format {checkpoint.format_version} is not a 1.x this code reads"),
+            )
+        )
+
+    digest = checkpoint.signing_digest()
+    matched = _CHECKPOINT_NAME.match(name or "")
+    if matched is not None and (
+        int(matched["sequence"]) != checkpoint.policy_sequence or matched["digest"] != digest
+    ):
+        findings.append(
+            ValidationFinding(
+                code="policy_edited",
+                severity=Severity.BLOCKING,
+                detail=(
+                    f"{name} names sequence {int(matched['sequence'])} and digest "
+                    f"{matched['digest'][:12]}…, and holds sequence "
+                    f"{checkpoint.policy_sequence} digesting to {digest[:12]}…: it was "
+                    "changed after it was written"
+                ),
+            )
+        )
+
+    for label, values in (
+        ("rights decision", [item.decision_id for item in checkpoint.rights]),
+        ("work", [item.work_id for item in checkpoint.works]),
+        ("release", [item.release_id for item in checkpoint.releases]),
+        ("tombstone", [item.sha256 for item in checkpoint.tombstones]),
+    ):
+        repeated = sorted(str(value) for value, seen in Counter(values).items() if seen > 1)
+        if repeated:
+            findings.append(
+                ValidationFinding(
+                    code="policy_entry_duplicated",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"{label} {repeated[0]} has two standings, and nothing says which one holds"
+                    ),
+                )
+            )
+
+    if verifier is None:
+        if checkpoint.signature:
+            findings.append(
+                ValidationFinding(
+                    code="policy_signature_unchecked",
+                    severity=Severity.BLOCKING if require else Severity.ADVISORY,
+                    detail=(
+                        f"signed by {checkpoint.key_identifier!r} and this deployment has no "
+                        "trusted keys configured, so the signature was not checked"
+                    ),
+                )
+            )
+        elif require:
+            findings.append(
+                ValidationFinding(
+                    code="policy_signature_required",
+                    severity=Severity.BLOCKING,
+                    detail="this deployment requires a signature and the checkpoint has none",
+                )
+            )
+    else:
+        _verify_statement(
+            policy_statement_for(checkpoint).to_bytes(),
+            signature=checkpoint.signature,
+            key_identifier=checkpoint.key_identifier,
+            findings=findings,
+            verifier=verifier,
+            require=require,
+            code_prefix="policy_signature",
+        )
+
+    verdict = evaluate_checkpoint(
+        checkpoint,
+        library_id=library_id,
+        now=now,
+        last_seen_sequence=last_seen_sequence,
+        last_seen_digest=last_seen_digest,
+        minimum_sequence=minimum_sequence,
+        minimum_digest=minimum_digest,
+    )
+    if verdict.status is not CheckpointStatus.CURRENT:
+        findings.append(
+            ValidationFinding(
+                code=f"policy_{verdict.status.value}",
+                # Stale is a fact about the moment, not about the checkpoint:
+                # it was valid, and a newer one is what fixes it. Everything
+                # else here means it must not be applied at all.
+                severity=Severity.BLOCKING if verdict.refused else Severity.ADVISORY,
+                detail=verdict.detail,
+            )
+        )
+    return verdict
+
+
+def _apply_policy(
+    manifest: SnapshotManifest,
+    rows: dict[Any, dict[UUID, Any]],
+    policy: PolicyCheckpoint,
+    findings: list[ValidationFinding],
+    *,
+    chunk_renditions: dict[str, tuple[UUID, UUID]],
+    verifier: Any | None,
+    require: bool,
+    now: datetime,
+) -> PolicyOverlay | None:
+    """The checkpoint, checked, then applied to this snapshot's records.
+
+    ``None`` when the checkpoint must not be applied — a refusal is already a
+    blocking finding, and an overlay computed from it would be a report about
+    policy nobody should rely on.
+    """
+    before = len([finding for finding in findings if finding.blocks])
+    verdict = _check_checkpoint(
+        policy,
+        findings,
+        name=None,
+        verifier=verifier,
+        require=require,
+        library_id=manifest.library_id,
+        now=now,
+        minimum_sequence=manifest.policy_sequence,
+        minimum_digest=manifest.policy_artifact_digest,
+    )
+    if verdict.refused or len([finding for finding in findings if finding.blocks]) > before:
+        return None
+
+    applied = overlay(
+        policy,
+        verdict=verdict,
+        now=now,
+        rights=rows.get(RecordKind.RIGHTS_DECISION, {}),
+        assets=rows.get(RecordKind.ASSET, {}),
+        renditions=rows.get(RecordKind.RENDITION, {}),
+        inventory=rows.get(INVENTORY_KIND, {}),
+        release_ids=tuple(rows.get(RecordKind.RELEASE, {})),
+    )
+
+    counts = applied.counts()
+    withheld = (
+        counts["policy_withheld_asset"]
+        + counts["policy_withheld_rendition"]
+        + counts["policy_withdrawn_release"]
+    )
+    if withheld:
+        findings.append(
+            ValidationFinding(
+                code="policy_withholds",
+                severity=Severity.ADVISORY,
+                detail=(
+                    f"under policy sequence {policy.policy_sequence} this snapshot serves "
+                    f"narrower than it was published: {counts['policy_withheld_asset']} "
+                    f"asset(s), {counts['policy_withheld_rendition']} rendition(s) and "
+                    f"{counts['policy_withdrawn_release']} withdrawn release(s) are withheld"
+                ),
+            )
+        )
+    if applied.absent_decisions:
+        findings.append(
+            ValidationFinding(
+                code="policy_decision_absent",
+                severity=Severity.ADVISORY,
+                detail=(
+                    f"{len(applied.absent_decisions)} rights decision(s) in this snapshot are "
+                    "not in the checkpoint, so the material they govern is withheld: absent "
+                    "is never read as permitted"
+                ),
+            )
+        )
+    if applied.retracted_works:
+        findings.append(
+            ValidationFinding(
+                code="policy_retractions",
+                severity=Severity.ADVISORY,
+                detail=(
+                    f"{len(applied.retracted_works)} work(s) have been retracted since "
+                    "publication; a reader must show them as retracted"
+                ),
+            )
+        )
+    return applied

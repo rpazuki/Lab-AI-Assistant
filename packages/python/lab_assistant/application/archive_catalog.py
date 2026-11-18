@@ -31,6 +31,13 @@ the bytes travel in the object store under the snapshot's inventory. So a
 catalog is small, diffable and cheap to validate, and the thing that is
 expensive to move is moved once.
 
+**Every payload says what it depends on and what governs it.** The inventory
+carries the retention edges — a rendition depends on its asset, and both are
+governed by the asset's rights decision — so a revocation in a later policy
+checkpoint resolves to the exact bytes it withholds without the producer's
+database, and an eventual purge can tell which bytes another acquisition still
+needs.
+
 What this does *not* do: publish. There is no head, no compare-and-swap and no
 writer epoch here — building a snapshot and committing it are separate
 operations, and the second one is the rest of phase 2.
@@ -189,8 +196,16 @@ class ArchiveCatalogBuilder:
         release_ids: tuple[UUID, ...] | None = None,
         publication_sequence: int = 1,
         parent_snapshot_id: UUID | None = None,
+        policy_sequence: int = 0,
+        policy_artifact_digest: str | None = None,
     ) -> CatalogBuild:
-        """Write a snapshot of the named releases, or of every servable one."""
+        """Write a snapshot of the named releases, or of every servable one.
+
+        ``policy_sequence`` and ``policy_artifact_digest`` name the policy
+        checkpoint current at the library's policy head when this was built.
+        A reader applies that checkpoint or a later one, so the snapshot can
+        never pull a reader's policy backwards; zero means none was issued.
+        """
         destination = Path(destination)
         snapshot_id = uuid4()
         problems: list[str] = []
@@ -228,6 +243,8 @@ class ArchiveCatalogBuilder:
             producer_app_version=_app_version(),
             scientific_release_ids=tuple(release.id for release in releases),
             selected_alias_targets=await self._aliases(workspace_id, releases),
+            policy_sequence=policy_sequence,
+            policy_artifact_digest=policy_artifact_digest,
             catalog_shards=shards,
             projection_refs=projections,
             package_refs=self._package_refs(closure),
@@ -447,6 +464,7 @@ class ArchiveCatalogBuilder:
             byte_length=asset.byte_length,
             media_type=asset.media_type_detected or "application/octet-stream",
             artifact_class=ArtifactClass.ASSET,
+            governed_by=(asset.rights_decision_id,) if asset.rights_decision_id else (),
         )
         closure.add(
             AssetRecord(
@@ -519,12 +537,23 @@ class ArchiveCatalogBuilder:
         if rendition is None:
             problems.append(f"rendition {rendition_id} is referenced and is absent")
             return
+        # The rendition's own asset, which need not be the entry's. Walked
+        # first because the rendition's retention edges point at it.
+        await self._walk_asset(workspace_id, rendition.asset_id, uow, closure, problems)
+        found = closure.rows[RecordKind.ASSET].get(rendition.asset_id)
+        source = found if isinstance(found, AssetRecord) else None
         artifact_id = self._artifact(
             closure,
             sha256=rendition.sha256,
             byte_length=0,
             media_type="application/json",
             artifact_class=ArtifactClass.RENDITION,
+            # A rendition is its asset's text, so it is retained and withheld
+            # on its asset's terms (`ArtifactRef.depends_on`, `governed_by`).
+            depends_on=(source.artifact_id,) if source and source.artifact_id else (),
+            governed_by=(source.rights_decision_id,)
+            if source and source.rights_decision_id
+            else (),
         )
         closure.add(
             RenditionRecord(
@@ -658,15 +687,23 @@ class ArchiveCatalogBuilder:
         byte_length: int,
         media_type: str,
         artifact_class: ArtifactClass,
+        depends_on: tuple[UUID, ...] = (),
+        governed_by: tuple[UUID, ...] = (),
     ) -> UUID:
         """Reference a payload by digest, deriving a stable artifact id.
 
         Derived from the library and the digest rather than allocated, so two
         snapshots of the same corpus agree about which artifact is which —
         which is what lets a later publication carry only what changed.
+
+        Identical bytes reached twice are one artifact with the *union* of
+        both uses' edges. Bytes deduplicate and acquisitions do not: the same
+        PDF acquired under two rights decisions is governed by both, and is
+        withheld only when both withhold it (scenarios S14 and S40).
         """
         artifact_id = uuid5(_ARTIFACT_NAMESPACE, f"{self._library_id}:{sha256}")
-        if artifact_id not in closure.artifacts:
+        existing = closure.artifacts.get(artifact_id)
+        if existing is None:
             closure.artifacts[artifact_id] = ArtifactRef(
                 artifact_id=artifact_id,
                 artifact_class=artifact_class,
@@ -674,6 +711,17 @@ class ArchiveCatalogBuilder:
                 byte_length=byte_length,
                 media_type=media_type,
                 library_id=self._library_id,
+                depends_on=_sorted_ids(depends_on),
+                governed_by=_sorted_ids(governed_by),
+            )
+        elif not set(depends_on) <= set(existing.depends_on) or not set(governed_by) <= set(
+            existing.governed_by
+        ):
+            closure.artifacts[artifact_id] = existing.model_copy(
+                update={
+                    "depends_on": _sorted_ids((*existing.depends_on, *depends_on)),
+                    "governed_by": _sorted_ids((*existing.governed_by, *governed_by)),
+                }
             )
         return artifact_id
 
@@ -971,6 +1019,11 @@ def _value(item: Any) -> Any:
     if item is None:
         return None
     return item.value if hasattr(item, "value") else item
+
+
+def _sorted_ids(values) -> tuple[UUID, ...]:
+    """Deduplicated and sorted, so two builds of one closure write one byte string."""
+    return tuple(sorted(set(values), key=str))
 
 
 def _inventory_digest(artifacts) -> str:

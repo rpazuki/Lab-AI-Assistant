@@ -38,6 +38,7 @@ the identity of a snapshot does not change when somebody signs it.
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -45,9 +46,12 @@ from pydantic import BaseModel
 from lab_assistant.contracts.canonical import canonical_json
 
 __all__ = [
+    "POLICY_STATEMENT_TYPE",
     "SIGNING_ALGORITHM",
     "SIGNING_ENVELOPE_VERSION",
+    "PolicySigningStatement",
     "SigningStatement",
+    "policy_statement_for",
     "statement_for",
 ]
 
@@ -109,4 +113,60 @@ def statement_for(manifest) -> SigningStatement:
         origin_installation_id=manifest.origin_installation_id,
         writer_epoch=manifest.writer_epoch,
         publication_sequence=manifest.publication_sequence,
+    )
+
+
+#: Names what a policy statement is about. A snapshot statement and a policy
+#: statement are different claims made with the same key, and a signature over
+#: one must never verify as the other.
+POLICY_STATEMENT_TYPE = "policy_checkpoint"
+
+
+class PolicySigningStatement(BaseModel):
+    """Exactly what a publisher's key attests to about a policy checkpoint.
+
+    **Domain separation.** The publisher signs snapshots and checkpoints with
+    one key, so the two statements must not be confusable. This one carries
+    ``statement_type`` and field names the snapshot statement does not, so
+    their canonical bytes can never coincide — a signature lifted from a
+    snapshot onto a checkpoint, or back, fails rather than vouching for
+    something its signer never saw.
+
+    The rest follows `SigningStatement`: the digest is what binds, because every
+    field here is already inside the checkpoint the digest covers, and the
+    restatement is insurance against a later version narrowing that digest.
+    The validity bounds are restated for the same reason. They are the fields
+    a replayed checkpoint would most want to change: an old checkpoint
+    re-dated to look fresh is how a revoked licence comes back.
+    """
+
+    model_config = {"frozen": True}
+
+    envelope_version: str = SIGNING_ENVELOPE_VERSION
+    algorithm: str = SIGNING_ALGORITHM
+    statement_type: str = POLICY_STATEMENT_TYPE
+    checkpoint_digest: str
+    library_id: UUID
+    checkpoint_id: UUID
+    origin_installation_id: UUID
+    writer_epoch: int
+    policy_sequence: int
+    valid_until: datetime
+    public_valid_until: datetime
+
+    def to_bytes(self) -> bytes:
+        return canonical_json(self.model_dump(mode="python"))
+
+
+def policy_statement_for(checkpoint) -> PolicySigningStatement:
+    """The statement for a checkpoint, derived from it rather than supplied."""
+    return PolicySigningStatement(
+        checkpoint_digest=checkpoint.signing_digest(),
+        library_id=checkpoint.library_id,
+        checkpoint_id=checkpoint.checkpoint_id,
+        origin_installation_id=checkpoint.origin_installation_id,
+        writer_epoch=checkpoint.writer_epoch,
+        policy_sequence=checkpoint.policy_sequence,
+        valid_until=checkpoint.valid_until,
+        public_valid_until=checkpoint.public_valid_until,
     )

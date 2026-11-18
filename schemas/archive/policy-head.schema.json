@@ -1,0 +1,63 @@
+{
+  "$id": "https://lab-ai-assistant.invalid/schemas/archive/policy-head.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The control record naming a library's current checkpoint.\n\nCarries owner, epoch and sequence for the reason the catalog head does: a\ncompare-and-swap from a fenced writer must fail even when its checkpoint is\nperfectly well formed. It is deliberately *not* where a reader learns how\nlong the policy is valid \u2014 the head is unsigned, and freshness is taken\nfrom the signed checkpoint it names.",
+  "properties": {
+    "checkpoint_digest": {
+      "title": "Checkpoint Digest",
+      "type": "string"
+    },
+    "checkpoint_id": {
+      "format": "uuid",
+      "title": "Checkpoint Id",
+      "type": "string"
+    },
+    "format_version": {
+      "default": "1.0",
+      "title": "Format Version",
+      "type": "string"
+    },
+    "library_id": {
+      "format": "uuid",
+      "title": "Library Id",
+      "type": "string"
+    },
+    "owner_installation_id": {
+      "format": "uuid",
+      "title": "Owner Installation Id",
+      "type": "string"
+    },
+    "policy_sequence": {
+      "title": "Policy Sequence",
+      "type": "integer"
+    },
+    "updated_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Updated At"
+    },
+    "writer_epoch": {
+      "title": "Writer Epoch",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "library_id",
+    "owner_installation_id",
+    "writer_epoch",
+    "policy_sequence",
+    "checkpoint_id",
+    "checkpoint_digest"
+  ],
+  "title": "PolicyHeadDescriptor",
+  "type": "object",
+  "x-semantic-version": "1.0.0-draft"
+}
