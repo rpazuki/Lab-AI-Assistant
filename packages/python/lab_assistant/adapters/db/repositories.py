@@ -1652,6 +1652,14 @@ class _SqlPublications:
         )
         return [_publication_from_row(row) for row in result.mappings().all()]
 
+    async def list_for_library(self, library_id: UUID) -> list[PublicationRecord]:
+        result = await self._c.execute(
+            select(t.archive_publications)
+            .where(t.archive_publications.c.library_id == library_id)
+            .order_by(t.archive_publications.c.created_at, t.archive_publications.c.id)
+        )
+        return [_publication_from_row(row) for row in result.mappings().all()]
+
 
 def _publication_row(record: PublicationRecord) -> dict:
     return {

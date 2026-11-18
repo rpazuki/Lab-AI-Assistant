@@ -85,6 +85,8 @@ class AuditAction(StrEnum):
     INSTALLATION_DRAINED = "installation_drained"
     #: The right to publish a library moved to a new epoch and owner.
     INSTALLATION_PROMOTED = "installation_promoted"
+    #: Archive keys deleted under a reviewed retention plan.
+    ARCHIVE_PURGED = "archive_purged"
     LEGACY_IMPORT_RUN = "legacy_import_run"
 
 

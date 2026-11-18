@@ -263,6 +263,24 @@ def _parser() -> argparse.ArgumentParser:
     reconcile_archive.add_argument(
         "--apply", action="store_true", help="record the outcome of each judgement"
     )
+    retention_archive = archive_sub.add_parser(
+        "retention", help="what the archive may delete, why the rest stays, and deleting it"
+    )
+    retention_sub = retention_archive.add_subparsers(dest="retention_command", required=True)
+    plan_retention = retention_sub.add_parser(
+        "plan", help="compute a deletion plan; deletes nothing"
+    )
+    apply_retention = retention_sub.add_parser(
+        "apply", help="delete what a reviewed plan says, if the archive has not changed"
+    )
+    for sub in (plan_retention, apply_retention):
+        sub.add_argument("--workspace", required=True, help="workspace slug")
+        sub.add_argument("--library-id", default=None)
+    plan_retention.add_argument("--keep-last", type=int, default=3)
+    plan_retention.add_argument("--hold-snapshot", action="append", default=[])
+    plan_retention.add_argument("--hold-digest", action="append", default=[])
+    plan_retention.add_argument("--out", type=Path, default=None, help="write the plan here")
+    apply_retention.add_argument("plan", type=Path, help="the reviewed plan file")
     policy_archive = archive_sub.add_parser(
         "policy", help="signed policy checkpoints: revocations, withdrawals, freshness"
     )
@@ -1211,6 +1229,9 @@ async def _archive(
     if args.archive_command == "fetch":
         return await _archive_fetch(args, settings, container=container)
 
+    if args.archive_command == "retention":
+        return await _archive_retention(args, settings, container=container)
+
     if args.archive_command in ("inspect", "verify"):
         policy = None
         if args.policy is not None:
@@ -1300,6 +1321,65 @@ async def _archive(
             "Run `lab archive verify` on it before anything depends on it.",
             file=sys.stderr,
         )
+        return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
+
+
+async def _archive_retention(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """Plan a purge, or apply a reviewed one. Planning never deletes."""
+    from lab_assistant.application.archive_retention import RetentionPlanner
+
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        workspace_id = await _workspace_id(container, args.workspace)
+        if workspace_id is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+        control = _archive_control(settings)
+        planner = RetentionPlanner(
+            container.context,
+            control=control,
+            library_id=UUID(args.library_id) if args.library_id else workspace_id,
+        )
+        if args.retention_command == "plan":
+            plan = await planner.plan(
+                workspace_id,
+                keep_last=args.keep_last,
+                held_snapshots=tuple(UUID(value) for value in args.hold_snapshot),
+                held_digests=tuple(args.hold_digest),
+            )
+            text = json.dumps(plan.as_dict(), indent=2)
+            print(text)
+            if args.out:
+                Path(args.out).write_text(text + "\n", encoding="utf-8")
+            for reason in plan.blocked:
+                print(f"  kept: {reason}", file=sys.stderr)
+            print(
+                f"{len(plan.deletions)} key(s) would be deleted; review the plan, then "
+                "`lab archive retention apply` it",
+                file=sys.stderr,
+            )
+            return 0
+        if not hasattr(control, "delete"):
+            print(
+                "this archive backend does not delete from this process: a bucket's deletion "
+                "authority is a separate principal with its own lifecycle rules (ADR-0028)",
+                file=sys.stderr,
+            )
+            return 1
+        result = await planner.apply(
+            workspace_id, json.loads(Path(args.plan).read_bytes()), deletion=control
+        )
+        print(json.dumps(result, indent=2))
         return 0
     finally:
         if owned:

@@ -931,6 +931,21 @@ records architecture and an implementation-ready plan only.
             another VM, Compose profiles per role, and provider requests left uncertain
             by a drain (S11) — leased tasks are refused at drain rather than reconciled.
 - [ ] Phase 5 lifecycle/disaster/scale drills accepted.
+      **Offline core done; drills, measurements and alerts need a real environment.**
+      - [x] Reachability-based purge ([ADR-0028](../architecture/adr/0028-archive-retention.md),
+            **proposed**): `lab archive retention plan / apply`. A payload is deletable
+            only when no retained snapshot names it (S40); a snapshot is retained when it
+            is the head, recent, held, or the newest holding a release a conversation cited
+            (S18); a tombstoned payload still named is kept and the plan says what keeps it
+            (S41); abandoned uploads are litter. `apply` recomputes and refuses unless the
+            plan matches the reviewed digest, deletes shards before manifests, is audited,
+            and runs only on filesystem and memory stores — a bucket's deletion authority
+            is a separate principal by design. 8 tests; breaking reachability, the
+            reviewed-digest check or the citation rule each fails its test.
+            **Not done, and not doable offline:** backup restore without the live bucket,
+            encryption-key recovery, an AWS-to-GCS move, measured RPO/RTO, latency and cost
+            numbers, disaster drills, and alerts. Also outstanding: durable legal holds,
+            purging superseded policy checkpoints, and reader cache invalidation.
 - [ ] Relevant ADRs accepted and current documentation reconciled with implementation.
 - [ ] User/operator decisions, measured RPO/RTO and deployed feature/provider matrix recorded.
 

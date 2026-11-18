@@ -64,6 +64,7 @@ from lab_assistant.domain.workspace import (
 
 __all__ = [
     "ArchiveControlStore",
+    "ArchiveDeletionStore",
     "AssetRepository",
     "AuditRepository",
     "ChatRepository",
@@ -277,6 +278,19 @@ class ArchiveControlStore(Protocol):
         is how a fenced publisher takes the library back
         (`domain/publication.py`).
         """
+        ...
+
+
+@runtime_checkable
+class ArchiveDeletionStore(Protocol):
+    """Deleting archive keys: a separate authority from publishing.
+
+    Its own port so that holding an `ArchiveControlStore` does not imply being
+    able to delete. Only a reviewed retention plan calls it (ADR-0028).
+    """
+
+    async def delete(self, key: str) -> bool:
+        """Remove a key; ``False`` when it was already absent."""
         ...
 
 
@@ -896,6 +910,9 @@ class ChatRepository(Protocol):
     async def list_sessions(
         self, workspace_id: UUID, user_id: UUID, *, limit: int = 50
     ) -> list[ChatSession]: ...
+    async def list_workspace_sessions(self, workspace_id: UUID) -> list[ChatSession]:
+        """Every member's sessions: what a retraction or a retention plan must see."""
+        ...
     async def add_message(self, message: ChatMessage) -> None: ...
     async def list_messages(self, workspace_id: UUID, session_id: UUID) -> list[ChatMessage]: ...
     async def get_message(self, workspace_id: UUID, message_id: UUID) -> ChatMessage | None: ...
@@ -965,6 +982,14 @@ class PublicationRepository(Protocol):
         """Attempts that have not reached a terminal state, oldest first.
 
         What a recovering publisher reads before it does anything else.
+        """
+        ...
+
+    async def list_for_library(self, library_id: UUID) -> list[PublicationRecord]:
+        """Every attempt for a library, oldest first, whatever its state.
+
+        How a retention plan enumerates snapshots without listing the bucket:
+        the producer recorded every one it ever uploaded.
         """
         ...
 

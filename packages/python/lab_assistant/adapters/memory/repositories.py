@@ -1052,6 +1052,16 @@ class _Publications:
             key=lambda record: (record.created_at or _EPOCH, str(record.id)),
         )
 
+    async def list_for_library(self, library_id: UUID) -> list[PublicationRecord]:
+        return sorted(
+            (
+                record
+                for record in self._db.publications.values()
+                if record.library_id == library_id
+            ),
+            key=lambda record: (record.created_at or _EPOCH, str(record.id)),
+        )
+
 
 class _Releases:
     def __init__(self, db: MemoryDatabase) -> None:

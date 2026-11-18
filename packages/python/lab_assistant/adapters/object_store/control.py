@@ -84,6 +84,10 @@ class MemoryControlStore:
         self._records[key] = (data, version)
         return version
 
+    async def delete(self, key: str) -> bool:
+        """Remove a key. ``False`` when it was already gone."""
+        return self._records.pop(key, None) is not None
+
 
 class FilesystemControlStore:
     """Single-host compare-and-swap, under an exclusive lock.
@@ -157,6 +161,28 @@ class FilesystemControlStore:
         return await asyncio.to_thread(
             self._locked_write, key, data, expected_version=expected_version
         )
+
+    async def delete(self, key: str) -> bool:
+        """Remove a key under its lock. ``False`` when it was already gone.
+
+        Only the filesystem and memory stores delete. A bucket's deletion
+        authority belongs to a separate principal and its own lifecycle rules
+        (ADR-0028), so the bucket adapters deliberately offer no ``delete``.
+        """
+
+        def remove() -> bool:
+            path = self._path(key)
+            with self._lock_path(key).open("a") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                try:
+                    if not path.is_file():
+                        return False
+                    path.unlink()
+                    return True
+                finally:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+
+        return await asyncio.to_thread(remove)
 
 
 class S3ControlStore:
