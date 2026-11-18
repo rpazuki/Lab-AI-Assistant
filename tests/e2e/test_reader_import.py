@@ -18,6 +18,7 @@ truly grants GET and nothing else. That is the deployment acceptance.
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -95,7 +96,12 @@ def _forbid(*_args, **_kwargs):
     raise AssertionError("the reader recomputed something the snapshot carried")
 
 
-@pytest.fixture(params=["memory", "sqlite"])
+_BACKENDS = ["memory", "sqlite"]
+if os.environ.get("LAB_TEST_DATABASE_URL"):
+    _BACKENDS.append("postgres")
+
+
+@pytest.fixture(params=_BACKENDS)
 async def world(request, tmp_path):
     """The reader runs on the in-memory adapters and on SQLite with foreign keys
     enforced: the first would pass an import that wrote a row before the row it
@@ -156,20 +162,26 @@ async def world(request, tmp_path):
 
     # The reader: its own everything, and a document embedder and extractor
     # that fail if anything asks them to work.
-    if request.param == "sqlite":
+    if request.param in ("sqlite", "postgres"):
         from lab_assistant.adapters.db.engine import create_schema, make_engine
         from lab_assistant.adapters.db.repositories import sql_uow_factory
         from lab_assistant.adapters.db.search import PostgresSearchIndex
         from lab_assistant.adapters.object_store.filesystem import FilesystemObjectStore
         from lab_assistant.config import LabEnv, Settings
+        from lab_assistant.testing import reset_database
 
         settings = Settings(
             env=LabEnv.LOCAL,
-            database_url="sqlite+aiosqlite:///:memory:",
+            database_url=(
+                os.environ["LAB_TEST_DATABASE_URL"]
+                if request.param == "postgres"
+                else "sqlite+aiosqlite:///:memory:"
+            ),
             object_store_root=tmp_path / "reader-objects",
         )
         engine = make_engine(settings)
         await create_schema(engine, dimensions=(64,))
+        await reset_database(engine)
         reader = build_harness(
             installation_role=InstallationRole.READER,
             uow_factory=sql_uow_factory(engine),

@@ -932,6 +932,10 @@ records architecture and an implementation-ready plan only.
             as "stop serving affected material immediately" — stopped nothing until a
             successor release, on the producer as well. Retrieval and analytics now
             withhold revoked or lapsed works before scoring and in the counts.
+            **Run against real PostgreSQL** (16.13 + pgvector 0.8.2): the whole suite
+            with `LAB_TEST_DATABASE_URL` set, 1372 passed, including the seven reader
+            import tests; `alembic upgrade head` from empty through `0004_archive_imports`
+            and `alembic check` reporting no drift.
             **Outstanding:** least-privilege database roles (a reader's API role can still
             write corpus tables); a reader-side refresh loop and the readiness policy-age
             check; reader retention of old releases; analytics years and journals on a
