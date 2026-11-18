@@ -173,6 +173,14 @@ class Settings(BaseSettings):
     #: written into the signed checkpoint, so it is the publisher's steward who
     #: approves it, not each reader's operator.
     archive_policy_public_validity_hours: int = Field(default=0, ge=0)
+    #: Whether open-licence content (CC and public-domain) may be *replicated*:
+    #: copied into the shared archive and onto the readers that import it. A
+    #: data-steward decision, off by default, because the architecture requires
+    #: an explicit permission for replication and denial while it is unmade —
+    #: `store_content` here is not permission to store it on another machine.
+    #: Applies to rights decisions made after it is set; earlier decisions keep
+    #: the actions they were granted.
+    rights_replicate_open_content: bool = False
 
     # ── database ────────────────────────────────────────────────────────────
     # Owner of this address: Settings (local) and the compose `environment:`

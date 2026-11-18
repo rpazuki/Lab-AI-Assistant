@@ -19,6 +19,7 @@ One page per situation. Each states the symptom, what to check, what to do, and 
 | [Audit chain failure](audit-chain-failure.md) | chain verification does not pass |
 | [Suspected access breach](suspected-access-breach.md) | data may have crossed a boundary |
 | [Policy checkpoints](policy-checkpoints.md) | a revocation must reach readers, or policy is going stale |
+| [Fetching a snapshot](archive-fetch.md) | a reader is taking a library from the archive |
 
 ## Rules for all of them
 

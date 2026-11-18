@@ -56,6 +56,14 @@ class PolicyAction(StrEnum):
     EXPORT_CLAIMS = "export_claims"
     EXPORT_EVIDENCE = "export_evidence"
     EXPORT_CONTENT = "export_content"
+    #: Hold a copy outside this installation: in the shared archive, and on the
+    #: readers that import from it. Its own action because the architecture
+    #: says so explicitly — permission to *store* content here is not
+    #: permission to replicate it to other machines, and reading
+    #: `store_content` as both is how licensed text ends up in every reader's
+    #: database. It covers the payloads and everything that is their text in
+    #: another shape: renditions, search chunks and the vectors made from them.
+    REPLICATE_CONTENT = "replicate_content"
     # lifecycle control
     REVIEW = "review"
     APPROVE_RELEASE = "approve_release"
@@ -76,6 +84,7 @@ CONTENT_ACTIONS: frozenset[PolicyAction] = frozenset(
         PolicyAction.CREATE_EMBEDDINGS_EXTERNAL,
         PolicyAction.EXPORT_EVIDENCE,
         PolicyAction.EXPORT_CONTENT,
+        PolicyAction.REPLICATE_CONTENT,
     }
 )
 

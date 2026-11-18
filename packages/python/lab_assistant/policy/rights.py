@@ -200,13 +200,23 @@ class RightsPolicy(BaseModel):
 
 
 def default_open_access_policy(
-    *, policy_id: str = "default-oa", version: str = "1.0.0"
+    *,
+    policy_id: str = "default-oa",
+    version: str = "1.0.0",
+    replicate_open_content: bool = False,
 ) -> RightsPolicy:
     """A conservative starter policy: open licences only, no external transfer.
 
     Deployments replace this with an institution-approved policy version. It is
     deliberately restrictive so that an unconfigured deployment cannot transfer
     entitled content anywhere.
+
+    ``replicate_open_content`` lets open-licence content be copied to the shared
+    archive and its readers (`replicate_content`). Off unless the data steward
+    turns it on (`LAB_RIGHTS_REPLICATE_OPEN_CONTENT`): whether a licence permits
+    replication to other installations is the steward's decision, and the
+    architecture asks for default denial while it is unmade. It is never
+    granted to user-assisted or entitled material by this policy.
     """
     open_content = frozenset(
         {
@@ -234,6 +244,8 @@ def default_open_access_policy(
             PolicyAction.RETAIN,
         }
     )
+    if replicate_open_content:
+        open_content = open_content | {PolicyAction.REPLICATE_CONTENT}
     return RightsPolicy(
         policy_id=policy_id,
         semantic_version=version,
@@ -251,7 +263,10 @@ def default_open_access_policy(
                 routes=(AcquisitionRoute.USER_ASSISTED,),
                 requires_attestation=True,
                 effect=Effect.ALLOW,
-                actions=open_content - {PolicyAction.EXPORT_EVIDENCE},
+                # Attested access for one person is not a licence to copy the
+                # material to every reader, whatever the open rule allows.
+                actions=open_content
+                - {PolicyAction.EXPORT_EVIDENCE, PolicyAction.REPLICATE_CONTENT},
                 restrictions=("no external model transfer", "no content export"),
                 review_after_days=180,
             ),

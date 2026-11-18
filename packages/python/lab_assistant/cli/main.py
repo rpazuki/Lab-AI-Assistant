@@ -231,6 +231,19 @@ def _parser() -> argparse.ArgumentParser:
             default=None,
             help="a policy checkpoint file to apply: reports what current policy withholds",
         )
+    verify_archive.add_argument(
+        "--payloads",
+        action="store_true",
+        help="re-digest every payload, and check none that was withheld is present",
+    )
+    fetch_archive = archive_sub.add_parser(
+        "fetch",
+        help="copy the snapshot a library's head names, GET only, and validate it",
+    )
+    fetch_archive.add_argument("directory", type=Path, help="a new or resumable directory")
+    fetch_archive.add_argument(
+        "--library-id", required=True, help="the library to fetch; no database is needed"
+    )
     publish_archive = archive_sub.add_parser(
         "publish", help="upload a snapshot and move the library head to it"
     )
@@ -1164,6 +1177,9 @@ async def _archive(
     if args.archive_command == "policy":
         return await _archive_policy(args, settings, container=container)
 
+    if args.archive_command == "fetch":
+        return await _archive_fetch(args, settings, container=container)
+
     if args.archive_command in ("inspect", "verify"):
         policy = None
         if args.policy is not None:
@@ -1176,6 +1192,7 @@ async def _archive(
             require_signature=settings.archive_require_signature,
             policy=policy,
             now=_now(container),
+            payloads=getattr(args, "payloads", False),
         )
         print(json.dumps(report.as_dict(), indent=2, default=str))
         if args.archive_command == "inspect":
@@ -1257,6 +1274,44 @@ async def _archive(
         if owned:
             for hook in container.shutdown:
                 await hook()
+
+
+async def _archive_fetch(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """Copy the head's snapshot into a directory, reading and never writing.
+
+    The command a reader runs first, so it needs no database: what it produces
+    is a directory that validates with its payloads, and importing it is a
+    separate step that can be retried without fetching again.
+    """
+    from lab_assistant.application.archive_fetch import SnapshotFetcher
+
+    fetcher = SnapshotFetcher(
+        _archive_control(settings),
+        library_id=UUID(args.library_id),
+        verifier=_archive_verifier(settings),
+        require_signature=settings.archive_require_signature,
+        max_object_bytes=settings.object_store_max_object_bytes or None,
+    )
+    report = await fetcher.fetch(args.directory, now=_now(container))
+    print(json.dumps(report.as_dict(), indent=2, default=str))
+    for problem in report.problems:
+        print(f"  - {problem}", file=sys.stderr)
+    if report.validation is not None:
+        for finding in report.validation.blocking:
+            print(f"  - {finding.code}: {finding.detail}", file=sys.stderr)
+    if not report.ok:
+        print(
+            "the fetched snapshot is not complete and valid; nothing may import it", file=sys.stderr
+        )
+        return 1
+    print(
+        f"snapshot {report.head.snapshot_id if report.head else '?'} fetched to {args.directory}: "
+        f"{report.fetched} file(s) copied, {report.resumed} already present",
+        file=sys.stderr,
+    )
+    return 0
 
 
 def _now(container: Any | None):

@@ -60,7 +60,12 @@ from lab_assistant.application.archive_catalog import (
     PROJECTION_CHUNK_KIND,
     PROJECTION_VECTOR_KIND,
 )
-from lab_assistant.contracts.archive import ArtifactRef, SnapshotManifest
+from lab_assistant.contracts.archive import (
+    ArtifactRef,
+    SnapshotManifest,
+    content_location,
+    is_safe_location,
+)
 from lab_assistant.contracts.archive_catalog import RecordKind, record_for
 from lab_assistant.contracts.archive_policy import POLICY_FORMAT_NAME, PolicyCheckpoint
 from lab_assistant.contracts.archive_projection import (
@@ -70,6 +75,7 @@ from lab_assistant.contracts.archive_projection import (
     vector_problems,
 )
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
+from lab_assistant.contracts.release import ReleaseItemRecord
 from lab_assistant.contracts.signing import policy_statement_for, statement_for
 from lab_assistant.domain.archive_policy import (
     CheckpointStatus,
@@ -196,13 +202,26 @@ _EDGES: dict[RecordKind, tuple[tuple[str, RecordKind, bool], ...]] = {
         ("manifestation_id", RecordKind.MANIFESTATION, False),
         ("rights_decision_id", RecordKind.RIGHTS_DECISION, True),
     ),
+    RecordKind.PARSE_RUN: (("asset_id", RecordKind.ASSET, True),),
     RecordKind.RENDITION: (
         ("asset_id", RecordKind.ASSET, True),
+        # Required: text of unknown origin is not evidence, and a reader that
+        # enforces its keys cannot store a rendition without its parse.
+        ("parse_run_id", RecordKind.PARSE_RUN, True),
         ("work_id", RecordKind.WORK, False),
         ("supersedes_rendition_id", RecordKind.RENDITION, False),
     ),
     RecordKind.SPAN: (("rendition_id", RecordKind.RENDITION, True),),
-    RecordKind.CLAIM: (("work_id", RecordKind.WORK, True),),
+    RecordKind.EXPERIMENT: (
+        ("work_id", RecordKind.WORK, True),
+        ("rendition_id", RecordKind.RENDITION, False),
+    ),
+    RecordKind.CLAIM: (
+        ("work_id", RecordKind.WORK, True),
+        ("experiment_id", RecordKind.EXPERIMENT, True),
+        ("subject_entity_id", RecordKind.ENTITY, True),
+        ("unit_entity_id", RecordKind.ENTITY, True),
+    ),
     RecordKind.CLAIM_REVISION: (
         ("claim_id", RecordKind.CLAIM, True),
         # Blocking: a release pins a revision, and the revision it replaced is
@@ -218,6 +237,8 @@ _EDGES: dict[RecordKind, tuple[tuple[str, RecordKind, bool], ...]] = {
         ("asset_id", RecordKind.ASSET, True),
         ("rendition_id", RecordKind.RENDITION, True),
     ),
+    # A snapshot of one release still names the release it replaced.
+    RecordKind.RELEASE: (("parent_release_id", RecordKind.RELEASE, False),),
 }
 
 #: List-valued references, checked per element.
@@ -235,8 +256,14 @@ def validate_snapshot(
     require_signature: bool = False,
     policy: PolicyCheckpoint | None = None,
     now: datetime | None = None,
+    payloads: bool = False,
 ) -> ValidationReport:
     """Validate a snapshot directory. Touches nothing but the directory.
+
+    ``payloads`` re-digests every payload the inventory says travelled, and
+    checks that every one it says was withheld did not. Off by default because
+    it reads every byte; a fetch, and `lab archive verify --payloads`, turn it
+    on.
 
     ``verifier`` carries the keys this deployment was configured to trust.
     Without one the signature is reported and not checked, which is honest:
@@ -258,7 +285,10 @@ def validate_snapshot(
     _check_closure(rows, findings)
     _check_inventory(directory, manifest, rows, findings)
     _check_retention_edges(rows, findings)
+    _check_entry_digests(rows, findings)
     _check_releases(manifest, rows, findings)
+    if payloads:
+        counts |= _check_payloads(directory, rows, findings)
     chunk_renditions: dict[str, tuple[UUID, UUID]] = {}
     counts |= _check_projections(directory, manifest, rows, findings, chunk_renditions)
     _check_signature(manifest, findings, verifier=verifier, require=require_signature)
@@ -494,6 +524,9 @@ def _read_shards(
     counts: dict[str, int] = {}
 
     for shard in manifest.catalog_shards:
+        if not is_safe_location(shard.location):
+            findings.append(_unsafe(shard.location))
+            continue
         path = directory / shard.location
         if not path.is_file():
             findings.append(
@@ -687,6 +720,19 @@ def _check_inventory(
     meant to send, before it has fetched a single payload.
     """
     inventory = rows.get(INVENTORY_KIND, {})
+    withheld = {ref.artifact_id for ref in inventory.values() if not ref.is_resolvable}
+    if withheld != set(manifest.missing_optional_artifacts):
+        findings.append(
+            ValidationFinding(
+                code="inventory_missing_disagrees",
+                severity=Severity.BLOCKING,
+                detail=(
+                    f"the inventory withholds {len(withheld)} artifact(s) and the manifest lists "
+                    f"{len(manifest.missing_optional_artifacts)} as missing: an importer cannot "
+                    "tell which account is true"
+                ),
+            )
+        )
     if manifest.required_object_inventory_digest is None:
         findings.append(
             ValidationFinding(
@@ -789,6 +835,122 @@ def _check_retention_edges(
                     ),
                 )
             )
+
+
+def _unsafe(location: str) -> ValidationFinding:
+    return ValidationFinding(
+        code="shard_location_unsafe",
+        severity=Severity.BLOCKING,
+        detail=(
+            f"the manifest names a shard at {location[:120]!r}, which is not a plain relative "
+            "path inside the snapshot. Every location here is written by this code, so this is "
+            "tampering, and nothing is read from it"
+        ),
+    )
+
+
+def _check_entry_digests(
+    rows: dict[Any, dict[UUID, Any]], findings: list[ValidationFinding]
+) -> None:
+    """Each release entry is the entry its producer digested.
+
+    The producer's incremental builds compare these digests, and a reader that
+    rebuilt an entry from fields that did not all travel would disagree with
+    them silently. Rebuilding it here and comparing is how a field that stopped
+    travelling is caught before an import depends on it.
+    """
+    for entry in rows.get(RecordKind.RELEASE_ITEM, {}).values():
+        if entry.content_digest is None:
+            continue
+        rebuilt = ReleaseItemRecord(
+            work_id=entry.work_id,
+            manifestation_id=entry.manifestation_id,
+            asset_id=entry.asset_id,
+            rendition_id=entry.rendition_id,
+            rendition_digest=entry.rendition_digest,
+            claim_revision_ids=tuple(entry.claim_revision_ids),
+            access_policy_snapshot_id=entry.access_policy_snapshot_id,
+            inclusion_reason=entry.inclusion_reason,
+        ).content_digest()
+        if rebuilt != entry.content_digest:
+            findings.append(
+                ValidationFinding(
+                    code="entry_digest",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"release entry {entry.record_id} digests to {rebuilt[:12]}… and records "
+                        f"{entry.content_digest[:12]}…: something its producer digested did not "
+                        "travel"
+                    ),
+                )
+            )
+
+
+def _check_payloads(
+    directory: Path, rows: dict[Any, dict[UUID, Any]], findings: list[ValidationFinding]
+) -> dict[str, int]:
+    """Every payload that travelled is intact, and none that was withheld did.
+
+    The second half matters as much as the first. A payload the inventory says
+    was withheld by rights and that is nonetheless here is content that left
+    the producer without the permission the inventory says it lacked.
+    """
+    inventory: dict[UUID, ArtifactRef] = rows.get(INVENTORY_KIND, {})
+    present = 0
+    for ref in inventory.values():
+        try:
+            location = content_location(ref.sha256)
+        except ValueError:
+            findings.append(
+                ValidationFinding(
+                    code="payload_digest_malformed",
+                    severity=Severity.BLOCKING,
+                    detail=f"artifact {ref.artifact_id} names {ref.sha256[:80]!r} as its digest",
+                )
+            )
+            continue
+        path = directory / location
+        if not ref.is_resolvable:
+            if path.exists():
+                findings.append(
+                    ValidationFinding(
+                        code="payload_withheld_present",
+                        severity=Severity.BLOCKING,
+                        detail=(
+                            f"artifact {ref.artifact_id} is recorded as "
+                            f"{ref.unavailable.value if ref.unavailable else 'withheld'} and its "
+                            "bytes are in the snapshot anyway"
+                        ),
+                    )
+                )
+            continue
+        if not path.is_file():
+            findings.append(
+                ValidationFinding(
+                    code="payload_missing",
+                    severity=Severity.BLOCKING if ref.required else Severity.ADVISORY,
+                    detail=(
+                        f"artifact {ref.artifact_id} ({ref.sha256[:12]}…) is not in the snapshot"
+                    ),
+                )
+            )
+            continue
+        data = path.read_bytes()
+        if len(data) != ref.byte_length or sha256_bytes(data) != ref.sha256:
+            findings.append(
+                ValidationFinding(
+                    code="payload_corrupt",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"artifact {ref.artifact_id} is {len(data)} bytes digesting to "
+                        f"{sha256_bytes(data)[:12]}…; the inventory records {ref.byte_length} "
+                        f"bytes and {ref.sha256[:12]}…"
+                    ),
+                )
+            )
+            continue
+        present += 1
+    return {"payload": present}
 
 
 def _check_signature(
@@ -905,6 +1067,9 @@ def _check_projections(
 
         chunk_keys: set[str] = set()
         for shard in ref.shards:
+            if not is_safe_location(shard.location):
+                findings.append(_unsafe(shard.location))
+                continue
             path = directory / shard.location
             if not path.is_file():
                 findings.append(

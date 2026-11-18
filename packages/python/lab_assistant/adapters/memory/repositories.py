@@ -879,6 +879,10 @@ class _Claims:
                 return entity
         return None
 
+    async def get_entity(self, workspace_id: UUID, entity_id: UUID) -> Entity | None:
+        entity = self._db.entities.get(entity_id)
+        return entity if entity is not None and entity.workspace_id == workspace_id else None
+
     async def add_experiment(self, experiment: Experiment) -> None:
         self._db.experiments[experiment.id] = experiment
 

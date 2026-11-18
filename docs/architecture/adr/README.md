@@ -42,3 +42,4 @@ names its successor.
 | [0023](0023-object-storage-sdk.md) | Object storage through the maintained SDK |
 | [0024](0024-native-google-cloud-storage.md) | A native Google Cloud Storage adapter |
 | [0025](0025-policy-checkpoints.md) | Policy travels as signed checkpoints that narrow and never widen (proposed) |
+| [0026](0026-content-replication.md) | Content leaves the producer only under an explicit replication permission (proposed) |

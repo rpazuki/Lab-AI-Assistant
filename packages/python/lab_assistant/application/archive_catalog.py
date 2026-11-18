@@ -26,10 +26,19 @@ reports nothing" are all written. A catalog of current accepted values would
 lose the reason a number changed and make every reader re-run an extraction that
 already completed (scenarios S12 and S15).
 
-**Payloads are referenced, never inlined.** A record names an artifact by digest;
-the bytes travel in the object store under the snapshot's inventory. So a
-catalog is small, diffable and cheap to validate, and the thing that is
-expensive to move is moved once.
+**Payloads are referenced, never inlined.** A record names an artifact by digest
+and the bytes sit beside the catalog under `content/sha256/…`, outside every
+shard. So a catalog is small, diffable and cheap to validate, and the thing that
+is expensive to move is moved once — a payload is uploaded once per library,
+however many snapshots name it.
+
+**Only what may be replicated leaves.** A payload, and everything that is its
+text in another shape — its rendition, its search chunks, their vectors — is
+copied only when a governing rights decision grants `replicate_content`.
+Otherwise the inventory says it is withheld by rights, and the records still
+travel: a reader knows the paper and its reviewed claims and cannot serve its
+text. Permission to store content here is not permission to store it on every
+reader, and the architecture asks for denial while that is undecided.
 
 **Every payload says what it depends on and what governs it.** The inventory
 carries the retention edges — a rendition depends on its asset, and both are
@@ -60,6 +69,8 @@ from lab_assistant.contracts.archive import (
     PackageRef,
     ProjectionRef,
     SnapshotManifest,
+    UnavailableReason,
+    content_location,
 )
 from lab_assistant.contracts.archive_catalog import (
     APPLY_ORDER,
@@ -68,7 +79,11 @@ from lab_assistant.contracts.archive_catalog import (
     CatalogRecord,
     ClaimRecord,
     ClaimRevisionRecord,
+    EntityRecord,
+    ExperimentRecord,
+    IdentifierEntry,
     ManifestationRecord,
+    ParseRunRecord,
     RecordKind,
     ReleaseEntryRecord,
     ReleaseRecord,
@@ -90,6 +105,7 @@ from lab_assistant.contracts.archive_projection import (
     projection_record_id,
 )
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
+from lab_assistant.contracts.policy import PolicyAction
 from lab_assistant.contracts.signing import statement_for
 
 __all__ = [
@@ -152,6 +168,9 @@ class _Closure:
     def __init__(self) -> None:
         self.rows: dict[RecordKind, dict[UUID, CatalogRecord]] = {kind: {} for kind in APPLY_ORDER}
         self.artifacts: dict[UUID, ArtifactRef] = {}
+        #: The decisions themselves, not only their records: whether bytes may
+        #: be replicated is asked of the decision, with its expiry.
+        self.decisions: dict[UUID, Any] = {}
 
     def add(self, record: CatalogRecord) -> bool:
         """Record a row. Returns False when it was already reached."""
@@ -222,6 +241,7 @@ class ArchiveCatalogBuilder:
         for release in releases:
             await self._walk_release(workspace_id, release, closure, problems)
 
+        copied = await self._write_payloads(workspace_id, destination, closure, problems)
         (destination / CATALOG_DIRECTORY).mkdir(parents=True, exist_ok=True)
         shards = self._write_shards(destination, closure)
         # The artifact inventory is a shard of its own rather than a field on
@@ -229,7 +249,15 @@ class ArchiveCatalogBuilder:
         # decide anything, so it stays small; a corpus with fifty thousand
         # payloads would otherwise put all of them in it.
         shards += (self._write_inventory(destination, closure),)
-        projections = await self._write_projections(destination, workspace_id, releases)
+        projections = await self._write_projections(
+            destination, workspace_id, releases, servable=_servable_renditions(closure)
+        )
+        withheld = tuple(
+            sorted(
+                (ref.artifact_id for ref in closure.artifacts.values() if not ref.is_resolvable),
+                key=str,
+            )
+        )
 
         manifest = SnapshotManifest(
             library_id=self._library_id,
@@ -249,6 +277,7 @@ class ArchiveCatalogBuilder:
             projection_refs=projections,
             package_refs=self._package_refs(closure),
             required_object_inventory_digest=_inventory_digest(closure.artifacts.values()),
+            missing_optional_artifacts=withheld,
         )
         manifest = self._sign(manifest)
         _write_manifest(destination, manifest)
@@ -260,6 +289,8 @@ class ArchiveCatalogBuilder:
             counts={
                 **{kind.value: closure.count(kind) for kind in APPLY_ORDER},
                 "artifact": len(closure.artifacts),
+                "payload_copied": copied,
+                "payload_withheld": len(withheld),
                 "projection_chunk": sum(
                     shard.row_count
                     for ref in projections
@@ -336,6 +367,8 @@ class ArchiveCatalogBuilder:
                     status=release.status.value,
                     manifest_sha256=release.manifest_sha256,
                     scope_version_ids=tuple(release.scope_version_ids),
+                    parent_release_id=release.parent_release_id,
+                    embedding_profile_ids=tuple(release.embedding_profile_ids),
                     projection_ready_profiles=tuple(release.projection_ready_profiles),
                     published_at=release.published_at,
                 )
@@ -368,7 +401,9 @@ class ArchiveCatalogBuilder:
                         rendition_id=record.rendition_id,
                         rendition_digest=record.rendition_digest,
                         claim_revision_ids=tuple(record.claim_revision_ids),
+                        access_policy_snapshot_id=record.access_policy_snapshot_id,
                         inclusion_reason=record.inclusion_reason,
+                        content_digest=record.content_digest(),
                     )
                 )
                 await self._walk_work(workspace_id, record.work_id, uow, closure, problems)
@@ -410,9 +445,18 @@ class ArchiveCatalogBuilder:
                 identity_status=_value(work.identity_status),
                 retraction_status=_value(work.retraction_status),
                 correction_status=_value(work.correction_status),
-                identifiers={
-                    identifier.scheme.value: identifier.value_display for identifier in identifiers
-                },
+                identifiers=tuple(
+                    IdentifierEntry(
+                        scheme=_value(identifier.scheme),
+                        value_display=identifier.value_display,
+                        value_normalized=identifier.value_normalized,
+                        normalisation_version=identifier.normalisation_version,
+                        status=identifier.status,
+                    )
+                    for identifier in sorted(
+                        identifiers, key=lambda item: (_value(item.scheme), item.value_normalized)
+                    )
+                ),
                 relations=tuple(
                     {
                         "kind": _value(relation.kind),
@@ -506,6 +550,7 @@ class ArchiveCatalogBuilder:
                 "without the decision that permits it"
             )
             return
+        closure.decisions[decision.id] = decision
         closure.add(
             RightsDecisionRecord(
                 library_id=self._library_id,
@@ -555,11 +600,13 @@ class ArchiveCatalogBuilder:
             if source and source.rights_decision_id
             else (),
         )
+        await self._walk_parse_run(workspace_id, rendition, uow, closure, problems)
         closure.add(
             RenditionRecord(
                 library_id=self._library_id,
                 record_id=rendition.id,
                 asset_id=rendition.asset_id,
+                parse_run_id=rendition.parse_run_id,
                 work_id=rendition.work_id,
                 sha256=rendition.sha256,
                 format=_value(rendition.format),
@@ -568,6 +615,11 @@ class ArchiveCatalogBuilder:
                 accepted_degraded_reason=rendition.accepted_degraded_reason,
                 supersedes_rendition_id=rendition.supersedes_rendition_id,
                 artifact_id=artifact_id,
+                language=rendition.language,
+                page_count=rendition.page_count,
+                section_count=rendition.section_count,
+                table_count=rendition.table_count,
+                figure_count=rendition.figure_count,
                 created_at=rendition.created_at,
             )
         )
@@ -587,6 +639,90 @@ class ArchiveCatalogBuilder:
                     is_focal=span.is_focal,
                 )
             )
+
+    async def _walk_parse_run(
+        self, workspace_id: UUID, rendition, uow, closure: _Closure, problems: list[str]
+    ) -> None:
+        """The parse that produced a rendition, which a reader must not invent."""
+        if closure.seen(RecordKind.PARSE_RUN, rendition.parse_run_id):
+            return
+        run = await uow.renditions.get_parse_run(workspace_id, rendition.parse_run_id)
+        if run is None:
+            problems.append(
+                f"rendition {rendition.id} names parse run {rendition.parse_run_id}, which is "
+                "absent: its text would travel without saying where it came from"
+            )
+            return
+        closure.add(
+            ParseRunRecord(
+                library_id=self._library_id,
+                record_id=run.id,
+                asset_id=run.asset_id,
+                parser_id=run.parser_id,
+                parser_version=run.parser_version,
+                input_sha256=run.input_sha256,
+                run_fingerprint=run.run_fingerprint,
+                status=_value(run.status),
+                quality_metrics=run.quality_metrics.model_dump(mode="json"),
+                started_at=run.started_at,
+                completed_at=run.completed_at,
+            )
+        )
+
+    async def _walk_claim_context(
+        self, workspace_id: UUID, claim, uow, closure: _Closure, problems: list[str]
+    ) -> None:
+        """The entities a claim is about and the experiment it was observed in.
+
+        Without them a measurement arrives detached from what was measured and
+        under which conditions — and, on a reader that enforces its keys, does
+        not arrive at all.
+        """
+        for entity_id in (claim.subject_entity_id, claim.unit_entity_id):
+            if entity_id is None or closure.seen(RecordKind.ENTITY, entity_id):
+                continue
+            entity = await uow.claims.get_entity(workspace_id, entity_id)
+            if entity is None:
+                problems.append(f"claim {claim.id} names entity {entity_id}, which is absent")
+                continue
+            closure.add(
+                EntityRecord(
+                    library_id=self._library_id,
+                    record_id=entity.id,
+                    entity_type=_value(entity.entity_type),
+                    preferred_label=entity.preferred_label,
+                    normalised_value=entity.normalised_value,
+                    ontology_namespace=entity.ontology_namespace,
+                    ontology_id=entity.ontology_id,
+                    resolution_status=entity.resolution_status,
+                )
+            )
+        if claim.experiment_id is None or closure.seen(RecordKind.EXPERIMENT, claim.experiment_id):
+            return
+        experiment = next(
+            (
+                found
+                for found in await uow.claims.list_experiments(workspace_id, claim.work_id)
+                if found.id == claim.experiment_id
+            ),
+            None,
+        )
+        if experiment is None:
+            problems.append(
+                f"claim {claim.id} names experiment {claim.experiment_id}, which is absent"
+            )
+            return
+        closure.add(
+            ExperimentRecord(
+                library_id=self._library_id,
+                record_id=experiment.id,
+                work_id=experiment.work_id,
+                rendition_id=experiment.rendition_id,
+                local_label=experiment.local_label,
+                experiment_type=experiment.experiment_type,
+                review_status=_value(experiment.review_status),
+            )
+        )
 
     async def _walk_revision(
         self,
@@ -652,6 +788,7 @@ class ArchiveCatalogBuilder:
                         lifecycle_status=_value(claim.lifecycle_status),
                     )
                 )
+                await self._walk_claim_context(workspace_id, claim, uow, closure, problems)
 
         for review in await uow.claims.list_reviews(workspace_id, subject_id=revision.id):
             closure.add(
@@ -725,6 +862,81 @@ class ArchiveCatalogBuilder:
             )
         return artifact_id
 
+    async def _write_payloads(
+        self, workspace_id: UUID, destination: Path, closure: _Closure, problems: list[str]
+    ) -> int:
+        """Copy the payloads that may be replicated; mark the rest withheld.
+
+        Lengths and media types come from the object registry, which is the
+        producer's record of what it stored. Bytes are re-digested on the way
+        out: a payload that rotted in the producer's store must not be the
+        first thing a reader verifies.
+
+        Tombstoned bytes do not travel, whatever their rights: the library has
+        disowned them. And a payload derived from one that is withheld is
+        withheld with it — a rendition is its asset's text.
+        """
+        now = self._context.now()
+        settled: dict[UUID, ArtifactRef] = {}
+        async with self._context.uow_factory() as uow:
+            for artifact_id in sorted(closure.artifacts, key=str):
+                ref = closure.artifacts[artifact_id]
+                registered = await uow.objects.get_by_digest(workspace_id, ref.sha256)
+                update: dict[str, Any] = {}
+                if registered is not None:
+                    update = {
+                        "byte_length": registered.byte_length,
+                        "media_type": registered.media_type or ref.media_type,
+                    }
+                reason: UnavailableReason | None = None
+                if registered is not None and registered.tombstoned:
+                    reason = UnavailableReason.TOMBSTONED
+                elif not any(
+                    (decision := closure.decisions.get(decision_id)) is not None
+                    and decision.permits(PolicyAction.REPLICATE_CONTENT, now=now)
+                    for decision_id in ref.governed_by
+                ):
+                    reason = UnavailableReason.WITHHELD_BY_RIGHTS
+                if reason is not None:
+                    update |= {"required": False, "unavailable": reason}
+                settled[artifact_id] = ref.model_copy(update=update)
+
+        # Derived bytes follow their source.
+        for artifact_id, ref in list(settled.items()):
+            for dependency in ref.depends_on:
+                source = settled.get(dependency)
+                if source is not None and not source.is_resolvable and ref.is_resolvable:
+                    settled[artifact_id] = ref.model_copy(
+                        update={"required": False, "unavailable": source.unavailable}
+                    )
+
+        copied = 0
+        for artifact_id, ref in settled.items():
+            closure.artifacts[artifact_id] = ref
+            if not ref.is_resolvable:
+                continue
+            data = await self._context.object_store.get_by_digest(
+                ref.sha256, workspace_id=workspace_id
+            )
+            if data is None:
+                problems.append(
+                    f"artifact {artifact_id} ({ref.sha256[:12]}…) is not in the object store; "
+                    "a snapshot that names it would be published unreadable"
+                )
+                continue
+            if sha256_bytes(data) != ref.sha256:
+                problems.append(
+                    f"artifact {artifact_id} does not digest to {ref.sha256[:12]}… in the "
+                    "producer's own store; it is not copied"
+                )
+                continue
+            path = destination / content_location(ref.sha256)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            closure.artifacts[artifact_id] = ref.model_copy(update={"byte_length": len(data)})
+            copied += 1
+        return copied
+
     def _write_shards(self, destination: Path, closure: _Closure) -> tuple[CatalogShardRef, ...]:
         """One shard per kind, rows sorted by id, digested over the bytes.
 
@@ -797,7 +1009,7 @@ class ArchiveCatalogBuilder:
         )
 
     async def _write_projections(
-        self, destination: Path, workspace_id: UUID, releases
+        self, destination: Path, workspace_id: UUID, releases, *, servable: frozenset[UUID]
     ) -> tuple[ProjectionRef, ...]:
         """Chunks and vectors, so a reader need not re-chunk or re-embed.
 
@@ -815,9 +1027,15 @@ class ArchiveCatalogBuilder:
 
         refs: list[ProjectionRef] = []
         for release in releases:
-            chunks = await self._collect_chunks(index, workspace_id, release.id)
+            # A chunk is its rendition's text, so it travels on the same terms.
+            chunks = [
+                chunk
+                for chunk in await self._collect_chunks(index, workspace_id, release.id)
+                if chunk.rendition_id in servable
+            ]
             if not chunks:
                 continue
+            kept = {chunk.chunk_key for chunk in chunks}
             chunk_rows = [
                 canonical_json(record.model_dump(mode="python")) + b"\n" for record in chunks
             ]
@@ -832,7 +1050,13 @@ class ArchiveCatalogBuilder:
 
             first = chunks[0]
             for profile_id in release.projection_ready_profiles:
-                vectors = await self._collect_vectors(index, workspace_id, release.id, profile_id)
+                vectors = [
+                    vector
+                    for vector in await self._collect_vectors(
+                        index, workspace_id, release.id, profile_id
+                    )
+                    if vector.chunk_key in kept
+                ]
                 if not vectors:
                     continue
                 vector_rows = [
@@ -1019,6 +1243,17 @@ def _value(item: Any) -> Any:
     if item is None:
         return None
     return item.value if hasattr(item, "value") else item
+
+
+def _servable_renditions(closure: _Closure) -> frozenset[UUID]:
+    """Renditions whose text travels: their payload is in the snapshot."""
+    servable: set[UUID] = set()
+    for record in closure.rows[RecordKind.RENDITION].values():
+        artifact_id = getattr(record, "artifact_id", None)
+        ref = closure.artifacts.get(artifact_id) if artifact_id is not None else None
+        if ref is not None and ref.is_resolvable:
+            servable.add(record.record_id)
+    return frozenset(servable)
 
 
 def _sorted_ids(values) -> tuple[UUID, ...]:

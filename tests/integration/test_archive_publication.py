@@ -36,7 +36,7 @@ from lab_assistant.contracts.policy import (
 from lab_assistant.contracts.publication import HEAD_LOCATION, PublicationState
 from lab_assistant.domain.publication import CommitRefusal, ReconcileAction
 from lab_assistant.domain.workspace import Role
-from lab_assistant.fixtures import publish_archive_fixture
+from lab_assistant.fixtures import publish_archive_fixture, replicating_rights_policy
 from lab_assistant.testing import build_harness, make_actor
 
 GRANTED = (
@@ -51,7 +51,7 @@ GRANTED = (
 @pytest.fixture
 async def library(tmp_path):
     """A packaged snapshot, an empty archive, and a publisher that owns it."""
-    harness = build_harness()
+    harness = build_harness(rights_policy=replicating_rights_policy())
     user = await harness.accounts.create_user(
         email="steward@lab.invalid", password="correct horse battery"
     )
@@ -295,7 +295,7 @@ class TestCrashAfterTheCommit:
             snapshot_id=manifest.snapshot_id,
         )
         record = await service._prepare(library["workspace"].id, manifest, verdict, version)
-        record, _ = await service._upload(record, library["directory"], manifest)
+        record, _, _ = await service._upload(record, library["directory"], manifest)
 
         # The swap lands, and the process dies before the outbox catches up.
         descriptor_before = (
@@ -363,7 +363,7 @@ class TestTheSwapIsNotRetried:
             snapshot_id=manifest.snapshot_id,
         )
         record = await service._prepare(library["workspace"].id, manifest, verdict, version)
-        record, _ = await service._upload(record, library["directory"], manifest)
+        record, _, _ = await service._upload(record, library["directory"], manifest)
 
         # Somebody creates the head between the read and the swap.
         await library["control"].create(

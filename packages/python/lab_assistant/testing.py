@@ -455,6 +455,10 @@ async def publish_demo_corpus(
                     PolicyAction.QUERY,
                     PolicyAction.DISPLAY_EXCERPT,
                     PolicyAction.DISPLAY_FULL_CONTENT,
+                    # Asked for, and granted only where the harness's policy
+                    # grants it: the default policy does not, which is the
+                    # point of having to ask.
+                    PolicyAction.REPLICATE_CONTENT,
                 }
             ),
         )

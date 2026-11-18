@@ -13,9 +13,12 @@ The order, and what a fault at each point means:
    writer must *not* re-read and retry.
 3. **record the intent** in the outbox, with the head version it read. A crash
    now leaves a `prepared` row and nothing else.
-4. **upload** the snapshot under its own id. A crash now leaves objects nobody
-   references: a reader resolves the head and never sees them. Litter, not a
-   publication, and the retention sweep's problem rather than the library's.
+4. **upload** the snapshot: the payloads it may carry into the library's
+   content store, then its projection and catalog shards, then its manifest
+   — last, so a manifest in the archive always has everything it names
+   beneath it. A crash now leaves objects nobody references: a reader resolves
+   the head and never sees them. Litter, not a publication, and the retention
+   sweep's problem rather than the library's.
 5. **mark verified** once the uploaded copy validates where it landed.
 6. **swap the head**, conditional on the version read at step 2. This is the
    only moment anything becomes visible.
@@ -41,12 +44,12 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from lab_assistant.application.archive_catalog import MANIFEST_NAME
+from lab_assistant.application.archive_catalog import INVENTORY_KIND, MANIFEST_NAME
 from lab_assistant.application.archive_control import library_prefix, read_policy_head
 from lab_assistant.application.archive_validate import validate_snapshot
 from lab_assistant.application.context import ServiceContext
 from lab_assistant.application.ports import ArchiveControlStore
-from lab_assistant.contracts.archive import SnapshotManifest
+from lab_assistant.contracts.archive import ArtifactRef, SnapshotManifest, content_location
 from lab_assistant.contracts.archive_policy import policy_location
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.contracts.publication import (
@@ -78,6 +81,11 @@ class PublicationReport:
     head: HeadDescriptor | None = None
     record_id: UUID | None = None
     uploaded: int = 0
+    #: Payloads written to the library's content store, and ones it already
+    #: held — shared across snapshots, so the second number grows with every
+    #: publication that changed little.
+    payloads_uploaded: int = 0
+    payloads_present: int = 0
     problems: tuple[str, ...] = field(default_factory=tuple)
     next_steps: tuple[str, ...] = ()
 
@@ -105,6 +113,8 @@ class PublicationReport:
             else None,
             "record_id": str(self.record_id) if self.record_id else None,
             "uploaded": self.uploaded,
+            "payloads_uploaded": self.payloads_uploaded,
+            "payloads_present": self.payloads_present,
             "problems": list(self.problems),
             "next_steps": list(self.next_steps),
         }
@@ -201,7 +211,7 @@ class PublicationService:
             )
 
         record = await self._prepare(workspace_id, manifest, verdict, version)
-        record, uploaded = await self._upload(record, snapshot_directory, manifest)
+        record, uploaded, payloads = await self._upload(record, snapshot_directory, manifest)
         record, head = await self._commit(record, manifest, head, version)
 
         return PublicationReport(
@@ -211,6 +221,8 @@ class PublicationService:
             head=head,
             record_id=record.id,
             uploaded=uploaded,
+            payloads_uploaded=payloads[0],
+            payloads_present=payloads[1],
             next_steps=(
                 f"the head is at sequence {head.commit_sequence}; readers will see this "
                 "snapshot on their next refresh",
@@ -253,39 +265,61 @@ class PublicationService:
 
     async def _upload(
         self, record: PublicationRecord, directory: Path, manifest: SnapshotManifest
-    ) -> tuple[PublicationRecord, int]:
-        """Put the snapshot in the archive, under its own id.
+    ) -> tuple[PublicationRecord, int, tuple[int, int]]:
+        """Put the snapshot in the archive: payloads, shards, manifest.
 
         Create-only on every key: a snapshot id names one immutable snapshot,
         and a second write under the same key would be somebody rewriting
         history. A key that already holds the identical bytes is not an error —
         that is a resumed upload, which is the common case after a crash.
+
+        Payloads go to the library's content store, named by digest and shared
+        by every snapshot, so a key already there is a payload an earlier
+        publication carried. Its bytes are not re-read to prove it: the reader
+        re-digests everything it fetches, and that is the check that counts.
         """
         prefix = f"{library_prefix(self._library_id)}snapshots/{record.snapshot_id}/"
-        uploaded = 0
 
-        for relative in (MANIFEST_NAME, *(shard.location for shard in manifest.catalog_shards)):
-            source = directory / relative
-            if not source.is_file():
-                raise LabAssistantError(
-                    "the snapshot is missing a file its manifest names",
-                    context={"file": relative, "directory": str(directory)},
-                ).with_class(ErrorClass.INVALID_CONTENT)
-            data = source.read_bytes()
-            try:
-                await self._control.create(f"{prefix}{relative}", data)
-                uploaded += 1
-            except LabAssistantError as exc:
-                if exc.error_class is not ErrorClass.CONFLICT:
-                    raise
-                # Already there. A resumed upload after a crash, which is the
-                # case this step is arranged to make cheap.
+        payloads = (0, 0)
+        for ref in _inventory(directory, manifest):
+            if not ref.is_resolvable:
+                continue
+            location = content_location(ref.sha256)
+            created = await self._create(
+                f"{library_prefix(self._library_id)}{location}", directory / location
+            )
+            payloads = (payloads[0] + created, payloads[1] + (not created))
+
+        uploaded = 0
+        shards = (
+            *(shard.location for ref in manifest.projection_refs for shard in ref.shards),
+            *(shard.location for shard in manifest.catalog_shards),
+            # Last, so a manifest in the archive has everything it names.
+            MANIFEST_NAME,
+        )
+        for relative in shards:
+            uploaded += await self._create(f"{prefix}{relative}", directory / relative)
 
         verified = record.model_copy(
             update={"state": PublicationState.VERIFIED, "updated_at": self._context.now()}
         )
         await self._save(verified)
-        return verified, uploaded
+        return verified, uploaded, payloads
+
+    async def _create(self, key: str, source: Path) -> bool:
+        """Create-only. ``False`` when the key already held it: a resume."""
+        if not source.is_file():
+            raise LabAssistantError(
+                "the snapshot is missing a file its manifest names",
+                context={"file": str(source)},
+            ).with_class(ErrorClass.INVALID_CONTENT)
+        try:
+            await self._control.create(key, source.read_bytes())
+        except LabAssistantError as exc:
+            if exc.error_class is not ErrorClass.CONFLICT:
+                raise
+            return False
+        return True
 
     async def _commit(
         self,
@@ -453,7 +487,12 @@ class PublicationService:
         so a snapshot a reader would refuse is refused here first.
         """
         report = validate_snapshot(
-            directory, verifier=self._verifier, require_signature=self._require_signature
+            directory,
+            verifier=self._verifier,
+            require_signature=self._require_signature,
+            # Every payload re-digested before it is uploaded: bytes that
+            # rotted on the producer's disk must not become the archive's.
+            payloads=True,
         )
         if report.manifest is None or report.blocking:
             return None, [
@@ -494,6 +533,20 @@ def _refusal_steps(verdict: CommitVerdict) -> tuple[str, ...]:
             "package the snapshot again so it names a checkpoint readers can fetch",
         )
     return ("resolve the refusal before retrying",)
+
+
+def _inventory(directory: Path, manifest: SnapshotManifest) -> list[ArtifactRef]:
+    """The snapshot's artifact inventory, as it already validated."""
+    import json
+
+    for shard in manifest.catalog_shards:
+        if shard.kind == INVENTORY_KIND:
+            return [
+                ArtifactRef.model_validate(json.loads(line))
+                for line in (directory / shard.location).read_bytes().splitlines()
+                if line.strip()
+            ]
+    return []
 
 
 def _manifest_digest(manifest: SnapshotManifest) -> str:

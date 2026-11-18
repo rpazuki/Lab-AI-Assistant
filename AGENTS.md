@@ -74,6 +74,9 @@ These are constraints, tests, or gates — never comments:
 - a projection is joined on its full key, `(workspace_id, release_id, chunk_key)`:
   copied chunks share keys across releases by design;
 - a published release is immutable; a correction is a successor release;
+- content leaves the producer only under `replicate_content`: a payload, its rendition,
+  its chunks and their vectors travel to the archive when a governing decision grants it,
+  and are recorded as withheld otherwise (ADR-0026);
 - a policy checkpoint **narrows** a snapshot and never widens it, and a decision it
   does not mention is withheld (`domain/archive_policy.py`, ADR-0025). A widening is
   a publication. A writer checks both library heads before moving either;

@@ -35,7 +35,7 @@ from lab_assistant.contracts.policy import (
     SubjectType,
 )
 from lab_assistant.domain.workspace import Role
-from lab_assistant.fixtures import publish_archive_fixture
+from lab_assistant.fixtures import publish_archive_fixture, replicating_rights_policy
 from lab_assistant.testing import build_harness, make_actor
 
 GRANTED = (
@@ -50,7 +50,7 @@ GRANTED = (
 @pytest.fixture
 async def packaged(tmp_path):
     """The golden fixture, packaged into a snapshot directory."""
-    harness = build_harness()
+    harness = build_harness(rights_policy=replicating_rights_policy())
     user = await harness.accounts.create_user(
         email="steward@lab.invalid", password="correct horse battery"
     )

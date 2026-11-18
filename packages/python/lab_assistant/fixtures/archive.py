@@ -42,7 +42,12 @@ from lab_assistant.contracts.errors import AbstentionReason
 from lab_assistant.contracts.stage import StageCommand, StageName
 from lab_assistant.domain.claims import ReviewDecision
 
-__all__ = ["ARCHIVE_FIXTURE_CASES", "ArchiveFixture", "publish_archive_fixture"]
+__all__ = [
+    "ARCHIVE_FIXTURE_CASES",
+    "ArchiveFixture",
+    "publish_archive_fixture",
+    "replicating_rights_policy",
+]
 
 #: Titles, chosen so a failure message names the case rather than a number.
 MEASURED = "Lipid yield in an engineered strain"
@@ -89,6 +94,19 @@ _REVISED_CORRECTION = (
 )
 
 _TEMPLATE_ID = "yeast-lipid-datasheet"
+
+
+def replicating_rights_policy():
+    """The starter policy with replication of open-licence content granted.
+
+    What an archive test builds its harness with when it means the corpus's
+    text to travel. The deployed default does not grant replication — that is
+    the data steward's decision — so a harness built without this exercises
+    the other half: records travel and the text is withheld.
+    """
+    from lab_assistant.policy.rights import default_open_access_policy
+
+    return default_open_access_policy(replicate_open_content=True)
 
 
 def _template_payload() -> dict[str, Any]:

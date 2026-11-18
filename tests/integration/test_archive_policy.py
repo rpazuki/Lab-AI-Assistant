@@ -67,7 +67,7 @@ from lab_assistant.domain.archive_policy import (
 from lab_assistant.domain.installation import InstallationRole
 from lab_assistant.domain.publication import CommitRefusal
 from lab_assistant.domain.workspace import Role
-from lab_assistant.fixtures import publish_archive_fixture
+from lab_assistant.fixtures import publish_archive_fixture, replicating_rights_policy
 from lab_assistant.fixtures.archive import RESTRICTED
 from lab_assistant.testing import build_harness, make_actor
 
@@ -115,12 +115,13 @@ async def library(tmp_path):
     key_path = tmp_path / "signing.key"
     key_path.write_text(private, encoding="utf-8")
     harness = build_harness(
+        rights_policy=replicating_rights_policy(),
         settings_overrides={
             "object_store_root": tmp_path / "archive",
             "archive_signing_key_path": key_path,
             "archive_signing_key_id": KEY_ID,
             "archive_trusted_keys": {KEY_ID: public},
-        }
+        },
     )
     workspace, actor = await _provision(harness)
     fixture = await publish_archive_fixture(harness, actor)

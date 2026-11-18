@@ -51,7 +51,11 @@ __all__ = [
     "CatalogRecord",
     "ClaimRecord",
     "ClaimRevisionRecord",
+    "EntityRecord",
+    "ExperimentRecord",
+    "IdentifierEntry",
     "ManifestationRecord",
+    "ParseRunRecord",
     "RecordKind",
     "ReleaseEntryRecord",
     "ReleaseRecord",
@@ -83,8 +87,11 @@ class RecordKind(StrEnum):
     MANIFESTATION = "manifestation"
     ASSET = "asset"
     RIGHTS_DECISION = "rights_decision"
+    PARSE_RUN = "parse_run"
     RENDITION = "rendition"
     SPAN = "span"
+    ENTITY = "entity"
+    EXPERIMENT = "experiment"
     CLAIM = "claim"
     CLAIM_REVISION = "claim_revision"
     REVIEW = "review"
@@ -96,14 +103,22 @@ class RecordKind(StrEnum):
 #: The order an importer applies shards in. A reader that applied these in
 #: filesystem order would reference rows it has not written yet, and the first
 #: symptom would be a foreign key failure halfway through an import.
+#:
+#: Rights decisions come before assets: an asset names its decision, and a
+#: decision names its subject only by id. An earlier version had the two the
+#: other way round, which no import had yet run against a database that
+#: enforces the key.
 APPLY_ORDER: tuple[RecordKind, ...] = (
     RecordKind.SCOPE_VERSION,
     RecordKind.WORK,
     RecordKind.MANIFESTATION,
-    RecordKind.ASSET,
     RecordKind.RIGHTS_DECISION,
+    RecordKind.ASSET,
+    RecordKind.PARSE_RUN,
     RecordKind.RENDITION,
     RecordKind.SPAN,
+    RecordKind.ENTITY,
+    RecordKind.EXPERIMENT,
     RecordKind.CLAIM,
     RecordKind.CLAIM_REVISION,
     RecordKind.REVIEW,
@@ -131,6 +146,18 @@ class CatalogRecord(BaseModel):
         return sha256_bytes(canonical_json(self.model_dump(mode="python")))
 
 
+class IdentifierEntry(BaseModel):
+    """One identifier of a work, as the producer normalised it."""
+
+    model_config = {"frozen": True}
+
+    scheme: str
+    value_display: str
+    value_normalized: str
+    normalisation_version: str
+    status: str = "active"
+
+
 class WorkRecord(CatalogRecord):
     """A scholarly work: the thing a citation names."""
 
@@ -148,10 +175,12 @@ class WorkRecord(CatalogRecord):
     #: reader serving a retracted paper as current evidence.
     retraction_status: str | None = None
     correction_status: str | None = None
-    #: Scheme to display value, e.g. `{"doi": "10.1234/x"}`. The strong
-    #: identifiers that let an importer recognise a work it already has — and
-    #: the only basis on which it may merge one (`domain/identity.py`).
-    identifiers: dict[str, str] = Field(default_factory=dict)
+    #: The strong and weak identifiers that let an importer recognise a work it
+    #: already has — and the only basis on which it may merge one
+    #: (`domain/identity.py`). Normalised values travel with the display ones:
+    #: a reader that re-normalised would be applying its own version of a
+    #: contract the producer already applied.
+    identifiers: tuple[IdentifierEntry, ...] = ()
     #: Typed edges to other works: a version of, a preprint of, a retraction of.
     #: Lose these and a reader cannot tell a correction from a new paper.
     relations: tuple[dict[str, Any], ...] = ()
@@ -222,6 +251,28 @@ class RightsDecisionRecord(CatalogRecord):
     review_due_at: datetime | None = None
 
 
+class ParseRunRecord(CatalogRecord):
+    """The parse that produced a rendition: which parser, on which bytes.
+
+    Travels because a rendition is not evidence on its own say-so. "This text
+    came from these bytes through this parser version" is what lets a reader
+    tell a rendition it may reuse from one a parser fix has made stale — and
+    what it would otherwise have to invent, which is the one thing provenance
+    must never be.
+    """
+
+    kind: RecordKind = RecordKind.PARSE_RUN
+    asset_id: UUID
+    parser_id: str
+    parser_version: str
+    input_sha256: str
+    run_fingerprint: str
+    status: str
+    quality_metrics: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
 class RenditionRecord(CatalogRecord):
     """The normalised text an evidence span points into.
 
@@ -232,6 +283,9 @@ class RenditionRecord(CatalogRecord):
 
     kind: RecordKind = RecordKind.RENDITION
     asset_id: UUID
+    #: The parse that produced it. Required: a rendition without one is text of
+    #: unknown origin.
+    parse_run_id: UUID | None = None
     work_id: UUID | None = None
     sha256: str
     #: The rendition document format and its schema version, which is what a
@@ -244,6 +298,11 @@ class RenditionRecord(CatalogRecord):
     accepted_degraded_reason: str | None = None
     supersedes_rendition_id: UUID | None = None
     artifact_id: UUID | None = None
+    language: str | None = None
+    page_count: int = 0
+    section_count: int = 0
+    table_count: int = 0
+    figure_count: int = 0
     created_at: datetime | None = None
 
 
@@ -272,6 +331,34 @@ class SpanRecord(CatalogRecord):
     #: by the reader that has to follow it.
     locator: dict[str, Any] | None = None
     is_focal: bool = True
+
+
+class EntityRecord(CatalogRecord):
+    """A thing claims are about or measured in: a strain, a compound, a unit."""
+
+    kind: RecordKind = RecordKind.ENTITY
+    entity_type: str
+    preferred_label: str
+    normalised_value: str
+    ontology_namespace: str | None = None
+    ontology_id: str | None = None
+    resolution_status: str = "unresolved"
+
+
+class ExperimentRecord(CatalogRecord):
+    """The experiment a claim was observed in.
+
+    A per-experiment template groups its claims by experiment, so a claim that
+    arrived without the experiment it names would be a measurement detached
+    from its conditions.
+    """
+
+    kind: RecordKind = RecordKind.EXPERIMENT
+    work_id: UUID
+    rendition_id: UUID | None = None
+    local_label: str
+    experiment_type: str | None = None
+    review_status: str | None = None
 
 
 class ClaimRecord(CatalogRecord):
@@ -379,6 +466,10 @@ class ReleaseRecord(CatalogRecord):
     status: str
     manifest_sha256: str | None = None
     scope_version_ids: tuple[UUID, ...] = ()
+    #: The release this one succeeded. Optional within a snapshot: a snapshot of
+    #: one release still names the release it replaced.
+    parent_release_id: UUID | None = None
+    embedding_profile_ids: tuple[str, ...] = ()
     projection_ready_profiles: tuple[str, ...] = ()
     published_at: datetime | None = None
 
@@ -403,7 +494,15 @@ class ReleaseEntryRecord(CatalogRecord):
     rendition_id: UUID | None = None
     rendition_digest: str | None = None
     claim_revision_ids: tuple[UUID, ...] = ()
+    #: The rights decision in force for this entry's asset when the release was
+    #: drafted. Part of the producer's entry digest, so it travels too.
+    access_policy_snapshot_id: UUID | None = None
     inclusion_reason: str = "steward_selected"
+    #: The producer's own digest of the entry, carried rather than recomputed:
+    #: it is what the producer's incremental builds compared, and a reader that
+    #: derived its own would disagree with it the first time a field the digest
+    #: covers failed to travel.
+    content_digest: str | None = None
 
 
 _BY_KIND: dict[RecordKind, type[CatalogRecord]] = {
@@ -411,8 +510,11 @@ _BY_KIND: dict[RecordKind, type[CatalogRecord]] = {
     RecordKind.MANIFESTATION: ManifestationRecord,
     RecordKind.ASSET: AssetRecord,
     RecordKind.RIGHTS_DECISION: RightsDecisionRecord,
+    RecordKind.PARSE_RUN: ParseRunRecord,
     RecordKind.RENDITION: RenditionRecord,
     RecordKind.SPAN: SpanRecord,
+    RecordKind.ENTITY: EntityRecord,
+    RecordKind.EXPERIMENT: ExperimentRecord,
     RecordKind.CLAIM: ClaimRecord,
     RecordKind.CLAIM_REVISION: ClaimRevisionRecord,
     RecordKind.REVIEW: ReviewRecord,

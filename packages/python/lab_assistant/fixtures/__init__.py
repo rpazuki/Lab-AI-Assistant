@@ -9,6 +9,12 @@ from lab_assistant.fixtures.archive import (
     ARCHIVE_FIXTURE_CASES,
     ArchiveFixture,
     publish_archive_fixture,
+    replicating_rights_policy,
 )
 
-__all__ = ["ARCHIVE_FIXTURE_CASES", "ArchiveFixture", "publish_archive_fixture"]
+__all__ = [
+    "ARCHIVE_FIXTURE_CASES",
+    "ArchiveFixture",
+    "publish_archive_fixture",
+    "replicating_rights_policy",
+]

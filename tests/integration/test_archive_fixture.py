@@ -35,7 +35,11 @@ from lab_assistant.contracts.policy import (
 from lab_assistant.domain.release import CorpusRelease
 from lab_assistant.domain.states import ReleaseState
 from lab_assistant.domain.workspace import Role
-from lab_assistant.fixtures import ARCHIVE_FIXTURE_CASES, publish_archive_fixture
+from lab_assistant.fixtures import (
+    ARCHIVE_FIXTURE_CASES,
+    publish_archive_fixture,
+    replicating_rights_policy,
+)
 from lab_assistant.fixtures.archive import MEASURED, RESTRICTED, REVISED, SILENT
 from lab_assistant.testing import build_harness, make_actor
 
@@ -50,7 +54,7 @@ GRANTED = (
 
 @pytest.fixture
 async def archive():
-    harness = build_harness()
+    harness = build_harness(rights_policy=replicating_rights_policy())
     user = await harness.accounts.create_user(
         email="steward@lab.invalid", password="correct horse battery"
     )

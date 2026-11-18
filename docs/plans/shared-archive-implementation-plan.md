@@ -871,6 +871,47 @@ records architecture and an implementation-ready plan only.
             fails if one does — verified by narrowing it.
             `cryptography` was present transitively and is now a declared dependency.
 - [ ] Phase 3 independent reader end-to-end accepted with GET-only cloud identity.
+      **In progress.**
+      - [x] A published snapshot is complete, and a reader can take it with GET alone
+            ([ADR-0026](../architecture/adr/0026-content-replication.md), **proposed**).
+            **Two phase 2 gaps, found by trying to import:** publication uploaded the
+            manifest and catalog shards and nothing else — chunks, vectors and every
+            payload stayed on the producer, so the archive held a catalog and nothing
+            a reader could serve from — and the catalog lacked rows a reader's database
+            requires: parse runs (a rendition must name one), the entities and
+            experiments claims name, normalised identifier values, and release entries
+            with their digest. All of those travel now, and the apply order puts a
+            rights decision before the asset naming it, which the first version had the
+            other way round.
+            **Content leaves only under `replicate_content`**, a new action the
+            architecture asks for in so many words: permission to store content here is
+            not permission to store it on every reader. Denied by default; granted to open
+            licences only when the steward sets `LAB_RIGHTS_REPLICATE_OPEN_CONTENT`; never
+            by the user-assisted rule. Without it a snapshot carries a paper's records and
+            none of its text — payload, rendition, chunks and vectors are all its text — and
+            the inventory says `withheld_by_rights`. That applied retroactively to phase
+            2's projection export, which had shipped chunk text ungated.
+            `lab archive package` now writes payloads beside the catalog, publication
+            uploads them to a content store shared by every snapshot (a second
+            publication of an unchanged corpus uploads no payload) and writes the
+            manifest last, and `lab archive fetch` takes a snapshot by name: head, the
+            manifest the head committed to, every shard and payload, the current policy
+            checkpoint — each verified before it is written, a denial raised rather than
+            read as missing (S27), an interrupted fetch resumed, and a location or
+            digest that would escape the directory refused (S34). It needs no database.
+            `validate_snapshot(payloads=True)` re-digests every payload and treats one
+            the inventory withheld but the snapshot contains as blocking.
+            17 tests; six deliberate breaks of the new rules each fail the test written
+            for it.
+            **Outstanding, in order:** the importer itself — into an empty reader
+            database, through the repositories, with spans re-verified against the
+            imported renditions, vectors imported under a matching profile, groups mapped
+            and the policy overlay applied to the rights rows; titles on a reader, which
+            today come from source assertions it will not have; refresh and policy
+            refresh; least-privilege database roles. Also: an existing corpus's
+            decisions predate `replicate_content` and need a re-evaluation command;
+            projection shards are uploaded per snapshot rather than content-addressed;
+            payloads are copied through memory.
 - [ ] Phase 4 role handover/workhorse tests accepted.
 - [ ] Phase 5 lifecycle/disaster/scale drills accepted.
 - [ ] Relevant ADRs accepted and current documentation reconciled with implementation.

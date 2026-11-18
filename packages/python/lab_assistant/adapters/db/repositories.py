@@ -1007,6 +1007,11 @@ class _Claims(_Base):
             t.entities.c.normalised_value == normalised_value,
         )
 
+    async def get_entity(self, workspace_id: UUID, entity_id: UUID) -> Entity | None:
+        return await self._one(
+            ENTITIES, self._scope(ENTITIES, workspace_id), t.entities.c.id == entity_id
+        )
+
     async def add_experiment(self, experiment: Experiment) -> None:
         await self._upsert(EXPERIMENTS, experiment)
 

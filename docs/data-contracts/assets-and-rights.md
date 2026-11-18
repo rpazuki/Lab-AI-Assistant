@@ -35,13 +35,20 @@ and returns a verdict per action:
 | Action group | Actions |
 |---|---|
 | metadata | `discover_metadata`, `store_metadata`, `view_metadata`, `export_metadata` |
-| content | `store_content`, `process_local`, `view_content`, `display_excerpt`, `display_full_content`, `export_content` |
+| content | `store_content`, `process_local`, `view_content`, `display_excerpt`, `display_full_content`, `export_content`, `replicate_content` |
 | model transfer | `send_to_external_model`, `create_embeddings_local`, `create_embeddings_external` |
 | serving | `index`, `query` |
 
 Permission to *store* content is not permission to *display* it, and neither is
 permission to *send it to a model*. Collapsing those three is how a metadata-only
 licence ends up in a provider's request body.
+
+Nor is permission to store content here permission to store it on another machine.
+`replicate_content` is what lets a payload, its rendition, its search chunks and their
+vectors travel to the shared archive and the readers that import it
+([ADR-0026](../architecture/adr/0026-content-replication.md)). It is denied by default and
+granted to open licences only when the steward sets `LAB_RIGHTS_REPLICATE_OPEN_CONTENT`.
+Without it a snapshot carries the paper's records and none of its text.
 
 Every verdict carries its evidence: which rule matched, which licence statement, which
 policy version, and when it expires. **`unknown` is not `permitted`.** An unknown

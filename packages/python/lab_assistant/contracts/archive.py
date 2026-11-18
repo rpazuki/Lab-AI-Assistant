@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field
 __all__ = [
     "ARCHIVE_FORMAT_NAME",
     "ARCHIVE_FORMAT_VERSION",
+    "CONTENT_DIRECTORY",
     "MINIMUM_READER_PROTOCOL",
     "ArtifactClass",
     "ArtifactRef",
@@ -68,6 +69,8 @@ __all__ = [
     "StageOutcome",
     "StageResultEnvelope",
     "UnavailableReason",
+    "content_location",
+    "is_safe_location",
 ]
 
 ARCHIVE_FORMAT_NAME = "lab-assistant-library"
@@ -77,6 +80,41 @@ ARCHIVE_FORMAT_NAME = "lab-assistant-library"
 ARCHIVE_FORMAT_VERSION = "1.0"
 #: The oldest reader protocol that can serve this format.
 MINIMUM_READER_PROTOCOL = "1.0"
+
+#: Where payloads live, in a snapshot directory and in a library's namespace.
+#: Content-addressed and shared across snapshots: a payload is uploaded once
+#: per library however many snapshots name it.
+CONTENT_DIRECTORY = "content"
+
+_HEX = frozenset("0123456789abcdef")
+
+
+def content_location(sha256: str) -> str:
+    """The relative path of a payload, from its digest alone.
+
+    The digest comes from a manifest a reader has only partly verified, so it
+    is checked before it becomes a path: sixty-four lowercase hex characters
+    and nothing else. A "digest" of ``../../etc/passwd`` is a path traversal,
+    not a payload.
+    """
+    if len(sha256) != 64 or not set(sha256) <= _HEX:
+        raise ValueError(f"{sha256[:80]!r} is not a sha256 digest")
+    return f"{CONTENT_DIRECTORY}/sha256/{sha256[:2]}/{sha256[2:4]}/{sha256}"
+
+
+def is_safe_location(location: str) -> bool:
+    """Whether a location from a manifest may be joined to a directory.
+
+    Relative, forward-slashed, no parent references, no empty or dot segments,
+    and printable. Every location in a snapshot is written by this code, so a
+    location that fails this is evidence of tampering rather than a style
+    question — and refusing it is cheaper than discovering where a write went.
+    """
+    if not location or location.startswith("/") or "\\" in location or ":" in location:
+        return False
+    if any(not part or part in (".", "..") for part in location.split("/")):
+        return False
+    return location.isprintable()
 
 
 class ArtifactClass(StrEnum):

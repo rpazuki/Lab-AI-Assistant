@@ -57,6 +57,9 @@ ACTION_CAPABILITY: dict[PolicyAction, Capability] = {
     PolicyAction.EXPORT_CLAIMS: Capability.EXPORT,
     PolicyAction.EXPORT_EVIDENCE: Capability.EXPORT,
     PolicyAction.EXPORT_CONTENT: Capability.EXPORT,
+    #: Replication happens when a release is packaged for the shared archive,
+    #: which is a publishing act, so it needs the capability that approves one.
+    PolicyAction.REPLICATE_CONTENT: Capability.APPROVE_RELEASE,
     PolicyAction.REVIEW: Capability.REVIEW_CLAIMS,
     PolicyAction.APPROVE_RELEASE: Capability.APPROVE_RELEASE,
     PolicyAction.ADMINISTER: Capability.MANAGE_POLICY,

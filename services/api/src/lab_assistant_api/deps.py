@@ -175,7 +175,9 @@ def build_container(settings: Settings) -> ApiContainer:
         clock=system_clock,
         id_factory=uuid_factory,
         policy_engine=PolicyEngine(),
-        rights_policy=default_open_access_policy(),
+        rights_policy=default_open_access_policy(
+            replicate_open_content=settings.rights_replicate_open_content
+        ),
         model_transfer_policy=ModelTransferPolicy(
             approved_providers=("anthropic",) if settings.external_model_enabled else ()
         ),
