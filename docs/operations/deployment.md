@@ -70,6 +70,23 @@ migrations have run used to pass every check and then fail on the first real que
 
 ## Object storage
 
+Three backends, and only tested ones are supported: `filesystem` for a single VM
+([ADR-0022](../architecture/adr/0022-single-vm-filesystem-storage.md)), `s3`
+([ADR-0023](../architecture/adr/0023-object-storage-sdk.md)) and `gcs`
+([ADR-0024](../architecture/adr/0024-native-google-cloud-storage.md)). An
+unknown `LAB_OBJECT_STORE_KIND` is refused at startup rather than read as a
+filesystem path.
+
+GCS is native rather than through S3 interoperability, because that endpoint has
+neither generation preconditions nor resumable uploads — so the conditional
+writes this application depends on would quietly become check-then-put. Two
+things differ from S3 and are worth knowing before you deploy on it: the
+provider verifies MD5 rather than SHA-256 (the SHA-256 is still this
+application's identity check on every read), and a signed URL needs a
+service-account key or IAM `signBlob` on the running identity, failing loudly
+rather than returning a URL that will be refused.
+
+
 The shared-VM profile uses a persistent `objects` volume with
 `LAB_OBJECT_STORE_KIND=filesystem` and explicit
 `LAB_ALLOW_FILESYSTEM_IN_PRODUCTION=true`. API and workers share this volume;

@@ -720,7 +720,7 @@ def _destination_store(settings: Settings):
         raise LabAssistantError(
             "no migration destination configured",
             context={
-                "set": "LAB_MIGRATE_OBJECT_STORE_KIND=filesystem|s3",
+                "set": "LAB_MIGRATE_OBJECT_STORE_KIND=filesystem|s3|gcs",
                 "then": "LAB_MIGRATE_OBJECT_STORE_ROOT, or the LAB_MIGRATE_OBJECT_STORE_* "
                 "bucket, region, endpoint and credentials",
             },
@@ -752,8 +752,22 @@ def _destination_store(settings: Settings):
             )
         )
 
+    if kind == "gcs":
+        from lab_assistant.adapters.object_store.gcs import GcsObjectStore, GcsStoreConfig
+
+        return GcsObjectStore(
+            GcsStoreConfig(
+                bucket=os.environ.get("LAB_MIGRATE_OBJECT_STORE_BUCKET"),
+                project=os.environ.get("LAB_MIGRATE_OBJECT_STORE_PROJECT"),
+                endpoint=os.environ.get("LAB_MIGRATE_OBJECT_STORE_ENDPOINT"),
+                credentials_path=os.environ.get("LAB_MIGRATE_OBJECT_STORE_CREDENTIALS_PATH"),
+                prefix=os.environ.get("LAB_MIGRATE_OBJECT_STORE_PREFIX", ""),
+                multipart_threshold=settings.object_store_multipart_threshold_bytes,
+            )
+        )
+
     raise LabAssistantError(
-        f"unknown LAB_MIGRATE_OBJECT_STORE_KIND {kind!r}; expected 'filesystem' or 's3'"
+        f"unknown LAB_MIGRATE_OBJECT_STORE_KIND {kind!r}; expected 'filesystem', 's3' or 'gcs'"
     ).with_class(ErrorClass.INVALID_CONTENT)
 
 

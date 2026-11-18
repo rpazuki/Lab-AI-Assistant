@@ -656,10 +656,23 @@ records architecture and an implementation-ready plan only.
             **Still owed:** least-privilege SQL and cloud credentials per role. The
             application refuses the operations; the database role a reader connects as
             is still the publisher's.
-      - [ ] GCS adapter. **Deliberately not started.** There is no GCS credential or
-            emulator here to test against, and the plan permits delivering S3 first
-            while documenting that only tested providers are supported. An adapter
-            written blind would be the third entry in F18's table.
+      - [x] GCS adapter ([ADR-0024](../architecture/adr/0024-native-google-cloud-storage.md)).
+            Native, not S3 interoperability: that endpoint has neither generation
+            preconditions nor resumable uploads, so the conditional writes this
+            application rests on would silently degrade to check-then-put.
+            The earlier objection was that it could not be tested; that turned out to
+            be wrong. `fsouza/fake-gcs-server` runs locally, so it ships with the same
+            two layers S3 has — 33 offline contract tests over a fake client, which
+            carry CI, and 11 against a real GCS HTTP implementation, of which 10 pass
+            and one skips.
+            **Two provider differences, documented rather than papered over:** GCS has
+            no SHA-256 checksum field, so the provider verifies MD5 and this
+            application's SHA-256 remains the identity check on every read; and a V4
+            signed URL needs a service-account key or IAM `signBlob`, so `signed_url`
+            raises where neither exists rather than handing out a URL that 403s.
+            **Not proven by an emulator:** IAM behaviour, Google's own signing, and how
+            a real bucket's retention and lifecycle rules interact with a tombstone.
+            The signing test skips with that reason rather than asserting a pass.
       - [ ] Provider version tokens surfaced on the port. **Deferred to phase 2 on
             purpose.** They are read for compare-and-swap today and nothing consumes
             them; the publication protocol is the only caller there will be. Adding

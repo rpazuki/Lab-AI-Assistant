@@ -40,3 +40,4 @@ names its successor.
 
 | [0022](0022-single-vm-filesystem-storage.md) | Optional persistent filesystem storage on one VM |
 | [0023](0023-object-storage-sdk.md) | Object storage through the maintained SDK |
+| [0024](0024-native-google-cloud-storage.md) | A native Google Cloud Storage adapter |

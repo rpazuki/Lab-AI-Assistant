@@ -147,7 +147,14 @@ class Settings(BaseSettings):
 
     # ── object store ────────────────────────────────────────────────────────
     allow_filesystem_in_production: bool = False
-    object_store_kind: str = "filesystem"  # filesystem | s3
+    object_store_kind: str = "filesystem"  # filesystem | s3 | gcs
+    #: GCS only. The project the bucket belongs to; the application-default
+    #: credential usually carries one, and this overrides it.
+    object_store_project: str | None = None
+    #: GCS only. A service-account JSON file, for a deployment that cannot use
+    #: workload identity. Prefer workload identity: a key file is a credential
+    #: that does not expire and has to be rotated by somebody remembering to.
+    object_store_credentials_path: str | None = None
     object_store_root: Path = Path("./var/objects")
     object_store_bucket: str | None = None
     object_store_endpoint: str | None = None

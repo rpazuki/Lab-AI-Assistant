@@ -39,6 +39,10 @@ dev = [
   # dev environment without it would skip exactly the tests ADR-0017 claimed to
   # have and did not.
   "boto3>=1.35",
+  # The GCS adapter's contract tests (ADR-0024) run against a stub and against
+  # `fsouza/fake-gcs-server`, both offline. A dev environment without it would
+  # skip exactly the tests that prove the adapter.
+  "google-cloud-storage>=2.18",
 ]
 # Optional adapters. The core suite never imports these.
 parsers = ["pypdf>=4.2", "openpyxl>=3.1", "python-docx>=1.1"]

@@ -102,15 +102,24 @@ def build_container(settings: Settings) -> ApiContainer:
         # settings, so a role-based deployment configures no keys at all.
         object_store = S3ObjectStore(S3StoreConfig.from_settings(settings))
         shutdown.append(object_store.aclose)
+    elif settings.object_store_kind == "gcs":
+        from lab_assistant.adapters.object_store.gcs import GcsObjectStore, GcsStoreConfig
+
+        # Same refusal at construction, for the same reason: a bucket that is
+        # not there is a startup failure, not a 2am one (ADR-0024).
+        object_store = GcsObjectStore(GcsStoreConfig.from_settings(settings))
+        shutdown.append(object_store.aclose)
     elif settings.object_store_kind == "filesystem":
         object_store = FilesystemObjectStore(
             settings.object_store_root,
             max_object_bytes=settings.object_store_max_object_bytes or None,
         )
     else:
+        # Never read as a filesystem path. Only tested providers are supported,
+        # and an unknown value is a configuration error rather than a default.
         raise ValueError(
             f"unknown LAB_OBJECT_STORE_KIND {settings.object_store_kind!r}; "
-            "expected 'filesystem' or 's3'"
+            "expected 'filesystem', 's3' or 'gcs'"
         )
 
     if settings.llm_provider == "anthropic" and settings.llm_api_key:
