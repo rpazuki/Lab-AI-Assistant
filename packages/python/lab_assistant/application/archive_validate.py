@@ -44,9 +44,17 @@ from uuid import UUID
 from lab_assistant.application.archive_catalog import (
     INVENTORY_KIND,
     MANIFEST_NAME,
+    PROJECTION_CHUNK_KIND,
+    PROJECTION_VECTOR_KIND,
 )
 from lab_assistant.contracts.archive import ArtifactRef, SnapshotManifest
 from lab_assistant.contracts.archive_catalog import RecordKind, record_for
+from lab_assistant.contracts.archive_projection import (
+    VECTOR_ENCODING,
+    ProjectionChunkRecord,
+    ProjectionVectorRecord,
+    vector_problems,
+)
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
 
 __all__ = [
@@ -159,6 +167,7 @@ def validate_snapshot(directory: Path) -> ValidationReport:
     _check_closure(rows, findings)
     _check_inventory(directory, manifest, rows, findings)
     _check_releases(manifest, rows, findings)
+    counts |= _check_projections(directory, manifest, rows, findings)
 
     return ValidationReport(
         directory=str(directory),
@@ -475,6 +484,188 @@ def _check_inventory(
                 ),
             )
         )
+
+
+def _check_projections(
+    directory: Path,
+    manifest: SnapshotManifest,
+    rows: dict[Any, dict[UUID, Any]],
+    findings: list[ValidationFinding],
+) -> dict[str, int]:
+    """Chunks and vectors, decoded and checked rather than taken on trust.
+
+    A vector that arrives wrong does not raise anywhere downstream. It makes a
+    passage unreachable, or ranks it first, depending on the backend — so the
+    decode, the dimension and the finiteness are checked here, where there is
+    still something to say about it.
+    """
+    counts: dict[str, int] = {}
+    releases = rows.get(RecordKind.RELEASE, {})
+
+    for ref in manifest.projection_refs:
+        if ref.release_id not in releases:
+            findings.append(
+                ValidationFinding(
+                    code="projection_without_release",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"a projection names release {ref.release_id}, which is not in "
+                        "this snapshot"
+                    ),
+                )
+            )
+            continue
+
+        chunk_keys: set[str] = set()
+        for shard in ref.shards:
+            path = directory / shard.location
+            if not path.is_file():
+                findings.append(
+                    ValidationFinding(
+                        code="shard_absent",
+                        severity=Severity.BLOCKING,
+                        detail=f"{shard.location} is named in the manifest and is not here",
+                    )
+                )
+                continue
+            payload = path.read_bytes()
+            if sha256_bytes(payload) != shard.sha256:
+                findings.append(
+                    ValidationFinding(
+                        code="shard_digest",
+                        severity=Severity.BLOCKING,
+                        detail=(
+                            f"{shard.location} digests to {sha256_bytes(payload)[:12]}…, "
+                            f"the manifest records {shard.sha256[:12]}…"
+                        ),
+                    )
+                )
+            lines = [line for line in payload.split(b"\n") if line.strip()]
+            if len(lines) != shard.row_count:
+                findings.append(
+                    ValidationFinding(
+                        code="shard_row_count",
+                        severity=Severity.BLOCKING,
+                        detail=(
+                            f"{shard.location} holds {len(lines)} rows, the manifest "
+                            f"records {shard.row_count}"
+                        ),
+                    )
+                )
+            counts[shard.kind] = counts.get(shard.kind, 0) + len(lines)
+
+            if shard.kind == PROJECTION_CHUNK_KIND:
+                chunk_keys |= _check_chunk_shard(shard.location, lines, findings)
+            elif shard.kind == PROJECTION_VECTOR_KIND:
+                _check_vector_shard(shard.location, lines, ref, chunk_keys, findings)
+    return counts
+
+
+def _check_chunk_shard(
+    location: str, lines: list[bytes], findings: list[ValidationFinding]
+) -> set[str]:
+    keys: set[str] = set()
+    for number, line in enumerate(lines, start=1):
+        try:
+            record = ProjectionChunkRecord.model_validate(json.loads(line))
+        except Exception as exc:
+            findings.append(
+                ValidationFinding(
+                    code="row_unparseable",
+                    severity=Severity.BLOCKING,
+                    detail=f"{location} line {number} does not parse ({exc})",
+                )
+            )
+            continue
+        keys.add(record.chunk_key)
+        if sha256_bytes(record.content.encode("utf-8")) != record.content_sha256:
+            findings.append(
+                ValidationFinding(
+                    code="chunk_content_digest",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"{location}: chunk {record.chunk_key} does not match its own "
+                        "content digest, so the passage changed in transit"
+                    ),
+                )
+            )
+    return keys
+
+
+def _check_vector_shard(
+    location: str,
+    lines: list[bytes],
+    ref: Any,
+    chunk_keys: set[str],
+    findings: list[ValidationFinding],
+) -> None:
+    for number, line in enumerate(lines, start=1):
+        try:
+            record = ProjectionVectorRecord.model_validate(json.loads(line))
+        except Exception as exc:
+            findings.append(
+                ValidationFinding(
+                    code="row_unparseable",
+                    severity=Severity.BLOCKING,
+                    detail=f"{location} line {number} does not parse ({exc})",
+                )
+            )
+            continue
+
+        if record.encoding != VECTOR_ENCODING:
+            findings.append(
+                ValidationFinding(
+                    code="vector_encoding_unknown",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"{location} line {number} declares encoding "
+                        f"{record.encoding!r}, which this version cannot decode"
+                    ),
+                )
+            )
+            continue
+
+        try:
+            values = record.values()
+        except ValueError as exc:
+            findings.append(
+                ValidationFinding(
+                    code="vector_undecodable",
+                    severity=Severity.BLOCKING,
+                    detail=f"{location} line {number}: {exc}",
+                )
+            )
+            continue
+
+        for problem in vector_problems(
+            values,
+            dimensions=ref.embedding_dimensions or record.dimensions,
+            # The normalisation the profile declares is not in the snapshot, so
+            # l2 is assumed: it is what every profile in this application uses,
+            # and a vector that is normalised when nothing required it costs
+            # nothing. A profile that genuinely is not normalised would need
+            # this carried, and that belongs with signed policy metadata.
+            normalisation="l2",
+        ):
+            findings.append(
+                ValidationFinding(
+                    code="vector_invalid",
+                    severity=Severity.BLOCKING,
+                    detail=f"{location} line {number}: {problem}",
+                )
+            )
+
+        if chunk_keys and record.chunk_key not in chunk_keys:
+            findings.append(
+                ValidationFinding(
+                    code="vector_without_chunk",
+                    severity=Severity.BLOCKING,
+                    detail=(
+                        f"{location}: vector for chunk {record.chunk_key}, which has no "
+                        "chunk row in this projection — it would be unreachable"
+                    ),
+                )
+            )
 
 
 def _check_releases(

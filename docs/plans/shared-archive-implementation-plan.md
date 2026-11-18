@@ -716,8 +716,30 @@ records architecture and an implementation-ready plan only.
             *within* the snapshot. The golden fixture passes with zero blocking
             findings; the two advisories are real (its releases carry no scope version).
       - [x] `lab archive package / inspect / verify`.
-      - [ ] Projection export: vectors and chunks with profile digest and portable
-            numeric encoding.
+      - [x] Projection export, and with it **the fourth acceptance gate: deleting
+            the producer SQL projection does not lose published meaning.** The test
+            does it rather than asserting it — drops every chunk and vector from the
+            producer's index, then validates the snapshot with no database.
+            Vectors travel as base64 IEEE-754 float32 little-endian, named in every
+            row rather than assumed. JSON floats do not round-trip reliably across
+            parsers, and this repository already refuses floats in fingerprint inputs
+            for that reason. float32 is what the vector store holds — pgvector's
+            `vector` is a 4-byte float — so this is lossless against PostgreSQL; a
+            vector that has only lived in memory as a Python double is narrowed by
+            exactly as much as writing it to the database would narrow it, and the
+            contract says so rather than claiming a bit-exact copy of a float64.
+            **The index does not travel.** `embedding_profile_digest` covers model,
+            revision, dimensions and normalisation and deliberately excludes
+            `index_kind` and `index_parameters`: a reader builds its own index, and
+            folding those in would have it re-embed a corpus because the producer
+            preferred a different `ef_construction`.
+            Validation decodes every vector and checks dimension, finiteness and
+            l2 norm, and checks each chunk against its own content digest. A NaN in a
+            similarity search does not raise — it makes a passage unreachable or ranks
+            it first, depending on the backend.
+            `SearchIndex` gained keyset-paged `list_chunks` / `list_embeddings`:
+            serving never needed to read a projection back, which is why they were not
+            there.
       - [x] Publication protocol: outbox, staged publication, atomic head
             compare-and-swap, writer epoch. `lab archive publish / reconcile` over an
             `ArchiveControlStore` port with filesystem, S3, GCS and memory adapters —

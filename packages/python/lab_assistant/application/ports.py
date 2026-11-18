@@ -800,6 +800,36 @@ class SearchIndex(Protocol):
         *,
         work_ids: Sequence[UUID] | None = None,
     ) -> int: ...
+    async def list_chunks(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        *,
+        limit: int = 500,
+        after_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """One keyset page of a release's chunks, ordered by chunk key.
+
+        Reading a projection back is not something serving needs — which is why
+        it was not here until the archive needed it. Publishing a release means
+        carrying its chunks to an installation that cannot run the chunker, so
+        the projection has to be enumerable, and keyset-paged because a corpus
+        is larger than a page.
+        """
+        ...
+
+    async def list_embeddings(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        *,
+        profile_id: str,
+        limit: int = 500,
+        after_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """One keyset page of a release's vectors under one profile."""
+        ...
+
     async def delete_release_projections(self, workspace_id: UUID, release_id: UUID) -> int: ...
 
 

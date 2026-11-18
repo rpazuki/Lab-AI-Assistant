@@ -370,6 +370,69 @@ class PostgresSearchIndex:
                 for row in result.mappings().all()
             ]
 
+    async def list_chunks(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        *,
+        limit: int = 500,
+        after_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conditions = [
+            t.search_chunks.c.workspace_id == workspace_id,
+            t.search_chunks.c.release_id == release_id,
+        ]
+        if after_key is not None:
+            conditions.append(t.search_chunks.c.chunk_key > after_key)
+        statement = (
+            select(t.search_chunks)
+            .where(*conditions)
+            .order_by(t.search_chunks.c.chunk_key)
+            .limit(limit)
+        )
+        async with self._engine.connect() as connection:
+            result = await connection.execute(statement)
+            return [dict(row) for row in result.mappings().all()]
+
+    async def list_embeddings(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        *,
+        profile_id: str,
+        limit: int = 500,
+        after_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        # The dimension is not in the profile id, and vectors live in a table
+        # per dimension, so every known table is asked. A profile occupies one
+        # of them, so at most one answers.
+        rows: list[dict[str, Any]] = []
+        async with self._engine.connect() as connection:
+            for dimension in _known_dimensions():
+                table = embedding_table_for(dimension)
+                conditions = [
+                    table.c.workspace_id == workspace_id,
+                    table.c.release_id == release_id,
+                    table.c.profile_id == profile_id,
+                ]
+                if after_key is not None:
+                    conditions.append(table.c.chunk_key > after_key)
+                result = await connection.execute(
+                    select(table).where(*conditions).order_by(table.c.chunk_key).limit(limit)
+                )
+                for row in result.mappings().all():
+                    vector = row["vector"]
+                    rows.append(
+                        {
+                            "chunk_key": row["chunk_key"],
+                            "profile_id": row["profile_id"],
+                            "vector": list(vector) if vector is not None else [],
+                        }
+                    )
+                if rows:
+                    break
+        return sorted(rows, key=lambda row: row["chunk_key"])[:limit]
+
     async def count_chunks(
         self,
         workspace_id: UUID,

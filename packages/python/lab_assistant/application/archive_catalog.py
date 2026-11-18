@@ -44,13 +44,14 @@ from typing import Any
 from uuid import UUID, uuid4, uuid5
 
 from lab_assistant.application.context import ServiceContext
-from lab_assistant.application.pagination import iter_pages
+from lab_assistant.application.pagination import DEFAULT_PAGE_SIZE, iter_pages
 from lab_assistant.contracts.archive import (
     ARCHIVE_FORMAT_VERSION,
     ArtifactClass,
     ArtifactRef,
     CatalogShardRef,
     PackageRef,
+    ProjectionRef,
     SnapshotManifest,
 )
 from lab_assistant.contracts.archive_catalog import (
@@ -72,12 +73,24 @@ from lab_assistant.contracts.archive_catalog import (
     WorkRecord,
     shard_digest,
 )
+from lab_assistant.contracts.archive_projection import (
+    PROJECTION_SCHEMA_VERSION,
+    ProjectionChunkRecord,
+    ProjectionVectorRecord,
+    chunker_digest,
+    embedding_profile_digest,
+    encode_vector,
+    projection_record_id,
+)
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
 
 __all__ = [
     "CATALOG_DIRECTORY",
     "INVENTORY_KIND",
     "MANIFEST_NAME",
+    "PROJECTION_CHUNK_KIND",
+    "PROJECTION_DIRECTORY",
+    "PROJECTION_VECTOR_KIND",
     "ArchiveCatalogBuilder",
     "CatalogBuild",
 ]
@@ -86,6 +99,12 @@ MANIFEST_NAME = "manifest.json"
 CATALOG_DIRECTORY = "catalog"
 #: The shard kind holding `ArtifactRef` rows rather than catalog records.
 INVENTORY_KIND = "artifact_inventory"
+#: Projections live beside the catalog, referenced from `projection_refs`
+#: rather than from `catalog_shards`: they are rebuildable from the
+#: renditions given the same chunker, and the catalog is not.
+PROJECTION_DIRECTORY = "projections"
+PROJECTION_CHUNK_KIND = "projection_chunk"
+PROJECTION_VECTOR_KIND = "projection_vector"
 
 #: Namespace for deriving an artifact id from the payload it names. Derived
 #: rather than allocated so two snapshots of the same corpus agree about which
@@ -190,6 +209,7 @@ class ArchiveCatalogBuilder:
         # decide anything, so it stays small; a corpus with fifty thousand
         # payloads would otherwise put all of them in it.
         shards += (self._write_inventory(destination, closure),)
+        projections = await self._write_projections(destination, workspace_id, releases)
 
         manifest = SnapshotManifest(
             library_id=self._library_id,
@@ -204,6 +224,7 @@ class ArchiveCatalogBuilder:
             scientific_release_ids=tuple(release.id for release in releases),
             selected_alias_targets=await self._aliases(workspace_id, releases),
             catalog_shards=shards,
+            projection_refs=projections,
             package_refs=self._package_refs(closure),
             required_object_inventory_digest=_inventory_digest(closure.artifacts.values()),
         )
@@ -216,6 +237,18 @@ class ArchiveCatalogBuilder:
             counts={
                 **{kind.value: closure.count(kind) for kind in APPLY_ORDER},
                 "artifact": len(closure.artifacts),
+                "projection_chunk": sum(
+                    shard.row_count
+                    for ref in projections
+                    for shard in ref.shards
+                    if shard.kind == PROJECTION_CHUNK_KIND
+                ),
+                "projection_vector": sum(
+                    shard.row_count
+                    for ref in projections
+                    for shard in ref.shards
+                    if shard.kind == PROJECTION_VECTOR_KIND
+                ),
             },
             problems=tuple(problems),
         )
@@ -691,6 +724,153 @@ class ArchiveCatalogBuilder:
             location=location,
         )
 
+    async def _write_projections(
+        self, destination: Path, workspace_id: UUID, releases
+    ) -> tuple[ProjectionRef, ...]:
+        """Chunks and vectors, so a reader need not re-chunk or re-embed.
+
+        This is what makes the producer's SQL projection disposable: delete it
+        and the published meaning is still here, because the passages a release
+        serves and the vectors it was searched by both travelled.
+
+        The physical index does not travel. A reader builds its own, tuned for
+        its own hardware and query load; HNSW parameters are not evidence, and
+        carrying them would only invite a reader to refuse vectors it could use.
+        """
+        index = self._context.search_index
+        if index is None:
+            return ()
+
+        refs: list[ProjectionRef] = []
+        for release in releases:
+            chunks = await self._collect_chunks(index, workspace_id, release.id)
+            if not chunks:
+                continue
+            chunk_rows = [
+                canonical_json(record.model_dump(mode="python")) + b"\n" for record in chunks
+            ]
+            base = f"{PROJECTION_DIRECTORY}/{release.id}"
+            chunk_shard = _write_shard(
+                destination,
+                f"{base}/chunks.jsonl",
+                PROJECTION_CHUNK_KIND,
+                PROJECTION_SCHEMA_VERSION,
+                chunk_rows,
+            )
+
+            first = chunks[0]
+            for profile_id in release.projection_ready_profiles:
+                vectors = await self._collect_vectors(index, workspace_id, release.id, profile_id)
+                if not vectors:
+                    continue
+                vector_rows = [
+                    canonical_json(record.model_dump(mode="python")) + b"\n" for record in vectors
+                ]
+                vector_shard = _write_shard(
+                    destination,
+                    f"{base}/vectors-{profile_id}.jsonl",
+                    PROJECTION_VECTOR_KIND,
+                    PROJECTION_SCHEMA_VERSION,
+                    vector_rows,
+                )
+                profile = getattr(self._context.embedding_provider, "profile", None)
+                refs.append(
+                    ProjectionRef(
+                        release_id=release.id,
+                        chunker_digest=chunker_digest(first.chunker_id, first.chunker_version),
+                        embedding_profile_digest=embedding_profile_digest(profile)
+                        if profile is not None
+                        else "",
+                        embedding_dimensions=vectors[0].dimensions,
+                        shards=(chunk_shard, vector_shard),
+                    )
+                )
+
+            if not release.projection_ready_profiles:
+                # Chunks without vectors is a real state: a release can be
+                # lexically servable before any embedding profile is built.
+                refs.append(
+                    ProjectionRef(
+                        release_id=release.id,
+                        chunker_digest=chunker_digest(first.chunker_id, first.chunker_version),
+                        embedding_profile_digest="",
+                        embedding_dimensions=0,
+                        shards=(chunk_shard,),
+                    )
+                )
+        return tuple(refs)
+
+    async def _collect_chunks(self, index, workspace_id: UUID, release_id: UUID):
+        rows: list[ProjectionChunkRecord] = []
+        after: str | None = None
+        while True:
+            page = await index.list_chunks(
+                workspace_id, release_id, limit=DEFAULT_PAGE_SIZE, after_key=after
+            )
+            if not page:
+                break
+            for row in page:
+                rows.append(
+                    ProjectionChunkRecord(
+                        library_id=self._library_id,
+                        record_id=projection_record_id(release_id, row["chunk_key"]),
+                        release_id=release_id,
+                        chunk_key=row["chunk_key"],
+                        work_id=UUID(str(row["work_id"])),
+                        rendition_id=UUID(str(row["rendition_id"])),
+                        node_ids=tuple(row.get("node_ids") or ()),
+                        content=row["content"],
+                        content_sha256=row["content_sha256"],
+                        chunk_type=row["chunk_type"],
+                        section_label=row.get("section_label"),
+                        page=row.get("page"),
+                        token_count=int(row.get("token_count") or 0),
+                        chunker_id=row.get("chunker_id") or "unknown",
+                        chunker_version=row.get("chunker_version") or "unknown",
+                        access_policy_snapshot_id=(
+                            UUID(str(row["access_policy_snapshot_id"]))
+                            if row.get("access_policy_snapshot_id")
+                            else None
+                        ),
+                        metadata=dict(row.get("metadata") or row.get("metadata_json") or {}),
+                    )
+                )
+            after = page[-1]["chunk_key"]
+            if len(page) < DEFAULT_PAGE_SIZE:
+                break
+        return sorted(rows, key=lambda record: record.chunk_key)
+
+    async def _collect_vectors(self, index, workspace_id: UUID, release_id: UUID, profile_id: str):
+        rows: list[ProjectionVectorRecord] = []
+        after: str | None = None
+        while True:
+            page = await index.list_embeddings(
+                workspace_id,
+                release_id,
+                profile_id=profile_id,
+                limit=DEFAULT_PAGE_SIZE,
+                after_key=after,
+            )
+            if not page:
+                break
+            for row in page:
+                values = [float(value) for value in row["vector"]]
+                rows.append(
+                    ProjectionVectorRecord(
+                        library_id=self._library_id,
+                        record_id=projection_record_id(release_id, row["chunk_key"], profile_id),
+                        release_id=release_id,
+                        chunk_key=row["chunk_key"],
+                        profile_id=profile_id,
+                        dimensions=len(values),
+                        vector=encode_vector(values),
+                    )
+                )
+            after = page[-1]["chunk_key"]
+            if len(page) < DEFAULT_PAGE_SIZE:
+                break
+        return sorted(rows, key=lambda record: record.chunk_key)
+
     def _package_refs(self, closure: _Closure) -> tuple[PackageRef, ...]:
         """One package per work, digested over everything the work carries.
 
@@ -718,6 +898,23 @@ class ArchiveCatalogBuilder:
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
+
+def _write_shard(
+    destination: Path, location: str, kind: str, schema_version: str, rows: list[bytes]
+) -> CatalogShardRef:
+    """Write rows and describe them. Digested over the bytes, as everywhere."""
+    path = destination / location
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join(rows))
+    return CatalogShardRef(
+        kind=kind,
+        schema_version=schema_version,
+        sha256=shard_digest(rows),
+        byte_length=sum(len(row) for row in rows),
+        row_count=len(rows),
+        location=location,
+    )
 
 
 def _scope_record(library_id: UUID, scope) -> ScopeVersionRecord:

@@ -186,6 +186,38 @@ class MemorySearchIndex:
         ]
         return [dict(row) for row in selected[:top_k]]
 
+    async def list_chunks(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        *,
+        limit: int = 500,
+        after_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self.chunks[(workspace_id, release_id)]
+        keys = sorted(rows)
+        if after_key is not None:
+            keys = [key for key in keys if key > after_key]
+        return [dict(rows[key]) for key in keys[:limit]]
+
+    async def list_embeddings(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        *,
+        profile_id: str,
+        limit: int = 500,
+        after_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self.embeddings[(workspace_id, release_id, profile_id)]
+        keys = sorted(rows)
+        if after_key is not None:
+            keys = [key for key in keys if key > after_key]
+        return [
+            {"chunk_key": key, "vector": list(rows[key]), "profile_id": profile_id}
+            for key in keys[:limit]
+        ]
+
     async def count_chunks(
         self,
         workspace_id: UUID,

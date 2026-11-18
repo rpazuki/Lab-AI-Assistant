@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -334,3 +334,213 @@ def test_every_record_kind_has_a_shard_name() -> None:
 
     assert _B is not None
     assert {kind.value for kind in RecordKind}
+
+
+class TestProjectionsTravel:
+    """Phase 2's fourth acceptance criterion: deleting the producer's SQL
+    projection does not lose published meaning.
+
+    It is only true if the projection travels — the passages a release serves
+    and the vectors it was searched by. The physical index deliberately does
+    not: a reader builds its own.
+    """
+
+    async def test_chunks_and_vectors_are_exported(self, packaged) -> None:
+        manifest = packaged["build"].manifest
+        assert manifest.projection_refs, "no projection travelled"
+        for ref in manifest.projection_refs:
+            kinds = {shard.kind for shard in ref.shards}
+            assert "projection_chunk" in kinds
+
+    def test_the_encoding_is_bit_exact_for_float32(self) -> None:
+        """The encoding itself loses nothing: what goes in comes back."""
+        import struct
+
+        from lab_assistant.contracts.archive_projection import decode_vector, encode_vector
+
+        awkward = [0.1, -1.5e-7, 3.4028234663852886e38, 0.0, -0.0]
+        as_float32 = [struct.unpack("<f", struct.pack("<f", v))[0] for v in awkward]
+        assert decode_vector(encode_vector(as_float32)) == as_float32
+
+    async def test_vectors_match_the_producer_at_stored_precision(self, packaged) -> None:
+        """Floats do not survive JSON reliably, which is why they are not
+        written as JSON numbers.
+
+        The comparison is at float32, because float32 is what the vector store
+        holds: pgvector's `vector` is a 4-byte float. The in-memory index used
+        here keeps Python doubles, so exporting narrows them — by exactly as
+        much as writing them to the database would.
+        """
+        from lab_assistant.contracts.archive_projection import (
+            VECTOR_ENCODING,
+            ProjectionVectorRecord,
+        )
+
+        harness = packaged["harness"]
+        manifest = packaged["build"].manifest
+        shard = next(
+            shard
+            for ref in manifest.projection_refs
+            for shard in ref.shards
+            if shard.kind == "projection_vector"
+        )
+        rows = [
+            ProjectionVectorRecord.model_validate(json.loads(line))
+            for line in (packaged["directory"] / shard.location).read_text().splitlines()
+            if line.strip()
+        ]
+        assert rows
+        assert all(row.encoding == VECTOR_ENCODING for row in rows)
+
+        # The same vectors, straight from the producer's index.
+        release_id = rows[0].release_id
+        live = await harness.search.list_embeddings(
+            packaged["workspace"].id,
+            release_id,
+            profile_id=rows[0].profile_id,
+            limit=500,
+        )
+        import struct
+
+        def as_stored(values):
+            """What the vector store would hold: 4-byte floats."""
+            return [struct.unpack("<f", struct.pack("<f", v))[0] for v in values]
+
+        by_key = {row["chunk_key"]: [float(v) for v in row["vector"]] for row in live}
+        for record in rows:
+            assert record.values() == as_stored(by_key[record.chunk_key]), (
+                "an exported vector is not the number the corpus is served from"
+            )
+
+    async def test_the_index_itself_does_not_travel(self, packaged) -> None:
+        """HNSW parameters are not evidence. A reader tunes its own index, and
+        carrying the producer's would invite it to refuse usable vectors."""
+        manifest = packaged["build"].manifest
+        serialised = json.dumps(manifest.model_dump(mode="json"))
+        assert "ef_construction" not in serialised
+        assert "index_kind" not in serialised
+
+    async def test_the_producer_projection_can_be_deleted(self, packaged) -> None:
+        """The criterion itself, done rather than asserted: drop the producer's
+        chunks and vectors, then validate the snapshot with no database.
+        """
+        harness = packaged["harness"]
+        workspace_id = packaged["workspace"].id
+        releases = [UUID(row["record_id"]) for row in _rows(packaged["directory"], "release")]
+        assert releases
+
+        before = 0
+        for release_id in releases:
+            before += await harness.search.count_chunks(workspace_id, release_id)
+        assert before > 0
+
+        for release_id in releases:
+            await harness.search.delete_release_projections(workspace_id, release_id)
+
+        after = 0
+        for release_id in releases:
+            after += await harness.search.count_chunks(workspace_id, release_id)
+        assert after == 0, "the producer projection was not actually deleted"
+
+        # The published meaning is still here.
+        report = validate_snapshot(packaged["directory"])
+        assert report.ok, [finding.detail for finding in report.blocking]
+        assert report.counts["projection_chunk"] == before
+        assert report.counts["projection_vector"] > 0
+
+
+class TestProjectionValidation:
+    """A bad vector does not raise downstream. It makes a passage unreachable
+    or ranks it first, depending on the backend."""
+
+    def _vector_shard(self, packaged) -> Path:
+        manifest = packaged["build"].manifest
+        shard = next(
+            shard
+            for ref in manifest.projection_refs
+            for shard in ref.shards
+            if shard.kind == "projection_vector"
+        )
+        return packaged["directory"] / shard.location
+
+    async def test_a_corrupted_vector_is_caught(self, packaged) -> None:
+        path = self._vector_shard(packaged)
+        lines = path.read_text().splitlines()
+        row = json.loads(lines[0])
+        row["vector"] = "!!!not base64!!!"
+        lines[0] = json.dumps(row)
+        path.write_text("\n".join(lines) + "\n")
+        _reseal_projections(packaged["directory"])
+
+        report = validate_snapshot(packaged["directory"])
+        assert not report.ok
+        assert any(f.code == "vector_undecodable" for f in report.blocking)
+
+    async def test_a_wrong_dimension_is_caught(self, packaged) -> None:
+        from lab_assistant.contracts.archive_projection import encode_vector
+
+        path = self._vector_shard(packaged)
+        lines = path.read_text().splitlines()
+        row = json.loads(lines[0])
+        row["vector"] = encode_vector([0.5, 0.5])
+        lines[0] = json.dumps(row)
+        path.write_text("\n".join(lines) + "\n")
+        _reseal_projections(packaged["directory"])
+
+        report = validate_snapshot(packaged["directory"])
+        assert not report.ok
+        assert any("values and the profile declares" in f.detail for f in report.blocking)
+
+    async def test_a_tampered_chunk_is_caught(self, packaged) -> None:
+        """The chunk carries its own content digest, so a passage edited in
+        transit is caught before a reader cites it."""
+        manifest = packaged["build"].manifest
+        shard = next(
+            shard
+            for ref in manifest.projection_refs
+            for shard in ref.shards
+            if shard.kind == "projection_chunk"
+        )
+        path = packaged["directory"] / shard.location
+        lines = path.read_text().splitlines()
+        row = json.loads(lines[0])
+        row["content"] = row["content"] + " (quietly edited)"
+        lines[0] = json.dumps(row)
+        path.write_text("\n".join(lines) + "\n")
+        _reseal_projections(packaged["directory"])
+
+        report = validate_snapshot(packaged["directory"])
+        assert not report.ok
+        assert any(f.code == "chunk_content_digest" for f in report.blocking)
+
+
+def _reseal_projections(directory: Path) -> None:
+    """Re-digest projection shards after a test edits one, so the test fails on
+    the defect it injected rather than on the shard digest."""
+    from lab_assistant.contracts.archive import SnapshotManifest
+    from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
+
+    path = directory / MANIFEST_NAME
+    manifest = SnapshotManifest.model_validate(json.loads(path.read_text()))
+    refs = []
+    for ref in manifest.projection_refs:
+        shards = []
+        for shard in ref.shards:
+            payload = (directory / shard.location).read_bytes()
+            lines = [line for line in payload.split(b"\n") if line.strip()]
+            shards.append(
+                shard.model_copy(
+                    update={
+                        "sha256": sha256_bytes(payload),
+                        "byte_length": len(payload),
+                        "row_count": len(lines),
+                    }
+                )
+            )
+        refs.append(ref.model_copy(update={"shards": tuple(shards)}))
+    updated = manifest.model_copy(update={"projection_refs": tuple(refs)})
+    payload = canonical_json(updated.model_dump(mode="python"))
+    path.write_bytes(payload)
+    (directory / "MANIFEST.sha256").write_text(
+        f"{sha256_bytes(payload)}  {MANIFEST_NAME}\n", encoding="utf-8"
+    )
