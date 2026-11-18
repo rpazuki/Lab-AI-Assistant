@@ -176,8 +176,27 @@ class ReadinessService:
                 await self._schema(),
                 await self._object_store(servable),
                 self._corpus(servable),
+                self._role(),
             )
         )
+
+    def _role(self) -> ReadinessCheck:
+        """A drained installation is up and must not be sent traffic.
+
+        Maintenance is the state a publisher is put in before its authority is
+        handed over. It is healthy — its operator commands run — and it serves
+        nobody, which is exactly the combination a load balancer has to be told.
+        """
+        from lab_assistant.domain.installation import InstallationRole
+
+        role = self._context.installation.role
+        if role is InstallationRole.MAINTENANCE:
+            return ReadinessCheck(
+                name="installation_role",
+                ok=False,
+                detail="in maintenance: drained for a handover, migration or recovery",
+            )
+        return ReadinessCheck(name="installation_role", ok=True, detail=role.value)
 
     async def _database(self) -> ReadinessCheck:
         try:

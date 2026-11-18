@@ -289,6 +289,35 @@ def _parser() -> argparse.ArgumentParser:
         sub = policy_sub.add_parser(name, help=help_text)
         sub.add_argument("file", type=Path)
 
+    installation = subparsers.add_parser(
+        "installation", help="who publishes a library, and handing that over (phase 4)"
+    )
+    installation_sub = installation.add_subparsers(dest="installation_command", required=True)
+    for name, help_text in (
+        ("status", "which installation and epoch the library's heads name"),
+        ("drain", "sign off as publisher: refuse while work is in flight, write a statement"),
+        ("promote", "take the library over at the next epoch, from a drain statement"),
+    ):
+        sub = installation_sub.add_parser(name, help=help_text)
+        sub.add_argument("--workspace", required=True, help="workspace slug")
+        sub.add_argument("--library-id", default=None)
+        if name == "drain":
+            sub.add_argument("--statement", type=Path, required=True, help="where to write it")
+        if name == "promote":
+            sub.add_argument("--statement", type=Path, default=None)
+            sub.add_argument(
+                "--origin-fenced",
+                action="store_true",
+                help="the old publisher is unreachable, and you have stopped it and revoked "
+                "its archive credentials",
+            )
+            sub.add_argument(
+                "--accept-loss",
+                action="store_true",
+                help="promote without the published state in this database",
+            )
+            sub.add_argument("--apply", action="store_true", help="rewrite both heads")
+
     task = subparsers.add_parser("task", help="inspect and steer queued work")
     task_sub = task.add_subparsers(dest="task_command", required=True)
     for name, help_text in (
@@ -393,6 +422,8 @@ def _dispatch(args: argparse.Namespace, settings: Settings, provenance: ConfigPr
             return asyncio.run(_backup(args, settings))
         case "archive":
             return asyncio.run(_archive(args, settings))
+        case "installation":
+            return asyncio.run(_installation(args, settings))
         case "task":
             return asyncio.run(_task(args, settings))
         case "worker":
@@ -1470,6 +1501,76 @@ async def _archive_policy_status(
         print(f"  - {finding.code}: {finding.detail}", file=sys.stderr)
     current = report.ok and report.verdict is not None and report.verdict.serves(public=False)
     return 0 if current else 1
+
+
+async def _installation(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """The handover commands. Each is safe to repeat; ``promote`` changes
+    nothing without ``--apply``."""
+    from lab_assistant.application.backup import installation_identity
+    from lab_assistant.application.handover import HandoverService
+    from lab_assistant.contracts.handover import HandoverStatement
+
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        workspace_id = await _workspace_id(container, args.workspace)
+        if workspace_id is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+        installation_id, _source = installation_identity(settings)
+        service = HandoverService(
+            container.context,
+            control=_archive_control(settings),
+            library_id=UUID(args.library_id) if args.library_id else workspace_id,
+            installation_id=installation_id,
+            writer_epoch=settings.writer_epoch,
+        )
+
+        if args.installation_command == "status":
+            print(json.dumps(await service.status(), indent=2))
+            return 0
+
+        if args.installation_command == "drain":
+            drained = await service.drain(workspace_id)
+            print(json.dumps(drained.as_dict(), indent=2, default=str))
+            if not drained.ok or drained.statement is None:
+                for blocker in drained.blockers:
+                    print(f"  - {blocker.code}: {blocker.detail}", file=sys.stderr)
+                return 1
+            Path(args.statement).write_text(
+                drained.statement.model_dump_json(indent=2) + "\n", encoding="utf-8"
+            )
+            print(f"drain statement written to {args.statement}", file=sys.stderr)
+            return 0
+
+        statement = (
+            HandoverStatement.model_validate_json(Path(args.statement).read_bytes())
+            if args.statement
+            else None
+        )
+        promoted = await service.promote(
+            workspace_id,
+            statement=statement,
+            origin_fenced=args.origin_fenced,
+            accept_loss=args.accept_loss,
+            dry_run=not args.apply,
+        )
+        print(json.dumps(promoted.as_dict(), indent=2, default=str))
+        for step in promoted.next_steps:
+            print(f"  next: {step}", file=sys.stderr)
+        if not promoted.ok:
+            print(f"  - {promoted.verdict.detail}", file=sys.stderr)
+            return 1
+        return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
 
 
 async def _task(

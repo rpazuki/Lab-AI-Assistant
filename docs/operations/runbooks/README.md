@@ -20,6 +20,7 @@ One page per situation. Each states the symptom, what to check, what to do, and 
 | [Suspected access breach](suspected-access-breach.md) | data may have crossed a boundary |
 | [Policy checkpoints](policy-checkpoints.md) | a revocation must reach readers, or policy is going stale |
 | [Fetching a snapshot](archive-fetch.md) | a reader is taking a library from the archive |
+| [Publisher handover](publisher-handover.md) | another installation must take over publishing |
 
 ## Rules for all of them
 

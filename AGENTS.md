@@ -89,6 +89,9 @@ These are constraints, tests, or gates — never comments:
   new installation identity unless the operator declares the origin fenced
   (`domain/recovery.py`), because two publishers on one library do not fail — they both
   work, and diverge;
+- the right to publish moves only by `lab installation promote`, from a drain statement
+  or an operator's assertion that the old publisher is fenced, to exactly the next
+  epoch (`domain/handover.py`, ADR-0027). Never on a heartbeat;
 - a citation handle the server did not supply produces a **flagged answer**, never a
   500 and never a silent drop;
 - every cache and idempotency key carries workspace and policy scope.

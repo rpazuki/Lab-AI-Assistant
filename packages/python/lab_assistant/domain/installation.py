@@ -60,6 +60,11 @@ class InstallationRole(StrEnum):
     #: Serves an already-approved corpus and the interactions around it. It
     #: acquires nothing, processes nothing and publishes nothing.
     READER = "reader"
+    #: Drained for a handover, a migration or a recovery: it serves nobody and
+    #: claims no work. What a publisher becomes before its right to publish is
+    #: transferred, so nothing it starts can outlive its authority
+    #: (`domain/handover.py`). Operator commands still run; that is the point.
+    MAINTENANCE = "maintenance"
 
 
 class InstallationCapability(StrEnum):
@@ -101,6 +106,7 @@ READER_CAPABILITIES: frozenset[InstallationCapability] = frozenset(
 _BY_ROLE: dict[InstallationRole, frozenset[InstallationCapability]] = {
     InstallationRole.PUBLISHER: frozenset(InstallationCapability),
     InstallationRole.READER: READER_CAPABILITIES,
+    InstallationRole.MAINTENANCE: frozenset(),
 }
 
 

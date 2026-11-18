@@ -273,6 +273,8 @@ class PolicyHeadDescriptor(BaseModel):
     #: it fetched, so a key holding something else is caught.
     checkpoint_digest: str
     updated_at: datetime | None = None
+    #: Set when a handover moved the epoch, as evidence of who was fenced.
+    fenced_predecessor_id: UUID | None = None
 
     def serialise(self) -> bytes:
         return canonical_json(self.model_dump(mode="python"))

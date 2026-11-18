@@ -81,6 +81,10 @@ class AuditAction(StrEnum):
     TASK_DEAD_LETTERED = "task_dead_lettered"
     OBJECT_INTEGRITY_FAILED = "object_integrity_failed"
     ADMIN_ACTION = "admin_action"
+    #: A publisher drained for a handover, and the statement it signed off with.
+    INSTALLATION_DRAINED = "installation_drained"
+    #: The right to publish a library moved to a new epoch and owner.
+    INSTALLATION_PROMOTED = "installation_promoted"
     LEGACY_IMPORT_RUN = "legacy_import_run"
 
 

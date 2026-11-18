@@ -51,7 +51,7 @@ class TestAHealthyProcess:
         """A probe that reports a single boolean cannot tell an operator which
         dependency to go and look at."""
         checks = _by_name(await ReadinessService(harness.context).check())
-        assert set(checks) == {"database", "schema", "object_store", "corpus"}
+        assert set(checks) == {"database", "schema", "object_store", "corpus", "installation_role"}
 
 
 class TestADependencyThatStoppedAnswering:

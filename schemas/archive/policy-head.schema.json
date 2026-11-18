@@ -12,6 +12,19 @@
       "title": "Checkpoint Id",
       "type": "string"
     },
+    "fenced_predecessor_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fenced Predecessor Id"
+    },
     "format_version": {
       "default": "1.0",
       "title": "Format Version",

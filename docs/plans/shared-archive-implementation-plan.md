@@ -913,6 +913,23 @@ records architecture and an implementation-ready plan only.
             projection shards are uploaded per snapshot rather than content-addressed;
             payloads are copied through memory.
 - [ ] Phase 4 role handover/workhorse tests accepted.
+      **Offline core done; acceptance needs two real VMs.**
+      - [x] Handover protocol ([ADR-0027](../architecture/adr/0027-publisher-handover.md),
+            **proposed**): `lab installation drain / promote / status` and a
+            `maintenance` installation role that serves nobody (readiness 503) and claims
+            nothing. Drain refuses while a publication or a leased task is in flight and
+            writes a statement of what the heads carried; promotion requires that both
+            heads are untouched since the drain or already transferred, that the epoch
+            moves by exactly one, and that the successor holds every release the archive
+            last published unless the loss is accepted. Without a statement it is refused
+            unless an operator asserts the old publisher fenced (S53). It rewrites the
+            catalog head, then the policy head; a crash between them resumes, and the old
+            writer is fenced from both heads as soon as either moves (S09). Drain and
+            promotion are audited. 10 tests; three deliberate breaks each fail theirs.
+            **Not proven offline:** revoking the old publisher's archive credentials (IAM),
+            reader chats surviving promotion (needs a reader, phase 3), compute workers on
+            another VM, Compose profiles per role, and provider requests left uncertain
+            by a drain (S11) — leased tasks are refused at drain rather than reconciled.
 - [ ] Phase 5 lifecycle/disaster/scale drills accepted.
 - [ ] Relevant ADRs accepted and current documentation reconciled with implementation.
 - [ ] User/operator decisions, measured RPO/RTO and deployed feature/provider matrix recorded.
