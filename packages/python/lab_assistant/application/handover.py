@@ -38,6 +38,7 @@ from lab_assistant.application.context import ServiceContext
 from lab_assistant.application.ports import ArchiveControlStore
 from lab_assistant.contracts.archive import SnapshotManifest
 from lab_assistant.contracts.archive_policy import POLICY_HEAD_LOCATION
+from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.contracts.handover import HandoverStatement
 from lab_assistant.contracts.publication import HEAD_LOCATION
@@ -247,6 +248,14 @@ class HandoverService:
             )
 
         assert statement is not None
+        for plan, version in ((verdict.catalog, catalog_version), (verdict.policy, policy_version)):
+            if plan is HeadPlan.TRANSFER and version is None:
+                # A head with no version token cannot be swapped conditionally,
+                # and an unconditional write here is how two promotions race.
+                raise LabAssistantError(
+                    "a library head carries no version token, so it cannot be transferred "
+                    "conditionally"
+                ).with_class(ErrorClass.CONFLICT)
         prefix = library_prefix(self._library_id)
         # Catalog first, then policy. Each swap is conditional on the version
         # just read, so a head that moved in between fails rather than being
@@ -262,7 +271,9 @@ class HandoverService:
                 }
             )
             await self._control.compare_and_swap(
-                f"{prefix}{HEAD_LOCATION}", moved.serialise(), expected_version=catalog_version
+                f"{prefix}{HEAD_LOCATION}",
+                moved.serialise(),
+                expected_version=catalog_version or "",
             )
         if verdict.policy is HeadPlan.TRANSFER and policy is not None:
             moved_policy = policy.model_copy(
@@ -276,7 +287,7 @@ class HandoverService:
             await self._control.compare_and_swap(
                 f"{prefix}{POLICY_HEAD_LOCATION}",
                 moved_policy.serialise(),
-                expected_version=policy_version,
+                expected_version=policy_version or "",
             )
 
         await self._audit(
