@@ -27,6 +27,7 @@ from lab_assistant.application.ports import (
 )
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
+from lab_assistant.contracts.publication import PublicationRecord, PublicationState
 from lab_assistant.contracts.release import ReleaseItemRecord
 from lab_assistant.contracts.stage import StageName
 from lab_assistant.domain.assets import (
@@ -1514,6 +1515,7 @@ class SqlUnitOfWork:
         self.renditions = _Renditions(connection)
         self.claims = _Claims(connection)
         self.releases = _Releases(connection)
+        self.publications = _SqlPublications(connection)
         self.tasks = _Tasks(connection, dialect=dialect)
         self.audit = _Audit(connection)
         self.chat = _Chat(connection)
@@ -1544,6 +1546,97 @@ class SqlUnitOfWork:
     async def rollback(self) -> None:
         if self._transaction is not None and self._transaction.is_active:
             await self._transaction.rollback()
+
+
+class _SqlPublications:
+    """The publication outbox over SQL.
+
+    The unique constraint on (library_id, snapshot_id) does the work that
+    matters: publishing one snapshot twice is refused by the database rather
+    than by the code that already got it wrong once.
+    """
+
+    def __init__(self, connection) -> None:
+        self._c = connection
+
+    async def add(self, record: PublicationRecord) -> None:
+        await self._c.execute(t.archive_publications.insert().values(**_publication_row(record)))
+
+    async def update(self, record: PublicationRecord) -> None:
+        await self._c.execute(
+            t.archive_publications.update()
+            .where(t.archive_publications.c.id == record.id)
+            .values(**_publication_row(record))
+        )
+
+    async def get(self, workspace_id: UUID, record_id: UUID) -> PublicationRecord | None:
+        result = await self._c.execute(
+            select(t.archive_publications).where(
+                t.archive_publications.c.id == record_id,
+                t.archive_publications.c.workspace_id == workspace_id,
+            )
+        )
+        row = result.mappings().first()
+        return _publication_from_row(row) if row else None
+
+    async def find_by_snapshot(
+        self, library_id: UUID, snapshot_id: UUID
+    ) -> PublicationRecord | None:
+        result = await self._c.execute(
+            select(t.archive_publications).where(
+                t.archive_publications.c.library_id == library_id,
+                t.archive_publications.c.snapshot_id == snapshot_id,
+            )
+        )
+        row = result.mappings().first()
+        return _publication_from_row(row) if row else None
+
+    async def list_open(self, library_id: UUID) -> list[PublicationRecord]:
+        terminal = [PublicationState.ACKNOWLEDGED.value, PublicationState.FAILED.value]
+        result = await self._c.execute(
+            select(t.archive_publications)
+            .where(
+                t.archive_publications.c.library_id == library_id,
+                t.archive_publications.c.state.notin_(terminal),
+            )
+            .order_by(t.archive_publications.c.created_at, t.archive_publications.c.id)
+        )
+        return [_publication_from_row(row) for row in result.mappings().all()]
+
+
+def _publication_row(record: PublicationRecord) -> dict:
+    return {
+        "id": record.id,
+        "workspace_id": record.workspace_id,
+        "library_id": record.library_id,
+        "snapshot_id": record.snapshot_id,
+        "snapshot_manifest_digest": record.snapshot_manifest_digest,
+        "state": record.state.value,
+        "writer_epoch": record.writer_epoch,
+        "commit_sequence": record.commit_sequence,
+        "expected_head_version": record.expected_head_version,
+        "committed_head_version": record.committed_head_version,
+        "detail": record.detail,
+        "updated_at": record.updated_at,
+    }
+
+
+def _publication_from_row(row) -> PublicationRecord:
+    return PublicationRecord(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        library_id=row["library_id"],
+        snapshot_id=row["snapshot_id"],
+        snapshot_manifest_digest=row["snapshot_manifest_digest"],
+        state=PublicationState(row["state"]),
+        writer_epoch=row["writer_epoch"],
+        commit_sequence=row["commit_sequence"],
+        expected_head_version=row["expected_head_version"],
+        committed_head_version=row["committed_head_version"],
+        detail=row["detail"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
 
 
 def sql_uow_factory(engine: AsyncEngine):

@@ -224,6 +224,25 @@ def _parser() -> argparse.ArgumentParser:
         "verify", help="validate a snapshot: digests, rows and every reference"
     )
     verify_archive.add_argument("directory", type=Path)
+    publish_archive = archive_sub.add_parser(
+        "publish", help="upload a snapshot and move the library head to it"
+    )
+    publish_archive.add_argument("--workspace", required=True, help="workspace slug")
+    publish_archive.add_argument("directory", type=Path)
+    publish_archive.add_argument(
+        "--apply",
+        action="store_true",
+        help="move the head; without it this checks and reports what it would do",
+    )
+    publish_archive.add_argument("--library-id", default=None)
+    reconcile_archive = archive_sub.add_parser(
+        "reconcile", help="judge interrupted publications against the head"
+    )
+    reconcile_archive.add_argument("--workspace", required=True, help="workspace slug")
+    reconcile_archive.add_argument("--library-id", default=None)
+    reconcile_archive.add_argument(
+        "--apply", action="store_true", help="record the outcome of each judgement"
+    )
 
     task = subparsers.add_parser("task", help="inspect and steer queued work")
     task_sub = task.add_subparsers(dest="task_command", required=True)
@@ -972,6 +991,85 @@ async def _backup(
                 await hook()
 
 
+async def _archive_publish(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """Move the library head to a snapshot, or judge an interrupted attempt.
+
+    `publish` without `--apply` checks the head and reports the verdict without
+    touching anything, because the interesting failures — a fenced epoch, a
+    foreign owner — are worth seeing before an upload starts.
+    """
+    from lab_assistant.application.archive_publish import PublicationService
+    from lab_assistant.application.backup import installation_identity
+
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        workspace_id = await _workspace_id(container, args.workspace)
+        if workspace_id is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+
+        installation_id, _source = installation_identity(settings)
+        library_id = UUID(args.library_id) if args.library_id else workspace_id
+        service = PublicationService(
+            container.context,
+            control=_archive_control(settings),
+            library_id=library_id,
+            installation_id=installation_id,
+            writer_epoch=settings.writer_epoch,
+        )
+
+        if args.archive_command == "reconcile":
+            verdicts = await service.reconcile(apply=args.apply)
+            print(json.dumps([verdict.as_dict() for verdict in verdicts], indent=2))
+            if not args.apply and verdicts:
+                print(
+                    "judgement only: re-run with --apply to record these outcomes",
+                    file=sys.stderr,
+                )
+            return 0
+
+        report = await service.publish(workspace_id, args.directory, dry_run=not args.apply)
+        print(json.dumps(report.as_dict(), indent=2, default=str))
+        for step in report.next_steps:
+            print(f"  next: {step}", file=sys.stderr)
+        if not report.ok:
+            for problem in report.problems:
+                print(f"  - {problem}", file=sys.stderr)
+            return 1
+        return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
+
+
+def _archive_control(settings: Settings):
+    """The control store for the configured backend.
+
+    The head needs compare-and-swap, which every backend offers and none offers
+    the same way — an ETag, a generation, a digest under a lock.
+    """
+    if settings.object_store_kind == "s3":
+        from lab_assistant.adapters.object_store.control import S3ControlStore
+        from lab_assistant.adapters.object_store.s3 import S3StoreConfig
+
+        return S3ControlStore(S3StoreConfig.from_settings(settings))
+    if settings.object_store_kind == "gcs":
+        from lab_assistant.adapters.object_store.control import GcsControlStore
+        from lab_assistant.adapters.object_store.gcs import GcsStoreConfig
+
+        return GcsControlStore(GcsStoreConfig.from_settings(settings))
+    from lab_assistant.adapters.object_store.control import FilesystemControlStore
+
+    return FilesystemControlStore(settings.object_store_root)
+
+
 def _database_snapshot(container: Any, settings: Settings):
     """The dump/restore adapter over the container's own engine.
 
@@ -1024,6 +1122,9 @@ async def _archive(
 
     from lab_assistant.application.archive_catalog import ArchiveCatalogBuilder
     from lab_assistant.application.backup import installation_identity
+
+    if args.archive_command in ("publish", "reconcile"):
+        return await _archive_publish(args, settings, container=container)
 
     owned = container is None
     if container is None:

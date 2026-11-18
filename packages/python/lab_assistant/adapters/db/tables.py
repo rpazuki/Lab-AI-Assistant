@@ -1155,6 +1155,34 @@ Index(
 _EMBEDDING_TABLES: dict[int, Table] = {}
 
 
+archive_publications = Table(
+    "archive_publications",
+    METADATA,
+    Column("id", _UUID, primary_key=True),
+    Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    Column("library_id", _UUID, nullable=False),
+    Column("snapshot_id", _UUID, nullable=False),
+    Column("snapshot_manifest_digest", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("writer_epoch", Integer, nullable=False),
+    Column("commit_sequence", Integer, nullable=False),
+    # The head version this attempt read, and the one its swap produced. Both
+    # are recovery evidence: without the first the swap is a hopeful overwrite,
+    # and without the second a crash between committing and recording it cannot
+    # be told from a crash before.
+    Column("expected_head_version", Text),
+    Column("committed_head_version", Text),
+    Column("detail", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True)),
+    # One attempt per snapshot per library. A second row for the same snapshot
+    # is the duplicate publication this table exists to prevent, so the database
+    # refuses it rather than leaving it to the code that got it wrong once.
+    UniqueConstraint("library_id", "snapshot_id", name="library_snapshot_attempt"),
+    Index("ix_archive_publications_open", "library_id", "state"),
+)
+
+
 def embedding_table_for(dimensions: int) -> Table:
     """Return (defining if needed) the projection table for ``dimensions``.
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, TypeVar
 from uuid import UUID
@@ -23,8 +23,10 @@ from lab_assistant.application.ports import (
     ObjectReferenceSource,
     WorkVisibilityRow,
 )
+from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
+from lab_assistant.contracts.publication import PublicationRecord
 from lab_assistant.contracts.stage import StageName
 from lab_assistant.domain.assets import (
     AcquisitionAttempt,
@@ -64,6 +66,10 @@ def _check_workspace(workspace_id: UUID, row: Any) -> None:
         )
 
 
+#: Sort key for a row written before `created_at` was set.
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
 @dataclass
 class MemoryDatabase:
     """The shared store behind every unit of work in one test or process."""
@@ -100,6 +106,7 @@ class MemoryDatabase:
     revisions: dict[UUID, ClaimRevision] = field(default_factory=dict)
     reviews: dict[UUID, Review] = field(default_factory=dict)
     releases: dict[UUID, CorpusRelease] = field(default_factory=dict)
+    publications: dict[UUID, PublicationRecord] = field(default_factory=dict)
     release_items: dict[UUID, ReleaseItem] = field(default_factory=dict)
     aliases: dict[tuple[UUID, str], SearchAlias] = field(default_factory=dict)
     tasks: dict[UUID, Task] = field(default_factory=dict)
@@ -973,6 +980,62 @@ class _Claims:
         ]
 
 
+class _Publications:
+    """The publication outbox, in memory.
+
+    Enforces the same uniqueness the database does — one attempt per library
+    and snapshot. A fake that allowed two would let a duplicate-publication
+    test pass while proving nothing about the constraint that actually
+    prevents it.
+    """
+
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def add(self, record: PublicationRecord) -> None:
+        for existing in self._db.publications.values():
+            if (
+                existing.library_id == record.library_id
+                and existing.snapshot_id == record.snapshot_id
+                and existing.id != record.id
+            ):
+                raise LabAssistantError(
+                    "an attempt to publish this snapshot already exists",
+                    context={
+                        "library_id": str(record.library_id),
+                        "snapshot_id": str(record.snapshot_id),
+                    },
+                ).with_class(ErrorClass.CONFLICT)
+        self._db.publications[record.id] = record
+
+    async def update(self, record: PublicationRecord) -> None:
+        self._db.publications[record.id] = record
+
+    async def get(self, workspace_id: UUID, record_id: UUID) -> PublicationRecord | None:
+        record = self._db.publications.get(record_id)
+        if record is None or record.workspace_id != workspace_id:
+            return None
+        return record
+
+    async def find_by_snapshot(
+        self, library_id: UUID, snapshot_id: UUID
+    ) -> PublicationRecord | None:
+        for record in self._db.publications.values():
+            if record.library_id == library_id and record.snapshot_id == snapshot_id:
+                return record
+        return None
+
+    async def list_open(self, library_id: UUID) -> list[PublicationRecord]:
+        return sorted(
+            (
+                record
+                for record in self._db.publications.values()
+                if record.library_id == library_id and not record.state.is_terminal
+            ),
+            key=lambda record: (record.created_at or _EPOCH, str(record.id)),
+        )
+
+
 class _Releases:
     def __init__(self, db: MemoryDatabase) -> None:
         self._db = db
@@ -1297,6 +1360,7 @@ class MemoryUnitOfWork:
         self.renditions = _Renditions(db)
         self.claims = _Claims(db)
         self.releases = _Releases(db)
+        self.publications = _Publications(db)
         self.tasks = _Tasks(db)
         self.audit = _Audit(db)
         self.chat = _Chat(db)

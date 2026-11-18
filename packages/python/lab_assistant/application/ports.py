@@ -18,6 +18,7 @@ from uuid import UUID
 
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
+from lab_assistant.contracts.publication import PublicationRecord
 from lab_assistant.contracts.runtime import Clock, IdFactory
 from lab_assistant.contracts.stage import StageName
 from lab_assistant.domain.assets import (
@@ -61,6 +62,7 @@ from lab_assistant.domain.workspace import (
 )
 
 __all__ = [
+    "ArchiveControlStore",
     "AssetRepository",
     "AuditRepository",
     "ChatRepository",
@@ -79,6 +81,7 @@ __all__ = [
     "ObjectStore",
     "ObservationRepository",
     "PolicyRepository",
+    "PublicationRepository",
     "ReleaseRepository",
     "RenditionRepository",
     "SearchIndex",
@@ -87,6 +90,7 @@ __all__ = [
     "TaskRepository",
     "UnitOfWork",
     "UserRepository",
+    "VersionedPayload",
     "WorkRepository",
     "WorkVisibilityRow",
     "WorkspaceRepository",
@@ -216,6 +220,62 @@ class DumpResult:
     #: ``pg_dump`` than the destination's ``pg_restore`` fails partway through a
     #: restore; recorded so a preflight can say so before anything is dropped.
     tool_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class VersionedPayload:
+    """Bytes plus the provider's opaque version token for them.
+
+    The token is whatever the backend uses to say "this exact version": an S3
+    ETag, a GCS generation, a content digest on a filesystem. It is never
+    interpreted, only handed back on the next write, which is what makes a
+    compare-and-swap a compare-and-swap rather than a hopeful overwrite.
+    """
+
+    data: bytes
+    version: str | None = None
+
+
+@runtime_checkable
+class ArchiveControlStore(Protocol):
+    """The library's mutable control records — today, just the head.
+
+    Separate from `ObjectStore` on purpose. That port is immutable
+    content-addressed storage where the key *is* the digest and overwriting is
+    meaningless. A head is the opposite: one well-known key whose whole job is
+    to change, exactly once per publication, with the previous version as the
+    precondition. Putting both behind one interface would mean a store that
+    offers overwrite — and the first thing to overwrite would be a tombstone.
+    """
+
+    async def read(self, key: str) -> VersionedPayload | None:
+        """The current bytes and version, or ``None`` when absent.
+
+        ``None`` means genuinely absent. A denial, a timeout or an unreachable
+        endpoint raises: a publisher that read "no head" from a permissions
+        error would conclude the library is empty and create one.
+        """
+        ...
+
+    async def create(self, key: str, data: bytes) -> str | None:
+        """Write only if nothing is there, returning the new version.
+
+        Raises `CONFLICT` when it already exists. This is how two simultaneous
+        first publications resolve to one winner instead of one silently
+        overwriting the other.
+        """
+        ...
+
+    async def compare_and_swap(self, key: str, data: bytes, *, expected_version: str) -> str | None:
+        """Replace only if the current version matches, returning the new one.
+
+        Raises `CONFLICT` when it does not. The caller must **not** respond by
+        re-reading and retrying with whatever it finds: a failed swap can mean
+        a handover fenced this writer, and adopting the epoch it just observed
+        is how a fenced publisher takes the library back
+        (`domain/publication.py`).
+        """
+        ...
 
 
 @runtime_checkable
@@ -817,6 +877,41 @@ class EvaluationRepository(Protocol):
 
 
 @runtime_checkable
+class PublicationRepository(Protocol):
+    """The archive publication outbox.
+
+    Separate from the archive itself: this is the producer's record of what it
+    *intended*, and the head is what actually happened. When they disagree the
+    head wins, always — a local row claiming a commit the head does not carry
+    did not commit, however confident it looks.
+    """
+
+    async def add(self, record: PublicationRecord) -> None: ...
+
+    async def update(self, record: PublicationRecord) -> None: ...
+
+    async def get(self, workspace_id: UUID, record_id: UUID) -> PublicationRecord | None: ...
+
+    async def find_by_snapshot(
+        self, library_id: UUID, snapshot_id: UUID
+    ) -> PublicationRecord | None:
+        """The attempt for this snapshot, if one was ever started.
+
+        Keyed by library and snapshot rather than by workspace, because that is
+        the pair the database holds unique: publishing one snapshot twice is
+        the duplicate the constraint exists to refuse.
+        """
+        ...
+
+    async def list_open(self, library_id: UUID) -> list[PublicationRecord]:
+        """Attempts that have not reached a terminal state, oldest first.
+
+        What a recovering publisher reads before it does anything else.
+        """
+        ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     """Transaction boundary plus the repository set.
 
@@ -836,6 +931,7 @@ class UnitOfWork(Protocol):
     renditions: RenditionRepository
     claims: ClaimRepository
     releases: ReleaseRepository
+    publications: PublicationRepository
     tasks: TaskRepository
     audit: AuditRepository
     chat: ChatRepository

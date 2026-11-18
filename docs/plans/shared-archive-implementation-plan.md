@@ -718,9 +718,26 @@ records architecture and an implementation-ready plan only.
       - [x] `lab archive package / inspect / verify`.
       - [ ] Projection export: vectors and chunks with profile digest and portable
             numeric encoding.
-      - [ ] Publication protocol: outbox, staged publication, atomic head
-            compare-and-swap, writer epoch. Nothing here publishes — `package` writes a
-            snapshot and committing one is a separate operation.
+      - [x] Publication protocol: outbox, staged publication, atomic head
+            compare-and-swap, writer epoch. `lab archive publish / reconcile` over an
+            `ArchiveControlStore` port with filesystem, S3, GCS and memory adapters —
+            the preconditions each backend already had, surfaced for the head: an ETag,
+            a generation, and a digest under an exclusive lock (single-host, which is
+            what ADR-0022 scopes the filesystem profile to).
+            **Three acceptance criteria met**, each with a crash test that stops calling
+            rather than patching in an exception: a fault before the swap leaves objects
+            nobody references and the head unmoved; a fault after it is reconciled to
+            `acknowledged` without a second sequence; and a publisher whose epoch is
+            behind the head is refused. The refusal tells the operator **not** to re-run
+            with the epoch the head just reported — the architecture proposal names that
+            as the way a fenced writer takes the library back, and it would work.
+            A failed swap is never retried, for the same reason.
+            The outbox is `archive_publications`, added by a **conditional** migration:
+            `0001_initial` builds from live `MetaData` with `checkfirst=True`, so a
+            database created today already has the table and one migrated earlier does
+            not. That asymmetry is F14, and until `0001` is pinned to a frozen schema
+            every later revision has to be idempotent. Verified both ways against
+            PostgreSQL 16: fresh and pre-existing converge, `alembic check` clean.
       - [ ] Private stage checkpoints and the result lookup index.
       - [ ] Signed policy/revocation checkpoints and retention dependency metadata.
       - [ ] Signatures over the manifest digest: the format carries the fields and
