@@ -185,6 +185,12 @@ class StageResultEnvelope(BaseModel):
 
     stage: str
     outcome: StageOutcome
+    #: Why a failure outcome failed, from the shared taxonomy. Carried because
+    #: a reused `FAILED_PERMANENT` must be surfaced as the failure it was — "we
+    #: know this fails" and "this succeeded" are different answers, and a
+    #: caller that could not tell them apart would report a permanent failure
+    #: as a cache hit.
+    error_class: str | None = None
     #: Everything that invalidates reuse, hashed. See ``provenance.fingerprints``.
     reuse_fingerprint: str
     input_artifact_digests: tuple[str, ...] = ()

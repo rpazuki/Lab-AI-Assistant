@@ -28,6 +28,7 @@ from uuid import UUID
 
 from lab_assistant.application.context import ServiceContext
 from lab_assistant.application.parsing import ParsingService
+from lab_assistant.contracts.archive import StageOutcome, StageResultEnvelope
 from lab_assistant.contracts.errors import (
     AbstentionReason,
     ErrorClass,
@@ -59,6 +60,7 @@ from lab_assistant.domain.claims import (
     parse_numeric,
 )
 from lab_assistant.domain.renditions import build_evidence_span
+from lab_assistant.domain.stage_results import evaluate_reuse
 from lab_assistant.domain.states import ReviewState
 from lab_assistant.policy.model_transfer import TransferRequest
 from lab_assistant.provenance.fingerprints import extraction_item_fingerprint, task_fingerprint
@@ -433,13 +435,32 @@ class ExtractionHandler:
             ),
         )
 
+        # Reuse is decided by what the last run *reported*, not by whether it
+        # left rows behind. Asking for a claim revision meant a paper the
+        # extractor read and found nothing in looked unprocessed — every target
+        # abstaining is a result, not an absence — so it went back to the model
+        # on every restart, forever, for every silent paper (audit F10).
         async with context.uow_factory() as uow:
-            cached = await uow.claims.find_revision_by_fingerprint(workspace_id, item_fingerprint)
-        if cached is not None:
+            recorded = await uow.stage_results.find(workspace_id, item_fingerprint)
+        decision = evaluate_reuse(recorded.outcome if recorded else None)
+        if decision.reuse:
             return StageResult(
                 stage=StageName.EXTRACTION,
-                status=StageStatus.SUCCEEDED_NOOP,
-                metrics={"cached": True, "fingerprint": item_fingerprint},
+                status=(
+                    StageStatus.FAILED if decision.carries_failure else StageStatus.SUCCEEDED_NOOP
+                ),
+                error_class=(
+                    ErrorClass(recorded.error_class)
+                    if decision.carries_failure and recorded and recorded.error_class
+                    else None
+                ),
+                error_detail=decision.detail if decision.carries_failure else None,
+                metrics={
+                    "reused": True,
+                    "recorded_outcome": decision.outcome.value if decision.outcome else None,
+                    "reuse_detail": decision.detail,
+                    "fingerprint": item_fingerprint,
+                },
             )
 
         result = await extractor.propose(ExtractionRequest(context=extraction_context))
@@ -564,10 +585,60 @@ class ExtractionHandler:
             )
             await uow.commit()
 
+        # Recorded whichever way it went. An empty result is the whole reason
+        # this index exists: without a row saying "processed, found nothing",
+        # the next run cannot tell it from "never tried".
+        # "Found nothing" is not "returned nothing". A complete search over a
+        # paper that reports none of the targets comes back as a full set of
+        # abstentions, which is a positive statement about the source — and the
+        # single most expensive thing to misread, because re-running it costs a
+        # model call per paper per restart.
+        reported_anything = any(
+            proposal.abstention is AbstentionReason.REPORTED for proposal in result.proposals
+        )
+        outcome = (
+            StageOutcome.REFUSED_BY_POLICY
+            if result.refused
+            else StageOutcome.SUCCEEDED_TRUNCATED
+            if result.truncated
+            else StageOutcome.SUCCEEDED
+            if reported_anything
+            else StageOutcome.SUCCEEDED_EMPTY
+        )
+        async with context.uow_factory() as uow:
+            await uow.stage_results.record(
+                StageResultEnvelope(
+                    stage=StageName.EXTRACTION.value,
+                    outcome=outcome,
+                    reuse_fingerprint=item_fingerprint,
+                    output_artifacts=(),
+                    tool_versions={
+                        "provider": (
+                            provider_properties.provider_id if provider_properties else "none"
+                        ),
+                        "model": context.settings.llm_model,
+                        "selector": SELECTOR_VERSION,
+                        "prompt_builder": PROMPT_BUILDER_VERSION,
+                        "validator": VALIDATOR_VERSION,
+                    },
+                    policy_scope={
+                        "workspace_id": str(workspace_id),
+                        "policy_version_id": (
+                            str(command.policy_version_id) if command.policy_version_id else None
+                        ),
+                    },
+                    completed_at=context.now(),
+                    actor_id=command.actor_id,
+                ),
+                workspace_id=workspace_id,
+            )
+            await uow.commit()
+
         return StageResult(
             stage=StageName.EXTRACTION,
             status=StageStatus.SUCCEEDED if result.proposals else StageStatus.SUCCEEDED_NOOP,
             metrics={
+                "outcome": outcome.value,
                 "proposals": len(result.proposals),
                 "valid": accepted,
                 "invalid": rejected,

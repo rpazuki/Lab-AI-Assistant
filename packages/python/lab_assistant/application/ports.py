@@ -16,6 +16,7 @@ from types import TracebackType
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
+from lab_assistant.contracts.archive import StageResultEnvelope
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
 from lab_assistant.contracts.publication import PublicationRecord
@@ -85,6 +86,7 @@ __all__ = [
     "ReleaseRepository",
     "RenditionRepository",
     "SearchIndex",
+    "StageResultRepository",
     "StoredObject",
     "SupportsInventory",
     "TaskRepository",
@@ -907,6 +909,28 @@ class EvaluationRepository(Protocol):
 
 
 @runtime_checkable
+class StageResultRepository(Protocol):
+    """Completed expensive work, by the fingerprint of its input.
+
+    The index that stops a model being paid twice for one paper. It records an
+    outcome whether or not the stage produced rows, because the case that costs
+    the most is the one that produces none (audit F10).
+    """
+
+    async def record(self, result: StageResultEnvelope, *, workspace_id: UUID) -> None:
+        """Write the outcome, replacing any earlier one for this fingerprint.
+
+        Replacing rather than refusing: a retryable failure recorded last week
+        must be overwritten by this week's success, or the retry is pointless.
+        """
+        ...
+
+    async def find(self, workspace_id: UUID, reuse_fingerprint: str) -> StageResultEnvelope | None:
+        """The recorded outcome for this input, if there is one."""
+        ...
+
+
+@runtime_checkable
 class PublicationRepository(Protocol):
     """The archive publication outbox.
 
@@ -962,6 +986,7 @@ class UnitOfWork(Protocol):
     claims: ClaimRepository
     releases: ReleaseRepository
     publications: PublicationRepository
+    stage_results: StageResultRepository
     tasks: TaskRepository
     audit: AuditRepository
     chat: ChatRepository

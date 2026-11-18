@@ -1155,6 +1155,27 @@ Index(
 _EMBEDDING_TABLES: dict[int, Table] = {}
 
 
+stage_results = Table(
+    "stage_results",
+    METADATA,
+    Column("id", _UUID, primary_key=True),
+    Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    Column("stage", Text, nullable=False),
+    # The reuse key. Unique per workspace, because that is the question asked:
+    # "has this exact input been processed here before?"
+    Column("reuse_fingerprint", Text, nullable=False),
+    Column("outcome", Text, nullable=False),
+    # The whole envelope, as the committed contract serialises it. Stored intact
+    # rather than shredded into columns so it can be archived later without a
+    # second mapping — and so a field this version does not read is not lost.
+    Column("envelope_json", _JSONB, nullable=False, server_default=text("'{}'")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True)),
+    UniqueConstraint("workspace_id", "reuse_fingerprint", name="workspace_reuse_fingerprint"),
+    Index("ix_stage_results_stage", "workspace_id", "stage", "outcome"),
+)
+
+
 archive_publications = Table(
     "archive_publications",
     METADATA,

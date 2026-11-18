@@ -45,6 +45,18 @@
       "default": null,
       "title": "Completed At"
     },
+    "error_class": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Class"
+    },
     "input_artifact_digests": {
       "default": [],
       "items": {

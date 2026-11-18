@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from types import TracebackType
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import and_, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -25,6 +25,7 @@ from lab_assistant.application.ports import (
     ObjectReferenceSource,
     WorkVisibilityRow,
 )
+from lab_assistant.contracts.archive import StageResultEnvelope
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
 from lab_assistant.contracts.publication import PublicationRecord, PublicationState
@@ -1516,6 +1517,7 @@ class SqlUnitOfWork:
         self.claims = _Claims(connection)
         self.releases = _Releases(connection)
         self.publications = _SqlPublications(connection)
+        self.stage_results = _SqlStageResults(connection)
         self.tasks = _Tasks(connection, dialect=dialect)
         self.audit = _Audit(connection)
         self.chat = _Chat(connection)
@@ -1546,6 +1548,48 @@ class SqlUnitOfWork:
     async def rollback(self) -> None:
         if self._transaction is not None and self._transaction.is_active:
             await self._transaction.rollback()
+
+
+class _SqlStageResults:
+    def __init__(self, connection) -> None:
+        self._c = connection
+
+    async def record(self, result: StageResultEnvelope, *, workspace_id: UUID) -> None:
+        payload = result.model_dump(mode="json")
+        existing = await self._c.execute(
+            select(t.stage_results.c.id).where(
+                t.stage_results.c.workspace_id == workspace_id,
+                t.stage_results.c.reuse_fingerprint == result.reuse_fingerprint,
+            )
+        )
+        row = existing.first()
+        values = {
+            "workspace_id": workspace_id,
+            "stage": result.stage,
+            "reuse_fingerprint": result.reuse_fingerprint,
+            "outcome": result.outcome.value,
+            "envelope_json": payload,
+        }
+        if row is None:
+            await self._c.execute(t.stage_results.insert().values(id=uuid4(), **values))
+            return
+        # Replace: a retryable failure recorded last week must give way to this
+        # week's success, or retrying it achieves nothing.
+        await self._c.execute(
+            t.stage_results.update().where(t.stage_results.c.id == row[0]).values(**values)
+        )
+
+    async def find(self, workspace_id: UUID, reuse_fingerprint: str) -> StageResultEnvelope | None:
+        result = await self._c.execute(
+            select(t.stage_results.c.envelope_json).where(
+                t.stage_results.c.workspace_id == workspace_id,
+                t.stage_results.c.reuse_fingerprint == reuse_fingerprint,
+            )
+        )
+        row = result.first()
+        if row is None or not row[0]:
+            return None
+        return StageResultEnvelope.model_validate(row[0])
 
 
 class _SqlPublications:

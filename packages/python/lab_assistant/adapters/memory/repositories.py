@@ -23,6 +23,7 @@ from lab_assistant.application.ports import (
     ObjectReferenceSource,
     WorkVisibilityRow,
 )
+from lab_assistant.contracts.archive import StageResultEnvelope
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
@@ -107,6 +108,7 @@ class MemoryDatabase:
     reviews: dict[UUID, Review] = field(default_factory=dict)
     releases: dict[UUID, CorpusRelease] = field(default_factory=dict)
     publications: dict[UUID, PublicationRecord] = field(default_factory=dict)
+    stage_results: dict[tuple[UUID, str], StageResultEnvelope] = field(default_factory=dict)
     release_items: dict[UUID, ReleaseItem] = field(default_factory=dict)
     aliases: dict[tuple[UUID, str], SearchAlias] = field(default_factory=dict)
     tasks: dict[UUID, Task] = field(default_factory=dict)
@@ -980,6 +982,17 @@ class _Claims:
         ]
 
 
+class _StageResults:
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    async def record(self, result: StageResultEnvelope, *, workspace_id: UUID) -> None:
+        self._db.stage_results[(workspace_id, result.reuse_fingerprint)] = result
+
+    async def find(self, workspace_id: UUID, reuse_fingerprint: str) -> StageResultEnvelope | None:
+        return self._db.stage_results.get((workspace_id, reuse_fingerprint))
+
+
 class _Publications:
     """The publication outbox, in memory.
 
@@ -1361,6 +1374,7 @@ class MemoryUnitOfWork:
         self.claims = _Claims(db)
         self.releases = _Releases(db)
         self.publications = _Publications(db)
+        self.stage_results = _StageResults(db)
         self.tasks = _Tasks(db)
         self.audit = _Audit(db)
         self.chat = _Chat(db)

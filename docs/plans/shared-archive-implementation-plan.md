@@ -760,7 +760,30 @@ records architecture and an implementation-ready plan only.
             not. That asymmetry is F14, and until `0001` is pinned to a frozen schema
             every later revision has to be idempotent. Verified both ways against
             PostgreSQL 16: fresh and pre-existing converge, `alembic check` clean.
-      - [ ] Private stage checkpoints and the result lookup index.
+      - [x] Stage result index, and with it **F10 fixed**. Reuse was decided by
+            looking for *output*: extraction asked whether a claim revision carried
+            the right fingerprint, so a paper the extractor read and found nothing in
+            produced no revision, looked unprocessed, and went back to the model on
+            every restart — forever, for every silent paper. Nothing failed and
+            nothing was logged; the provider was simply paid again.
+            `stage_results` now records a typed `StageResultEnvelope` whichever way a
+            stage ends, and `domain/stage_results.py` decides reuse from the outcome:
+            succeeded, empty, truncated, refused-by-policy and permanently-failed are
+            reusable; **retryable failures and unknown outcomes never are**, because a
+            timeout recorded as a completed stage is how a transient blip becomes a
+            permanent hole. A reused permanent failure is surfaced *as* a failure.
+            **"Found nothing" is not "returned nothing":** a complete search over a
+            paper reporting none of the targets comes back as a full set of
+            abstentions, so the classification reads the abstention reasons rather
+            than counting proposals. On the golden fixture this is the difference
+            between four recorded successes and two successes plus two
+            `succeeded_empty`.
+            Proved by counting: a second pass over the corpus reaches the extractor
+            only for the one rendition that had never been extracted.
+            **Outstanding:** envelopes are indexed locally and not yet archived, so
+            reuse does not cross installations — the plan asks for that and it needs
+            the private checkpoint storage of phase 3. `error_class` was added to the
+            envelope contract and its committed schema regenerated.
       - [ ] Signed policy/revocation checkpoints and retention dependency metadata.
       - [ ] Signatures over the manifest digest: the format carries the fields and
             nothing signs them yet.
