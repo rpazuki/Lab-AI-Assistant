@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { resetSidebarGroups } from "@/components/Sidebar";
 import { Alert, Button, Field, Input } from "@/components/ui/primitives";
 import { acceptInvitation, previewInvitation } from "@/lib/api";
 import { appPath } from "@/lib/config";
@@ -86,6 +87,7 @@ export function InviteClient() {
         password,
         full_name: newAccount && fullName.trim() ? fullName.trim() : undefined,
       });
+      resetSidebarGroups();
       // A full load, so every part of the page starts from the new session.
       window.location.assign(appPath(HOME_PATH));
     } catch (caught) {

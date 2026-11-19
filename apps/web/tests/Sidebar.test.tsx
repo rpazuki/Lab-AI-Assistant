@@ -1,8 +1,8 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CLOSED_GROUPS_KEY, COLLAPSED_KEY, Sidebar } from "@/components/Sidebar";
+import { COLLAPSED_KEY, OPEN_GROUPS_KEY, Sidebar, resetSidebarGroups } from "@/components/Sidebar";
 import { ApiError } from "@/lib/api";
 import type { Me } from "@/types";
 
@@ -89,12 +89,17 @@ describe("Sidebar", () => {
     vi.mocked(api.getMe).mockResolvedValue(
       member("reviewer", ["ask", "search", "upload_asset", "view_analytics", "decide_identity", "review_parse", "review_claims"]),
     );
+    window.localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify(["research", "curation"]));
     render(<Sidebar />);
     await screen.findByRole("button", { name: "Sign out" });
     expect(sections()).toEqual(["Ask", "Analytics", "Collections", "Review", "Answer reviews"]);
   });
 
   it("gives an admin every section, grouped", async () => {
+    window.localStorage.setItem(
+      OPEN_GROUPS_KEY,
+      JSON.stringify(["research", "curation", "publishing", "administration"]),
+    );
     vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
     render(<Sidebar />);
     await screen.findByRole("button", { name: "Sign out" });
@@ -106,19 +111,62 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: "Ask" })).toHaveAttribute("aria-current", "page");
   });
 
-  it("closes and reopens a group, and remembers it", async () => {
+  it("opens only the current page's group on a first visit", async () => {
+    pathname = "/evaluation";
+    vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
+    render(<Sidebar />);
+    await screen.findByRole("button", { name: "Sign out" });
+    const expanded = (name: string) =>
+      screen.getByRole("button", { name }).getAttribute("aria-expanded");
+    expect(expanded("Publishing")).toBe("true");
+    expect([expanded("Research"), expanded("Curation"), expanded("Administration")]).toEqual([
+      "false",
+      "false",
+      "false",
+    ]);
+    expect(sections()).toEqual(["Releases", "Evaluation"]);
+  });
+
+  it("opens and closes a group, and remembers it", async () => {
     vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
     render(<Sidebar />);
     const header = await screen.findByRole("button", { name: "Publishing" });
-    expect(header).toHaveAttribute("aria-expanded", "true");
-
-    await userEvent.click(header);
     expect(header).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("link", { name: "Releases" })).not.toBeInTheDocument();
-    expect(JSON.parse(window.localStorage.getItem(CLOSED_GROUPS_KEY) ?? "[]")).toEqual(["publishing"]);
 
     await userEvent.click(header);
+    expect(header).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "Releases" })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(OPEN_GROUPS_KEY) ?? "[]")).toEqual([
+      "research",
+      "publishing",
+    ]);
+
+    await userEvent.click(header);
+    expect(screen.queryByRole("link", { name: "Releases" })).not.toBeInTheDocument();
+  });
+
+  it("opens the group of a page reached from elsewhere", async () => {
+    window.localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify(["research"]));
+    vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
+    const { rerender } = render(<Sidebar />);
+    await screen.findByRole("button", { name: "Sign out" });
+    pathname = "/members";
+    rerender(<Sidebar />);
+    expect(await screen.findByRole("link", { name: "Members" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Ask" })).toBeInTheDocument();
+  });
+
+  it("starts tidy again after signing in", async () => {
+    window.localStorage.setItem(
+      OPEN_GROUPS_KEY,
+      JSON.stringify(["research", "curation", "publishing", "administration"]),
+    );
+    vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
+    render(<Sidebar />);
+    await screen.findByRole("link", { name: "Members" });
+    act(() => resetSidebarGroups());
+    expect(window.localStorage.getItem(OPEN_GROUPS_KEY)).toBeNull();
+    await waitFor(() => expect(sections()).toEqual(["Ask", "Analytics"]));
   });
 
   it("hides down to a rail of icons that keep their names", async () => {
@@ -130,9 +178,19 @@ describe("Sidebar", () => {
     const show = screen.getByRole("button", { name: "Show navigation" });
     expect(show).toHaveAttribute("aria-expanded", "false");
     expect(window.localStorage.getItem(COLLAPSED_KEY)).toBe("1");
-    // No group headers in the rail, but every section is still a named link.
+    // No group headers in the rail, but every section is still a named link, and
+    // each icon has a tooltip with its name for the mouse and the keyboard.
     expect(groupHeaders()).toEqual([]);
-    expect(screen.getByRole("link", { name: "Members" })).toHaveAttribute("title", "Members");
+    const members = screen.getByRole("link", { name: "Members" });
+    expect(members).not.toHaveAttribute("title");
+    const tip = members.querySelector("[data-tooltip]");
+    expect(tip).toHaveTextContent("Members");
+    expect(tip).toHaveAttribute("aria-hidden");
+    expect(tip?.className).toMatch(/group-hover:opacity-100/);
+    expect(tip?.className).toMatch(/group-focus-visible:opacity-100/);
+    expect(
+      screen.getByRole("button", { name: "Show navigation" }).querySelector("[data-tooltip]"),
+    ).toHaveTextContent("Show navigation");
     expect(screen.queryByText("Lab AI Assistant")).not.toBeInTheDocument();
 
     await userEvent.click(show);

@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { login } from "@/lib/api";
 import { HOME_PATH } from "@/lib/navigation";
+import { resetSidebarGroups } from "@/components/Sidebar";
 import { Alert, Button, Field, Input } from "@/components/ui/primitives";
 
 /** `next` is where to go once signed in; the page has already checked it stays in this app. */
@@ -21,6 +22,7 @@ export function LoginForm({ next = HOME_PATH }: { next?: string }) {
     setError(null);
     try {
       await login(email, password);
+      resetSidebarGroups();
       router.push(next);
     } catch (caught) {
       // The message never says which half was wrong.

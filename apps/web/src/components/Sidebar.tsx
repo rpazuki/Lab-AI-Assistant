@@ -15,7 +15,27 @@ type Session = Me | null | undefined;
 
 /** Browser storage keys. Layout preference only: nothing here is a secret. */
 export const COLLAPSED_KEY = "lab.sidebar.collapsed";
-export const CLOSED_GROUPS_KEY = "lab.sidebar.closed-groups";
+/**
+ * The groups a member has opened. Absent means "nothing chosen yet": a first visit,
+ * or just after signing in, when only the group holding the current page is open.
+ */
+export const OPEN_GROUPS_KEY = "lab.sidebar.open-groups";
+
+/**
+ * Forget which groups were open, so the next page shows only its own group.
+ * Called on signing in and out: a new session starts from a tidy sidebar.
+ */
+export function resetSidebarGroups(): void {
+  try {
+    window.localStorage.removeItem(OPEN_GROUPS_KEY);
+  } catch {
+    // Nothing was kept; nothing to forget.
+  }
+  // Signing in moves on without a reload, so the sidebar already on screen is told.
+  window.dispatchEvent(new Event(RESET_EVENT));
+}
+
+const RESET_EVENT = "lab:sidebar-reset";
 
 /**
  * Storage can be missing or refuse access (a locked-down profile, a private
@@ -38,22 +58,45 @@ function remember(key: string, value: string): void {
   }
 }
 
-function readClosedGroups(): string[] {
+function readOpenGroups(): string[] | null {
+  const raw = remembered(OPEN_GROUPS_KEY);
+  if (raw === null) return null;
   try {
-    const stored = JSON.parse(remembered(CLOSED_GROUPS_KEY) ?? "[]");
-    return Array.isArray(stored) ? stored.filter((id) => typeof id === "string") : [];
+    const stored = JSON.parse(raw);
+    return Array.isArray(stored) ? stored.filter((id) => typeof id === "string") : null;
   } catch {
-    return [];
+    return null;
   }
+}
+
+/**
+ * A label shown beside a rail icon on hover or keyboard focus.
+ *
+ * Styled rather than the browser's `title`, which appears late, cannot be styled and
+ * never appears for keyboard focus. It is `aria-hidden`: the control already
+ * carries the same name for assistive technology, which must not hear it twice.
+ */
+function RailTip({ label }: { label: string }) {
+  return (
+    <span
+      aria-hidden
+      data-tooltip
+      className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-control bg-ink px-2.5 py-1 text-xs font-medium text-on-primary opacity-0 shadow-card transition-opacity duration-100 group-hover:opacity-100 group-focus-visible:opacity-100"
+    >
+      {label}
+    </span>
+  );
 }
 
 /**
  * The application sidebar: Flatly's midnight blue, down the left edge.
  *
  * Sections are grouped into accordion panels, each opened and closed by its own
- * header. The whole bar can be hidden down to a rail of icons with the button at
- * its top, which is the room a long review table or a chart wants. Both choices
- * are remembered in this browser.
+ * header. On a first visit and after signing in only the group holding the current
+ * page is open; opening others is remembered in this browser, and moving to a page
+ * in a closed group opens it. The whole bar can be hidden down to a rail of icons
+ * with the button at its top, which is the room a long review table or a chart
+ * wants; each icon then names itself in a tooltip on hover or focus.
  *
  * It asks the API who is signed in on every navigation, so the links follow a
  * sign-in or sign-out without a reload, and offers only the sections the member's
@@ -62,15 +105,16 @@ function readClosedGroups(): string[] {
  * shown, so a researcher never sees an admin's links flash past.
  *
  * The current page carries `aria-current="page"` as well as its highlight, and in
- * the rail each icon keeps its section's name for assistive technology and as a
- * tooltip, so nothing is marked by colour or by a glyph alone.
+ * the rail each icon keeps its section's name for assistive technology, so nothing
+ * is marked by colour or by a glyph alone.
  */
 export function Sidebar() {
   // usePathname is relative to the basePath, so it compares with the hrefs as written.
   const pathname = usePathname() ?? "";
   const [session, setSession] = useState<Session>(undefined);
   const [collapsed, setCollapsed] = useState(false);
-  const [closed, setClosed] = useState<string[]>([]);
+  //: `null` until the member opens or closes a group themselves.
+  const [opened, setOpened] = useState<string[] | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -87,8 +131,25 @@ export function Sidebar() {
   // render that differed from the server's would be a hydration mismatch.
   useEffect(() => {
     setCollapsed(remembered(COLLAPSED_KEY) === "1");
-    setClosed(readClosedGroups());
+    setOpened(readOpenGroups());
+    const reset = () => setOpened(null);
+    window.addEventListener(RESET_EVENT, reset);
+    return () => window.removeEventListener(RESET_EVENT, reset);
   }, []);
+
+  const groups = session ? visibleGroups(session.capabilities) : [];
+  const activeGroup =
+    groups.find((group) => group.items.some((item) => isActive(pathname, item.href)))?.id ?? null;
+
+  // Arriving at a page in a group the member had closed opens that group.
+  useEffect(() => {
+    if (opened === null || activeGroup === null || opened.includes(activeGroup)) return;
+    const next = [...opened, activeGroup];
+    setOpened(next);
+    remember(OPEN_GROUPS_KEY, JSON.stringify(next));
+  }, [activeGroup, opened]);
+
+  const openGroups = opened ?? (activeGroup ? [activeGroup] : []);
 
   function toggleCollapsed() {
     const next = !collapsed;
@@ -97,22 +158,23 @@ export function Sidebar() {
   }
 
   function toggleGroup(id: string) {
-    const next = closed.includes(id) ? closed.filter((item) => item !== id) : [...closed, id];
-    setClosed(next);
-    remember(CLOSED_GROUPS_KEY, JSON.stringify(next));
+    const next = openGroups.includes(id)
+      ? openGroups.filter((item) => item !== id)
+      : [...openGroups, id];
+    setOpened(next);
+    remember(OPEN_GROUPS_KEY, JSON.stringify(next));
   }
 
   async function signOut() {
     await logout();
+    resetSidebarGroups();
     // A full load, not a client transition: no page keeps the signed-in member's data.
     window.location.assign(appPath("/login"));
   }
 
-  const groups = session ? visibleGroups(session.capabilities) : [];
-
   const itemClass = (active: boolean) =>
     `flex items-center gap-3 rounded-control border-l-2 py-2 text-sm transition-colors ${
-      collapsed ? "justify-center px-0" : "px-3"
+      collapsed ? "group relative justify-center px-0" : "px-3"
     } ${
       active
         ? "border-accent bg-nav-active font-semibold text-on-primary"
@@ -146,16 +208,20 @@ export function Sidebar() {
           aria-controls="app-sidebar"
           aria-expanded={!collapsed}
           aria-label={collapsed ? "Show navigation" : "Hide navigation"}
-          title={collapsed ? "Show navigation" : "Hide navigation"}
-          className="rounded-control p-2 text-nav-idle transition-colors hover:bg-nav-hover hover:text-on-primary"
+          className="group relative rounded-control p-2 text-nav-idle transition-colors hover:bg-nav-hover hover:text-on-primary"
         >
           <Icon name={collapsed ? "expand" : "collapse"} />
+          {collapsed ? <RailTip label="Show navigation" /> : null}
         </button>
       </div>
 
-      <nav aria-label="Main" className="flex-1 overflow-y-auto px-2 py-3">
+      {/* The rail lets tooltips overflow to the right; the open bar scrolls instead. */}
+      <nav
+        aria-label="Main"
+        className={`flex-1 px-2 py-3 ${collapsed ? "overflow-visible" : "overflow-y-auto"}`}
+      >
         {groups.map((group, index) => {
-          const open = collapsed || !closed.includes(group.id);
+          const open = collapsed || openGroups.includes(group.id);
           const panelId = `nav-group-${group.id}`;
           return (
             <div key={group.id} className={index > 0 ? "mt-3" : ""}>
@@ -185,11 +251,11 @@ export function Sidebar() {
                         <Link
                           href={item.href}
                           aria-current={active ? "page" : undefined}
-                          title={collapsed ? item.label : undefined}
                           className={itemClass(active)}
                         >
                           <Icon name={item.icon} />
                           <span className={collapsed ? "sr-only" : ""}>{item.label}</span>
+                          {collapsed ? <RailTip label={item.label} /> : null}
                         </Link>
                       </li>
                     );
@@ -203,11 +269,11 @@ export function Sidebar() {
           <Link
             href="/login"
             aria-current={pathname === "/login" ? "page" : undefined}
-            title={collapsed ? "Sign in" : undefined}
             className={itemClass(pathname === "/login")}
           >
             <Icon name="sign-in" />
             <span className={collapsed ? "sr-only" : ""}>Sign in</span>
+            {collapsed ? <RailTip label="Sign in" /> : null}
           </Link>
         ) : null}
       </nav>
@@ -221,12 +287,20 @@ export function Sidebar() {
         {session ? (
           <>
             <div
-              className={`flex items-center gap-3 py-1 text-nav-idle ${collapsed ? "justify-center" : "px-3"}`}
-              title={collapsed ? session.email : session.workspace.name}
+              tabIndex={collapsed ? 0 : undefined}
+              className={`flex items-center gap-3 py-1 text-nav-idle ${
+                collapsed ? "group relative justify-center rounded-control" : "px-3"
+              }`}
+              title={collapsed ? undefined : session.workspace.name}
             >
               <Icon name="account" />
               {collapsed ? (
-                <span className="sr-only">{session.email}</span>
+                <>
+                  <span className="sr-only">{session.email}</span>
+                  <RailTip
+                    label={`${session.email}${session.role ? ` · ${session.role.replace(/_/g, " ")}` : ""}`}
+                  />
+                </>
               ) : (
                 <span className="min-w-0">
                   <span className="block truncate text-on-primary">{session.email}</span>
@@ -239,11 +313,11 @@ export function Sidebar() {
             <button
               type="button"
               onClick={signOut}
-              title={collapsed ? "Sign out" : undefined}
               className={`${itemClass(false)} w-full`}
             >
               <Icon name="sign-out" />
               <span className={collapsed ? "sr-only" : ""}>Sign out</span>
+              {collapsed ? <RailTip label="Sign out" /> : null}
             </button>
           </>
         ) : null}
