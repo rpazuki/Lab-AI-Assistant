@@ -1,6 +1,6 @@
 Status: active
 Owner: security owner + data steward
-Last verified: 2026-08-12
+Last verified: 2026-11-20
 Source of truth: `packages/python/lab_assistant/adapters/db/tables.py`
 
 # Data inventory
@@ -30,8 +30,18 @@ restriction. Treating a projection as "just numbers" is how licensed text leaves
 system.
 
 **Questions are sensitive.** "Has anyone reported a titre above X for this construct"
-discloses what the lab is working on. Chat history is per-member, and cross-member
-reads are refused with a `404`.
+discloses what the lab is working on. Chat history is per-member: one member asking
+for another's session gets a `404`. The one exception is **admin oversight**, carried
+over from the predecessor as a stated policy of the installation
+(`LAB_CHAT_ADMIN_ACCESS`, on by default): an admin of the workspace may list and read a
+member's conversations, deleted ones included. Members are told so on the Ask page,
+and every list and every read writes a `member_chat_read` audit event naming the admin
+and the member. Turning the setting off refuses those reads with a `403`.
+
+**Usage is metered, not content.** Each answer records the tokens it used. A member's
+total is what their allowance (`LAB_CHAT_TOKEN_LIMIT_DEFAULT`, or their own limit) is
+measured against; deleting a conversation hides it but does not refund it. Admins see
+per-member counts — sessions, questions, tokens, last active — on the Members page.
 
 **Audit rows hold ids, not content.** Prompts, quotes, credentials, and signed URLs are
 redacted on the way in. Raw material lives in access-controlled object storage with its

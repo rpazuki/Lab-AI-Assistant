@@ -3,16 +3,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
+import { AnswerReviewSection, RunComparisonPanel } from "@/components/EvaluationWorkbench";
 import {
   ApiError,
+  cancelEvaluationRun,
   getEvaluationRun,
   listBenchmarks,
   listEvaluationRuns,
+  listReleaseGates,
   listReleases,
   registerBenchmark,
   requestEvaluationRun,
+  setReleaseGate,
 } from "@/lib/api";
-import type { Benchmark, EvaluationRun, Release } from "@/types";
+import type { Benchmark, EvaluationRun, Release, ReleaseGate } from "@/types";
 
 /** How often the page asks again while a run is queued or running. */
 const POLL_MS = 4000;
@@ -57,6 +61,9 @@ export function EvaluationClient() {
   const [benchmarkKey, setBenchmarkKey] = useState("");
   const [releaseId, setReleaseId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [gates, setGates] = useState<ReleaseGate[]>([]);
+  const [compare, setCompare] = useState<string[]>([]);
+  const [comparing, setComparing] = useState<[string, string] | null>(null);
 
   const fail = useCallback((caught: unknown, fallback: string) => {
     const problems =
@@ -68,12 +75,14 @@ export function EvaluationClient() {
 
   const refresh = useCallback(async () => {
     try {
-      const [benchmarkItems, releaseBody, runItems] = await Promise.all([
+      const [benchmarkItems, releaseBody, runItems, gateBody] = await Promise.all([
         listBenchmarks(),
         listReleases(),
         listEvaluationRuns(),
+        listReleaseGates().catch(() => ({ items: [] as ReleaseGate[] })),
       ]);
       setBenchmarks(benchmarkItems);
+      setGates(gateBody.items);
       setReleases(releaseBody.items);
       setRuns(runItems);
       // Default to what is being served: the release most people will ask about.
@@ -102,6 +111,31 @@ export function EvaluationClient() {
     );
     return (id: string | null) => (id ? (labels.get(id) ?? id.slice(0, 8)) : "—");
   }, [releases]);
+
+  async function act(action: () => Promise<unknown>, done: string, fallback: string) {
+    setNotice(null);
+    try {
+      await action();
+      await refresh();
+      setError(null);
+      setNotice(done);
+    } catch (caught) {
+      fail(caught, fallback);
+    }
+  }
+
+  function toggleCompare(runId: string) {
+    setCompare((current) =>
+      current.includes(runId)
+        ? current.filter((id) => id !== runId)
+        : [...current, runId].slice(-2),
+    );
+  }
+
+  const describeRun = (runId: string) => {
+    const run = runs.find((item) => item.id === runId);
+    return run ? `${run.benchmark} on ${releaseLabel(run.release_id)}` : runId.slice(0, 8);
+  };
 
   async function startRun() {
     const benchmark = benchmarks.find((item) => item.key === benchmarkKey);
@@ -188,7 +222,20 @@ export function EvaluationClient() {
         </p>
       </Panel>
 
-      <Panel title="Runs" flush>
+      <Panel
+        title="Runs"
+        flush
+        aside={
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={compare.length !== 2}
+            onClick={() => setComparing([compare[0]!, compare[1]!])}
+          >
+            Compare selected ({compare.length}/2)
+          </Button>
+        }
+      >
         {runs.length === 0 ? (
           <div className="px-5 py-3">
             <Empty>No evaluation has run yet.</Empty>
@@ -196,14 +243,46 @@ export function EvaluationClient() {
         ) : (
           <ul className={`${rowList} text-sm`}>
             {runs.map((run) => (
-              <RunRow key={run.id} run={run} releaseLabel={releaseLabel(run.release_id)} />
+              <RunRow
+                key={run.id}
+                run={run}
+                releaseLabel={releaseLabel(run.release_id)}
+                selected={compare.includes(run.id)}
+                onSelect={() => toggleCompare(run.id)}
+                onCancel={() =>
+                  act(
+                    () => cancelEvaluationRun(run.id),
+                    `${run.benchmark} is cancelled.`,
+                    "the run could not be cancelled",
+                  )
+                }
+              />
             ))}
           </ul>
         )}
       </Panel>
 
+      {comparing ? (
+        <RunComparisonPanel
+          baseId={comparing[0]}
+          candidateId={comparing[1]}
+          describe={describeRun}
+          onClose={() => setComparing(null)}
+        />
+      ) : null}
+
       <BenchmarksPanel
         benchmarks={benchmarks}
+        gates={gates}
+        onGate={(benchmark, require) =>
+          act(
+            () => setReleaseGate(benchmark.benchmark_id, require ? benchmark.version : null),
+            require
+              ? `Publishing a release now needs a passing run of ${benchmark.key}.`
+              : `${benchmark.benchmark_id} is no longer required for publishing.`,
+            "the requirement was not changed",
+          )
+        }
         onRegistered={async (message) => {
           setError(null);
           setNotice(message);
@@ -224,7 +303,19 @@ function formatMetric(value: unknown): string {
   return typeof value === "number" && !Number.isInteger(value) ? value.toFixed(3) : String(value);
 }
 
-function RunRow({ run, releaseLabel }: { run: EvaluationRun; releaseLabel: string }) {
+function RunRow({
+  run,
+  releaseLabel,
+  selected,
+  onSelect,
+  onCancel,
+}: {
+  run: EvaluationRun;
+  releaseLabel: string;
+  selected: boolean;
+  onSelect: () => void;
+  onCancel: () => void;
+}) {
   const [detail, setDetail] = useState<EvaluationRun | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -237,12 +328,25 @@ function RunRow({ run, releaseLabel }: { run: EvaluationRun; releaseLabel: strin
   return (
     <li className={row}>
       <div className="flex flex-wrap items-center gap-2">
+        {run.status === "succeeded" ? (
+          <input
+            type="checkbox"
+            aria-label={`Compare ${run.benchmark} on ${releaseLabel}`}
+            checked={selected}
+            onChange={onSelect}
+          />
+        ) : null}
         <strong className="text-heading">{run.benchmark}</strong>
         <span className="text-muted">on {releaseLabel}</span>
         <StateChip state={verdict(run)} />
         <span className="ml-auto text-xs text-muted">
           {run.created_at ? new Date(run.created_at).toLocaleString() : ""}
         </span>
+        {run.status === "queued" || run.status === "running" ? (
+          <Button variant="danger" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        ) : null}
         <Button variant="ghost" size="sm" onClick={toggle} aria-expanded={open}>
           {open ? "Hide" : "Details"}
         </Button>
@@ -263,14 +367,21 @@ function RunRow({ run, releaseLabel }: { run: EvaluationRun; releaseLabel: strin
         </Alert>
       ) : null}
       {open ? <RunDetail run={detail ?? run} /> : null}
+      {open && run.kind === "generation" && run.status === "succeeded" ? (
+        <div className="mt-3">
+          <AnswerReviewSection runId={run.id} />
+        </div>
+      ) : null}
     </li>
   );
 }
 
 function RunDetail({ run }: { run: EvaluationRun }) {
   const cases = run.per_case ?? [];
+  // Question and answer text are long; reviewers read them on the review page.
+  const hidden = new Set(["retrieved", "question", "answer"]);
   const columns = Array.from(
-    new Set(cases.flatMap((item) => Object.keys(item)).filter((key) => key !== "retrieved")),
+    new Set(cases.flatMap((item) => Object.keys(item)).filter((key) => !hidden.has(key))),
   );
   return (
     <div className="mt-3 space-y-3">
@@ -330,10 +441,14 @@ function RunDetail({ run }: { run: EvaluationRun }) {
 
 function BenchmarksPanel({
   benchmarks,
+  gates,
+  onGate,
   onRegistered,
   onError,
 }: {
   benchmarks: Benchmark[];
+  gates: ReleaseGate[];
+  onGate: (benchmark: Benchmark, require: boolean) => void;
   onRegistered: (message: string) => Promise<void>;
   onError: (caught: unknown) => void;
 }) {
@@ -438,6 +553,18 @@ function BenchmarksPanel({
                   {" · "}
                   {benchmark.checksum.slice(0, 12)}
                 </span>
+                {gates.some((gate) => gate.key === benchmark.key) ? (
+                  <>
+                    <StateChip state="required_for_publishing" />
+                    <Button variant="ghost" size="sm" onClick={() => onGate(benchmark, false)}>
+                      Stop requiring
+                    </Button>
+                  </>
+                ) : (
+                  <Button variant="ghost" size="sm" onClick={() => onGate(benchmark, true)}>
+                    Require for publishing
+                  </Button>
+                )}
               </div>
               {benchmark.description ? (
                 <p className="mt-1 text-muted">{benchmark.description}</p>

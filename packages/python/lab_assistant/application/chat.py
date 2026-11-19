@@ -18,9 +18,10 @@ from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.retrieval import RetrievalService
+from lab_assistant.application.usage import UsageService
 from lab_assistant.contracts.errors import NotFound, PolicyDenied
 from lab_assistant.contracts.events import ActorType, AuditAction
-from lab_assistant.contracts.models import GenerationRequest, GenerationResult
+from lab_assistant.contracts.models import GenerationRequest, GenerationResult, StreamUsage
 from lab_assistant.contracts.policy import PolicyAction, ResourceRef, ResourceType
 from lab_assistant.domain.chat import (
     ChatMessage,
@@ -273,7 +274,8 @@ class ChatService:
             release_label=str(retrieval.plan.release_id),
         )
         chunks: list[str] = []
-        async for token in provider.stream(request):
+        usage = StreamUsage()
+        async for token in provider.stream(request, usage=usage):
             chunks.append(token)
             yield {"type": "token", "data": token}
 
@@ -284,7 +286,9 @@ class ChatService:
             provider=provider.properties.provider_id,
             model=context.settings.llm_model,
             model_revision=context.settings.llm_model,
-            output_tokens=len(chunks),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            stop_reason=usage.stop_reason,
         )
         outcome = await self._persist_answer(
             actor,
@@ -322,6 +326,9 @@ class ChatService:
     ) -> tuple[ChatSession, list[ChatMessage]]:
         actor.require(Capability.ASK)
         context = self._context
+        # Checked before the question is stored, so a refused question costs nothing
+        # and leaves no half-answered turn in the conversation.
+        await UsageService(context).require_allowance(actor)
         if not context.policy_engine.allows(
             actor.policy_input(now=context.now()),
             action=PolicyAction.QUERY,

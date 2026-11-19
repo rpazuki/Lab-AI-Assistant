@@ -108,3 +108,22 @@ retrieval parameters means the benchmark drifted — not that the system improve
 are versioned for exactly this reason.
 
 Next: [release gates](release-gates.md)
+
+## Comparing runs, cancelling, and human review
+
+**Compare** two finished runs of the same benchmark (`GET /evaluation/compare`): every
+metric with its change, every gate, and the cases whose measurements moved. Runs of
+different benchmarks are refused, because their cases are different questions.
+
+**Cancel** a queued or running run. Its task is cancelled; a worker already measuring
+it finds the run cancelled when it finishes and drops the measurement.
+
+**Human review** grades answers the automatic metrics cannot judge. From a finished
+generation run, an evaluator samples cases (a stable order per run, so asking again
+adds the next cases) and shares them among members with the reviewer role. Each grades
+on the predecessor's form: correctness (required), completeness, citation support,
+grounding and usefulness from 1 to 5; flags for hallucination, citation issue, corpus
+gap, retrieval issue and generation issue; their confidence; a comment and a suggested
+answer. The run shows how many answers are graded, the mean of each score and the
+count of each flag. Grades sit beside the measured metrics and never change them; the
+question and answer each reviewer reads are stored in the run's per-case results.

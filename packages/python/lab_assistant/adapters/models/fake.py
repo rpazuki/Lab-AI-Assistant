@@ -32,6 +32,7 @@ from lab_assistant.contracts.models import (
     GenerationRequest,
     GenerationResult,
     ProviderProperties,
+    StreamUsage,
     StructuredRequest,
     StructuredResult,
     VectorIndexKind,
@@ -88,12 +89,21 @@ class FakeLLMProvider:
             truncated=self.truncate_after_chars is not None,
         )
 
-    async def stream(self, request: GenerationRequest) -> AsyncIterator[str]:
+    async def stream(
+        self, request: GenerationRequest, *, usage: StreamUsage | None = None
+    ) -> AsyncIterator[str]:
         text = self._compose(request)
         # Word-level chunks: enough to exercise the streaming path without
         # pretending to model real token boundaries.
-        for index, word in enumerate(text.split(" ")):
+        words = text.split(" ")
+        for index, word in enumerate(words):
             yield word if index == 0 else f" {word}"
+        if usage is not None:
+            # The same deterministic counts `generate` reports for this request.
+            result = await self.generate(request)
+            usage.input_tokens = result.input_tokens
+            usage.output_tokens = result.output_tokens
+            usage.stop_reason = result.stop_reason
 
     async def structured(self, request: StructuredRequest) -> StructuredResult:
         if self.refuse:

@@ -1,6 +1,6 @@
 Status: active
 Owner: product owner
-Last verified: 2026-08-13
+Last verified: 2026-11-20
 Source of truth: `schemas/openapi.json`, `services/api/src/lab_assistant_api/routes.py`
 
 # Predecessor API: what maps, what is retired
@@ -64,6 +64,21 @@ stable within a release by construction.
 |---|---|---|
 | `POST /api/v1/feedback` | `POST /api/v1/feedback` | adds `flagged_handles`, so a reader can flag a specific citation rather than the whole answer |
 
+## Administration: members, invitations, usage
+
+| Predecessor | Successor | Notes |
+|---|---|---|
+| `GET /api/v1/admin/users` | `GET /api/v1/members` | workspace members, each with usage (sessions, questions, tokens, last active) and their token limit |
+| `GET /api/v1/admin/users/{id}` | `GET /api/v1/members` | one list; the detail the predecessor showed is in each row |
+| `PATCH /api/v1/admin/users/{id}` (`role`, `is_active`, `token_limit`) | `PATCH /api/v1/members/{user_id}` (`role`, `status`, `token_limit`) | deactivating is now **suspending a membership**, which also ends the member's sessions; `token_limit: null` returns them to the default. Nobody changes their own role or status, and only an admin grants admin |
+| — | `POST /api/v1/members/{user_id}/revoke-sessions` | new: sign someone out everywhere without changing their access |
+| `POST /api/v1/admin/invitations` | `POST /api/v1/invitations` | **no email is sent**: the answer carries the token once, and the Members page shows the link to send. Inviting an address again revokes its earlier link |
+| — | `GET /api/v1/invitations`, `POST /api/v1/invitations/{id}/revoke` | new |
+| invite acceptance (web route) | `POST /api/v1/invitations/preview`, `POST /api/v1/invitations/accept` | the token travels in a POST body and in the link's `#fragment`, never in a URL a server logs. An existing account accepts with its own password |
+| `GET /api/v1/admin/users/{id}/chat/sessions[/{sid}]` | `GET /api/v1/members/{user_id}/sessions[/{sid}]` | kept as a stated policy (`LAB_CHAT_ADMIN_ACCESS`, on by default): members are told on the Ask page, and every list and read is a `member_chat_read` audit event |
+| `GET /api/v1/admin/stats` | Members page tiles, `GET /api/v1/analytics/corpus`, `GET /api/v1/operations/tasks` | the dashboard is split by what it measures |
+| account-deactivated page | sign-in refusal | a suspended member's sign-in is a `403` that says the access is suspended |
+
 ## Ingestion and operations
 
 The predecessor's pipeline was scripts (`pipelines/…`) rather than endpoints. Their
@@ -72,6 +87,28 @@ identity decisions, rights decisions, acquisition (including assisted upload),
 parsing, extraction, review, releases, and export. There is nothing to redirect;
 `docs/product/collections-and-releases.md` is the operational replacement, and
 `lab` is the command-line surface.
+
+| Predecessor | Successor | Notes |
+|---|---|---|
+| `/api/v1/admin/ingestion/configs…`, `/ingestion/defaults` | `POST/GET /api/v1/scopes`, `/scopes/{id}/gate`, `/scopes/{id}/approve` | a scope version is immutable; editing creates the next version |
+| `/api/v1/admin/ingestion/jobs…`, `/ingestion/worker` | `POST/GET /api/v1/discovery-runs`, `/discovery-runs/{id}/freeze`, `GET /api/v1/operations/tasks` | a job is a discovery run plus its tasks; worker state is read from task rows |
+| `/ingestion/jobs/{id}/cancel` | `lab task cancel --task …` | per task; the API offers retry of dead letters (`POST /operations/tasks/{id}/retry`), not cancellation |
+| `/ingestion/acquisition-queue[/review-csv]` | `GET /api/v1/acquisition-plans` | the CSV is retired; the queue is a page with an upload per plan |
+| `/ingestion/pdf-upload-folders`, `/ingestion/uploads` | `POST /api/v1/bulk-imports`, `lab acquisition import-folder` | PDFs are matched to waiting plans by DOI, PMID or PMCID in the name or on the first page, and go through the assisted-upload checks |
+| datasheet manifest / rows / CSV downloads | `POST /api/v1/exports/{release_id}`, `GET /api/v1/exports/{release_id}/download[?file=…]` | the wide-form XLSX is a file of the release's export package |
+
+## Evaluation
+
+| Predecessor | Successor | Notes |
+|---|---|---|
+| `/admin/evaluation/question-sets…`, `/questions/{id}` | `POST/GET /api/v1/evaluation/benchmarks` | a benchmark is a registered file; a version is immutable, so editing questions is a new version |
+| `/admin/evaluation/runs` (create + `/execute`) | `POST /api/v1/evaluation/runs` | queued on request, run by the evaluation worker |
+| `/runs/{id}`, `/runs/{id}/results` | `GET /api/v1/evaluation/runs/{id}` | per-case results are in the run |
+| `/runs/{id}/cancel` | `POST /api/v1/evaluation/runs/{id}/cancel` | |
+| `/admin/evaluation/compare` | `GET /api/v1/evaluation/compare?base=…&candidate=…` | runs of the same benchmark only |
+| `/runs/{id}/release-gate`, `/runs/{id}/release-decision` | `PUT/GET /api/v1/evaluation/release-gates`, publish with `override_reason` | a release must pass every required benchmark to publish; an admin may override with an audited reason |
+| `/results/{id}/assignments`, `/runs/{id}/review-tasks`, `/reviews…`, `/assignments/{id}/review` | `POST/GET /api/v1/evaluation/runs/{id}/reviews`, `GET /evaluation/reviews/mine`, `PUT /evaluation/reviews/{id}` | same review form; sampled cases of a generation run are shared among reviewers |
+| `/runs/{id}/reviews/export`, `/runs/import-report` | — | **retired**: reviews are summarised per run in the API; a report file is not a second source of truth |
 
 ## Evaluation scripts
 

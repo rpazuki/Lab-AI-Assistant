@@ -492,6 +492,27 @@ class TestProviderContract:
         streamed = "".join([token async for token in provider.stream(request)])
         assert streamed == (await provider.generate(request)).text
 
+    async def test_a_stream_reports_the_tokens_it_used(self) -> None:
+        """Usage is metered against an allowance; a silent stream would be free."""
+        from lab_assistant.contracts.models import EvidenceBlock, StreamUsage
+
+        provider = FakeLLMProvider()
+        request = GenerationRequest(
+            system_prompt="s",
+            prompt_bundle_id="b",
+            prompt_bundle_version="1",
+            question="q",
+            evidence=(EvidenceBlock(handle="E0123456789", text="Yield was 0.42 g/g. " * 20),),
+        )
+        usage = StreamUsage()
+        _ = [token async for token in provider.stream(request, usage=usage)]
+        generated = await provider.generate(request)
+        assert (usage.input_tokens, usage.output_tokens) == (
+            generated.input_tokens,
+            generated.output_tokens,
+        )
+        assert usage.input_tokens > 0 and usage.output_tokens > 0
+
     async def test_embedder_is_deterministic_and_normalised(self) -> None:
         embedder = HashingEmbeddingProvider(dimensions=32)
         first = await embedder.embed_query("lipid yield")

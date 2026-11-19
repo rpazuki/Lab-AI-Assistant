@@ -28,6 +28,7 @@ from lab_assistant.contracts.models import (
     GenerationRequest,
     GenerationResult,
     ProviderProperties,
+    StreamUsage,
     StructuredRequest,
     StructuredResult,
 )
@@ -124,7 +125,9 @@ class AnthropicProvider:
             truncated=stop_reason == "max_tokens",
         )
 
-    async def stream(self, request: GenerationRequest) -> AsyncIterator[str]:
+    async def stream(
+        self, request: GenerationRequest, *, usage: StreamUsage | None = None
+    ) -> AsyncIterator[str]:
         client = self._client()
         try:
             async with client.messages.stream(
@@ -136,6 +139,12 @@ class AnthropicProvider:
             ) as stream:
                 async for token in stream.text_stream:
                     yield token
+                if usage is not None:
+                    final = await stream.get_final_message()
+                    reported = getattr(final, "usage", None)
+                    usage.input_tokens = int(getattr(reported, "input_tokens", 0) or 0)
+                    usage.output_tokens = int(getattr(reported, "output_tokens", 0) or 0)
+                    usage.stop_reason = getattr(final, "stop_reason", None)
         except Exception as exc:
             raise _map_provider_error(exc) from exc
 

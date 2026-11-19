@@ -14,6 +14,28 @@ export interface Me {
   workspace: Workspace;
   role: string | null;
   capabilities: string[];
+  /** Whether admins of this workspace may read members' conversations. */
+  chat_visible_to_admins?: boolean;
+}
+
+/** A member's own token allowance. */
+export interface Allowance {
+  token_limit: number;
+  used_tokens: number;
+  remaining_tokens: number;
+  limit_reached: boolean;
+  custom_limit: boolean;
+}
+
+export interface MemberUsage {
+  sessions: number;
+  questions: number;
+  answers: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  last_active_at: string | null;
+  avg_latency_ms: number | null;
 }
 
 export interface ChatSession {
@@ -192,7 +214,7 @@ export interface EvaluationRun {
   benchmark_checksum: string;
   release_id: string | null;
   kind: string | null;
-  status: "queued" | "running" | "succeeded" | "failed";
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   passed: boolean;
   metrics: Record<string, number>;
   gates: Record<string, boolean>;
@@ -217,6 +239,15 @@ export interface Member {
   accepted_at: string | null;
   last_login_at: string | null;
   account_active: boolean;
+  token_limit: number;
+  custom_token_limit: boolean;
+  usage: MemberUsage;
+  limit_reached: boolean;
+}
+
+/** A member's conversation as an admin sees it. `deleted` ones the member removed. */
+export interface MemberSession extends ChatSession {
+  deleted: boolean;
 }
 
 export interface Invitation {
@@ -291,4 +322,69 @@ export interface DiscoveryRun {
     accepted_degraded: boolean;
   }[];
   metrics: Record<string, unknown>;
+}
+
+export interface ReleaseGate {
+  benchmark_id: string;
+  version: string;
+  key: string;
+  set_by: string | null;
+  set_at: string | null;
+}
+
+export interface GateStatus {
+  benchmark_id: string;
+  version: string;
+  key: string;
+  passed: boolean;
+  run_id: string | null;
+  run_status: string | null;
+}
+
+export interface RunComparison {
+  base: { id: string; benchmark: string; release_id: string };
+  candidate: { id: string; benchmark: string; release_id: string };
+  same_version: boolean;
+  metrics: { name: string; base: number | null; candidate: number | null; delta: number | null }[];
+  gates: { name: string; base: boolean | null; candidate: boolean | null }[];
+  changed_cases: {
+    case_id: string;
+    only_in: "base" | "candidate" | null;
+    changes: Record<string, { base: unknown; candidate: unknown }>;
+  }[];
+  unchanged_cases: number;
+}
+
+export interface Reviewer {
+  user_id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+}
+
+/** One case of a generation run, assigned to a person to grade. */
+export interface AnswerReview {
+  id: string;
+  run_id: string;
+  case_id: string;
+  assigned_to: string;
+  assigned_by: string | null;
+  status: "assigned" | "submitted";
+  scores: Record<string, number>;
+  flags: string[];
+  reviewer_confidence: number | null;
+  comment: string | null;
+  suggested_answer: string | null;
+  created_at: string | null;
+  submitted_at: string | null;
+  case?: Record<string, unknown> | null;
+}
+
+export interface RunReviewSummary {
+  run_id: string;
+  assigned: number;
+  submitted: number;
+  mean_scores: Record<string, number | null>;
+  flag_counts: Record<string, number>;
+  items: AnswerReview[];
 }

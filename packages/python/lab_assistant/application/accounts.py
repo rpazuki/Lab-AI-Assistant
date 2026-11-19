@@ -638,6 +638,13 @@ class AccountService:
                 await uow.workspaces.add_membership(membership)
             accepted = invitation.model_copy(update={"accepted_at": context.now()})
             await uow.workspaces.update_invitation(accepted)
+            # Accepting signs the person in, so it is their first sign-in too.
+            signed_in = await uow.users.get(user.id)
+            if signed_in is not None:
+                signed_in.last_login_at = context.now()
+                signed_in.updated_at = context.now()
+                await uow.users.update(signed_in)
+                user = signed_in
             await uow.audit.append(
                 context.audit.build(
                     workspace_id=invitation.workspace_id,
@@ -683,6 +690,8 @@ class AccountService:
         user_id: UUID,
         role: Role | None = None,
         status: MembershipStatus | None = None,
+        token_limit: int | None = None,
+        reset_token_limit: bool = False,
     ) -> MemberView:
         """Change a member's role, or suspend or reinstate them.
 
@@ -700,7 +709,11 @@ class AccountService:
             raise ValidationFailure("a membership is either active or suspended")
         if role is not None:
             self._require_assignable(actor, role)
-        if user_id == actor.user_id:
+        if token_limit is not None and token_limit < 0:
+            raise ValidationFailure("a token limit cannot be negative")
+        # An admin may set their own token limit; role and status are another
+        # admin's call, so nobody locks themselves out by accident.
+        if user_id == actor.user_id and (role is not None or status is not None):
             raise PolicyDenied("you cannot change your own membership; ask another admin")
         context = self._context
         async with context.uow_factory() as uow:
@@ -712,7 +725,16 @@ class AccountService:
                 self._require_assignable(actor, Role.ADMIN)
             new_role = role or membership.role
             new_status = status or membership.status
-            updated = membership.model_copy(update={"role": new_role, "status": new_status})
+            new_limit = (
+                None
+                if reset_token_limit
+                else token_limit
+                if token_limit is not None
+                else membership.token_limit
+            )
+            updated = membership.model_copy(
+                update={"role": new_role, "status": new_status, "token_limit": new_limit}
+            )
             await uow.workspaces.update_membership(updated)
             suspended = (
                 new_status is MembershipStatus.SUSPENDED
@@ -737,6 +759,8 @@ class AccountService:
                         "previous_role": membership.role.value,
                         "status": new_status.value,
                         "previous_status": membership.status.value,
+                        "token_limit": new_limit,
+                        "previous_token_limit": membership.token_limit,
                         "sessions_revoked": suspended,
                     },
                 )

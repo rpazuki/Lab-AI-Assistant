@@ -22,6 +22,7 @@ One page per situation. Each states the symptom, what to check, what to do, and 
 | [Fetching and importing a snapshot](archive-fetch.md) | a reader is taking a library from the archive |
 | [Publisher handover](publisher-handover.md) | another installation must take over publishing |
 | [Purging the archive](archive-retention.md) | old snapshots or taken-down bytes should go |
+| [Importing a folder of PDFs](bulk-pdf-import.md) | many papers wait for assisted upload |
 
 ## Rules for all of them
 

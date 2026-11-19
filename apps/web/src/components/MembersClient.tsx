@@ -14,14 +14,16 @@ import {
 import {
   createInvitation,
   getMe,
+  getMemberSession,
   invitationLink,
   listInvitations,
+  listMemberSessions,
   listMembers,
   revokeInvitation,
   revokeMemberSessions,
   updateMember,
 } from "@/lib/api";
-import type { Invitation, Member } from "@/types";
+import type { ChatMessage, Invitation, Member, MemberSession } from "@/types";
 
 /** The roles a person can hold, in order of reach. A service account is not one. */
 export const ROLES = ["researcher", "reviewer", "data_steward", "admin"] as const;
@@ -51,6 +53,10 @@ export function MembersClient() {
   const [members, setMembers] = useState<Member[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [selfId, setSelfId] = useState<string | null>(null);
+  const [defaultLimit, setDefaultLimit] = useState<number | null>(null);
+  const [oversight, setOversight] = useState(false);
+  const [reading, setReading] = useState<Member | null>(null);
+  const [editingLimit, setEditingLimit] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -68,7 +74,9 @@ export function MembersClient() {
         listInvitations(),
         getMe(),
       ]);
-      setMembers(nextMembers);
+      setMembers(nextMembers.items);
+      setDefaultLimit(nextMembers.token_limit_default);
+      setOversight(nextMembers.chat_admin_access);
       setInvitations(nextInvitations);
       setSelfId(me.user_id);
       setError(null);
@@ -198,6 +206,8 @@ export function MembersClient() {
         ) : null}
       </Panel>
 
+      <UsageTiles members={members} />
+
       <Panel title={`Members (${members.length})`} flush>
         {members.length === 0 ? (
           <div className="px-5 py-3">
@@ -211,6 +221,7 @@ export function MembersClient() {
                   <th>Member</th>
                   <th>Role</th>
                   <th>Status</th>
+                  <th>Usage</th>
                   <th>Last sign-in</th>
                   <th>
                     <span className="sr-only">Actions</span>
@@ -255,9 +266,41 @@ export function MembersClient() {
                       <td>
                         <StateChip state={member.status} />
                       </td>
+                      <td className="min-w-56">
+                        {editingLimit === member.user_id ? (
+                          <LimitEditor
+                            member={member}
+                            defaultLimit={defaultLimit}
+                            onCancel={() => setEditingLimit(null)}
+                            onSave={async (limit) => {
+                              setEditingLimit(null);
+                              await act(
+                                () => updateMember(member.user_id, { token_limit: limit }),
+                                limit === null
+                                  ? `${member.email} is back on the default limit.`
+                                  : `${member.email} may now use ${formatTokens(limit)} tokens.`,
+                              );
+                            }}
+                          />
+                        ) : (
+                          <UsageCell member={member} onEdit={() => setEditingLimit(member.user_id)} />
+                        )}
+                      </td>
                       <td className="text-xs text-muted">{when(member.last_login_at)}</td>
                       <td>
                         <div className="flex justify-end gap-2">
+                          {oversight ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-pressed={reading?.user_id === member.user_id}
+                              onClick={() =>
+                                setReading(reading?.user_id === member.user_id ? null : member)
+                              }
+                            >
+                              Read chats
+                            </Button>
+                          ) : null}
                           <Button
                             variant="ghost"
                             size="sm"
@@ -317,6 +360,8 @@ export function MembersClient() {
         )}
       </Panel>
 
+      {reading ? <MemberChats member={reading} onClose={() => setReading(null)} /> : null}
+
       <Panel title="Invitations" flush>
         {invitations.length === 0 ? (
           <div className="px-5 py-3">
@@ -370,5 +415,223 @@ export function MembersClient() {
         )}
       </Panel>
     </div>
+  );
+}
+
+export function formatTokens(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(count % 1_000_000 ? 2 : 0)}M`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(count % 1_000 ? 1 : 0)}k`;
+  return String(count);
+}
+
+/** The workspace at a glance: the admin dashboard the predecessor had. */
+function UsageTiles({ members }: { members: Member[] }) {
+  const active = members.filter((member) => member.status === "active").length;
+  const questions = members.reduce((sum, member) => sum + member.usage.questions, 0);
+  const tokens = members.reduce((sum, member) => sum + member.usage.total_tokens, 0);
+  const atLimit = members.filter((member) => member.limit_reached).length;
+  const tiles: [string, string][] = [
+    ["Active members", `${active} of ${members.length}`],
+    ["Questions asked", String(questions)],
+    ["Tokens used", formatTokens(tokens)],
+    ["At their limit", String(atLimit)],
+  ];
+  return (
+    <dl aria-label="Workspace usage" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {tiles.map(([label, value]) => (
+        <div key={label} className="rounded-card border border-border bg-surface px-5 py-4 shadow-card">
+          <dt className="text-pretitle font-semibold uppercase tracking-wider text-muted">{label}</dt>
+          <dd className="mt-1 text-stat font-semibold text-heading tabular-nums">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function UsageCell({ member, onEdit }: { member: Member; onEdit: () => void }) {
+  const share =
+    member.token_limit > 0 ? Math.min(1, member.usage.total_tokens / member.token_limit) : 1;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2 text-xs">
+        <span className="tabular-nums text-ink">
+          {formatTokens(member.usage.total_tokens)} / {formatTokens(member.token_limit)} tokens
+          {member.custom_token_limit ? "" : " (default)"}
+        </span>
+        <button type="button" className="text-link underline hover:no-underline" onClick={onEdit}>
+          Change limit
+        </button>
+      </div>
+      <div
+        role="meter"
+        aria-label={`Tokens used by ${member.email}`}
+        aria-valuemin={0}
+        aria-valuemax={member.token_limit}
+        aria-valuenow={member.usage.total_tokens}
+        className="h-1.5 overflow-hidden rounded-badge bg-neutral-lt"
+      >
+        <div
+          className={`h-full ${member.limit_reached ? "bg-danger" : share > 0.8 ? "bg-warning" : "bg-accent"}`}
+          style={{ width: `${Math.round(share * 100)}%` }}
+        />
+      </div>
+      <p className="text-xs text-muted">
+        {member.usage.questions} question{member.usage.questions === 1 ? "" : "s"} in{" "}
+        {member.usage.sessions} conversation{member.usage.sessions === 1 ? "" : "s"}
+        {member.limit_reached ? " · limit reached" : ""}
+      </p>
+    </div>
+  );
+}
+
+function LimitEditor({
+  member,
+  defaultLimit,
+  onSave,
+  onCancel,
+}: {
+  member: Member;
+  defaultLimit: number | null;
+  onSave: (limit: number | null) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(String(member.token_limit));
+  const parsed = Number(value);
+  const valid = value.trim() !== "" && Number.isInteger(parsed) && parsed >= 0;
+  return (
+    <form
+      className="flex flex-wrap items-center gap-1.5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (valid) onSave(parsed);
+      }}
+    >
+      <Input
+        type="number"
+        min={0}
+        step={1000}
+        aria-label={`Token limit for ${member.email}`}
+        className="w-32 py-1"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+      />
+      <Button type="submit" size="sm" disabled={!valid}>
+        Save
+      </Button>
+      {member.custom_token_limit ? (
+        <Button type="button" variant="ghost" size="sm" onClick={() => onSave(null)}>
+          Use default{defaultLimit !== null ? ` (${formatTokens(defaultLimit)})` : ""}
+        </Button>
+      ) : null}
+      <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+        Cancel
+      </Button>
+    </form>
+  );
+}
+
+/**
+ * A member's conversations, read by an admin.
+ *
+ * The workspace allows it and members are told so on the Ask page. Listing and
+ * opening are both recorded in the audit log, which the banner says before
+ * anything is shown.
+ */
+export function MemberChats({ member, onClose }: { member: Member; onClose: () => void }) {
+  const [sessions, setSessions] = useState<MemberSession[] | null>(null);
+  const [open, setOpen] = useState<(MemberSession & { messages: ChatMessage[] }) | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let current = true;
+    setOpen(null);
+    setSessions(null);
+    listMemberSessions(member.user_id)
+      .then((items) => current && setSessions(items))
+      .catch(
+        (caught) =>
+          current && setError(caught instanceof Error ? caught.message : "chats could not be loaded"),
+      );
+    return () => {
+      current = false;
+    };
+  }, [member.user_id]);
+
+  async function read(session: MemberSession) {
+    try {
+      setOpen(await getMemberSession(member.user_id, session.id));
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "the conversation could not be opened");
+    }
+  }
+
+  return (
+    <Panel
+      title={`Conversations of ${member.full_name ?? member.email}`}
+      aside={
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          Close
+        </Button>
+      }
+    >
+      <Alert tone="info" role="status" className="mb-4">
+        Reading a member&apos;s conversations is recorded in the audit log under your name.
+      </Alert>
+      {error ? (
+        <Alert tone="danger" role="alert" className="mb-4">
+          {error}
+        </Alert>
+      ) : null}
+      {sessions === null ? (
+        <Empty>Loading…</Empty>
+      ) : sessions.length === 0 ? (
+        <Empty>No conversations.</Empty>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-[16rem_1fr]">
+          <ul className="space-y-1 text-sm">
+            {sessions.map((session) => (
+              <li key={session.id}>
+                <button
+                  type="button"
+                  aria-current={open?.id === session.id ? "true" : undefined}
+                  onClick={() => read(session)}
+                  className={`w-full rounded-control px-3 py-2 text-left transition-colors ${
+                    open?.id === session.id
+                      ? "bg-surface-subtle font-semibold"
+                      : "hover:bg-surface-subtle"
+                  }`}
+                >
+                  <span className="block truncate">{session.title ?? "Untitled"}</span>
+                  <span className="block text-xs text-muted">
+                    {when(session.updated_at)}
+                    {session.deleted ? " · deleted by the member" : ""}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="space-y-3">
+            {open ? (
+              open.messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`rounded-control border border-border px-3 py-2 text-sm ${
+                    message.role === "user" ? "bg-surface-subtle" : "bg-surface"
+                  }`}
+                >
+                  <p className="mb-1 text-pretitle font-semibold uppercase tracking-wider text-muted">
+                    {message.role === "user" ? "Question" : "Answer"} · {when(message.created_at)}
+                  </p>
+                  <p className="whitespace-pre-wrap text-ink">{message.content}</p>
+                </div>
+              ))
+            ) : (
+              <Empty>Choose a conversation to read it.</Empty>
+            )}
+          </div>
+        </div>
+      )}
+    </Panel>
   );
 }

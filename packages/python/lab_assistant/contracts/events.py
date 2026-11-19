@@ -44,6 +44,8 @@ class AuditAction(StrEnum):
     INVITATION_ACCEPTED = "invitation_accepted"
     MEMBERSHIP_CHANGED = "membership_changed"
     GRANT_CHANGED = "grant_changed"
+    #: An admin opened a member's conversation. Recorded on every read.
+    MEMBER_CHAT_READ = "member_chat_read"
     # discovery and identity
     SCOPE_APPROVED = "scope_approved"
     DISCOVERY_RUN_STARTED = "discovery_run_started"
@@ -73,6 +75,12 @@ class AuditAction(StrEnum):
     BENCHMARK_REGISTERED = "benchmark_registered"
     EVALUATION_REQUESTED = "evaluation_requested"
     EVALUATION_COMPLETED = "evaluation_completed"
+    EVALUATION_CANCELLED = "evaluation_cancelled"
+    EVALUATION_REVIEW_ASSIGNED = "evaluation_review_assigned"
+    EVALUATION_REVIEW_SUBMITTED = "evaluation_review_submitted"
+    RELEASE_GATE_CHANGED = "release_gate_changed"
+    #: A release was published although a required benchmark had not passed.
+    RELEASE_GATE_OVERRIDDEN = "release_gate_overridden"
     # serving and export
     ANSWER_GENERATED = "answer_generated"
     CITATION_VALIDATION_FAILED = "citation_validation_failed"

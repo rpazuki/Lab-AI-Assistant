@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { BulkImport } from "@/components/BulkImport";
 import { CollectionSetup } from "@/components/CollectionSetup";
 import {
   Alert,
@@ -219,6 +220,11 @@ export function CollectionsClient() {
           ))}
         </ul>
       </Panel>
+
+      <BulkImport
+        waiting={plans.filter((plan) => plan.status === "assisted" || plan.status === "failed")}
+        onImported={() => void refresh()}
+      />
 
       {uploadFor ? (
         <AssistedUploadForm

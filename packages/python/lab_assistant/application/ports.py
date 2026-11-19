@@ -30,7 +30,7 @@ from lab_assistant.domain.assets import (
     Manifestation,
     RightsDecision,
 )
-from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback
+from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback, UsageTotals
 from lab_assistant.domain.claims import (
     Claim,
     ClaimRevision,
@@ -927,6 +927,11 @@ class ChatRepository(Protocol):
     async def get_message(self, workspace_id: UUID, message_id: UUID) -> ChatMessage | None: ...
     async def add_feedback(self, feedback: Feedback) -> None: ...
     async def list_feedback(self, workspace_id: UUID, *, limit: int = 100) -> list[Feedback]: ...
+    async def usage_by_user(
+        self, workspace_id: UUID, *, user_ids: Sequence[UUID] | None = None
+    ) -> dict[UUID, UsageTotals]:
+        """Chat activity per member, deleted sessions included. Absent means none."""
+        ...
 
 
 @runtime_checkable
@@ -960,6 +965,29 @@ class EvaluationRepository(Protocol):
         self, workspace_id: UUID, benchmark_id: str, version: str
     ) -> dict[str, Any] | None: ...
     async def list_benchmarks(self, workspace_id: UUID) -> list[dict[str, Any]]: ...
+
+    async def add_review(self, review: dict[str, Any]) -> None: ...
+    async def update_review(self, review: dict[str, Any]) -> None:
+        """Replace a review's grades, status and submission time."""
+        ...
+
+    async def get_review(self, workspace_id: UUID, review_id: UUID) -> dict[str, Any] | None: ...
+    async def list_reviews(
+        self,
+        workspace_id: UUID,
+        *,
+        run_id: UUID | None = None,
+        assigned_to: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """Oldest first, so a reviewer's queue reads in the order it was assigned."""
+        ...
+
+    async def list_release_gates(self, workspace_id: UUID) -> list[dict[str, Any]]: ...
+    async def set_release_gate(self, gate: dict[str, Any]) -> None:
+        """Require a benchmark version, replacing any earlier version of it."""
+        ...
+
+    async def clear_release_gate(self, workspace_id: UUID, benchmark_id: str) -> None: ...
 
 
 @runtime_checkable

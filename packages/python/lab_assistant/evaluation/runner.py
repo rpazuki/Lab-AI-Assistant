@@ -181,6 +181,11 @@ class EvaluationRunner:
             run.per_case.append(
                 {
                     "case_id": case.case_id,
+                    # Kept for the people who grade answers by hand. Generation runs
+                    # refuse restricted benchmarks, so neither leaves what the
+                    # benchmark's members could already read.
+                    "question": case.question,
+                    "answer": outcome.text,
                     "citations": len(cited),
                     "citation_validity": round(validity, 4),
                     "faithfulness_proxy": round(faithful, 4),

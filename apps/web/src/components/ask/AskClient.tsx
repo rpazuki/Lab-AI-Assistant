@@ -16,13 +16,15 @@ import {
   ask,
   createSession,
   deleteSession,
+  getAllowance,
+  getMe,
   getSession,
   listSessions,
   renameSession,
   resolveCitation,
   sendFeedback,
 } from "@/lib/api";
-import type { AskEvent, ChatMessage, ChatSession, Citation, SourceBlock } from "@/types";
+import type { Allowance, AskEvent, ChatMessage, ChatSession, Citation, SourceBlock } from "@/types";
 
 interface Turn {
   question: string;
@@ -55,6 +57,24 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
   const abort = useRef<AbortController | null>(null);
   //: Read inside the hydration effect, which must not fight an in-flight answer.
   const streamingRef = useRef(false);
+
+  const [allowance, setAllowance] = useState<Allowance | null>(null);
+  const [visibleToAdmins, setVisibleToAdmins] = useState(false);
+
+  const refreshAllowance = useCallback(async () => {
+    try {
+      setAllowance(await getAllowance());
+    } catch {
+      // The allowance line is informative; the API still enforces the limit.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAllowance();
+    getMe()
+      .then((me) => setVisibleToAdmins(Boolean(me.chat_visible_to_admins)))
+      .catch(() => undefined);
+  }, [refreshAllowance]);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -154,6 +174,7 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
       streamingRef.current = false;
       abort.current = null;
       void refreshSessions();
+      void refreshAllowance();
     }
   }
 
@@ -170,7 +191,7 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
   }
 
   return (
-    <div className="grid items-start gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_20rem]">
+    <div className="grid items-start gap-6 @3xl:grid-cols-[16rem_minmax(0,1fr)] @5xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
       <Panel
         title="Sessions"
         flush
@@ -328,12 +349,33 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
           />
-          <Button type="submit" disabled={streaming}>
+          <Button type="submit" disabled={streaming || Boolean(allowance?.limit_reached)}>
             {streaming ? "Answering…" : "Ask"}
           </Button>
         </form>
+        {allowance?.limit_reached ? (
+          <Alert tone="warning" role="status">
+            You have used your token allowance of {allowance.token_limit.toLocaleString()}. Ask an
+            admin of this workspace to raise it.
+          </Alert>
+        ) : null}
+        <p className="flex flex-wrap justify-between gap-2 px-1 text-xs text-muted">
+          <span>
+            {visibleToAdmins
+              ? "Admins of this workspace can read your conversations. Every read is recorded."
+              : ""}
+          </span>
+          {allowance ? (
+            <span className="tabular-nums">
+              {allowance.used_tokens.toLocaleString()} of {allowance.token_limit.toLocaleString()}{" "}
+              tokens used
+            </span>
+          ) : null}
+        </p>
       </div>
 
+      {/* Below the conversation when there is room for only two columns. */}
+      <div className="@3xl:col-span-2 @5xl:col-span-1">
       <Panel title="Sources" flush>
         {turns.at(-1)?.sources.length ? (
           <ul className={`${rowList} text-sm`}>
@@ -365,6 +407,7 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
           </div>
         ) : null}
       </Panel>
+      </div>
     </div>
   );
 }

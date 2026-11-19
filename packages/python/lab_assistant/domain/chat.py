@@ -22,6 +22,7 @@ __all__ = [
     "CitationStatus",
     "Feedback",
     "MessageRole",
+    "UsageTotals",
     "derive_session_title",
 ]
 
@@ -131,6 +132,28 @@ class ChatMessage(BaseModel):
         return bool(self.unsupported_citation_handles) or any(
             citation.status is not CitationStatus.VALID for citation in self.citations
         )
+
+
+class UsageTotals(BaseModel):
+    """One member's chat activity in a workspace, summed over every session.
+
+    Deleted sessions still count: deleting a conversation removes it from view,
+    not from the token allowance it used, or deleting would reset the allowance.
+    """
+
+    model_config = {"frozen": True}
+
+    sessions: int = 0
+    questions: int = 0
+    answers: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    last_active_at: datetime | None = None
+    avg_latency_ms: float | None = None
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
 
 
 class Feedback(BaseModel):

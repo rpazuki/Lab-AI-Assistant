@@ -37,7 +37,7 @@ from lab_assistant.domain.assets import (
     Manifestation,
     RightsDecision,
 )
-from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback
+from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback, MessageRole, UsageTotals
 from lab_assistant.domain.claims import Claim, ClaimRevision, Entity, Experiment, Review
 from lab_assistant.domain.identity import IdentityDecision, Work, WorkIdentifier, WorkRelation
 from lab_assistant.domain.objects import ObjectRecord
@@ -123,6 +123,8 @@ class MemoryDatabase:
     feedback: dict[UUID, Feedback] = field(default_factory=dict)
     evaluation_runs: dict[str, dict[str, Any]] = field(default_factory=dict)
     benchmarks: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
+    evaluation_reviews: dict[str, dict[str, Any]] = field(default_factory=dict)
+    release_gates: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     #: Per-stage leases, tracked by task id rather than as a counter. Rows here
     #: are mutated in place, so "what state was this task in before?" is not a
     #: question this store can answer — a counter would leak on every update.
@@ -1391,6 +1393,62 @@ class _Chat:
     async def list_feedback(self, workspace_id: UUID, *, limit: int = 100) -> list[Feedback]:
         return [f for f in self._db.feedback.values() if f.workspace_id == workspace_id][:limit]
 
+    async def usage_by_user(
+        self, workspace_id: UUID, *, user_ids: Sequence[UUID] | None = None
+    ) -> dict[UUID, UsageTotals]:
+        wanted = set(user_ids) if user_ids is not None else None
+        owner = {
+            session.id: session.user_id
+            for session in self._db.chat_sessions.values()
+            if session.workspace_id == workspace_id
+            and (wanted is None or session.user_id in wanted)
+        }
+        totals: dict[UUID, dict[str, Any]] = {}
+        for user_id in owner.values():
+            row = totals.setdefault(
+                user_id,
+                {
+                    "sessions": 0,
+                    "questions": 0,
+                    "answers": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "last_active_at": None,
+                    "latencies": [],
+                },
+            )
+            row["sessions"] += 1
+        for message in self._db.chat_messages.values():
+            asker = owner.get(message.session_id)
+            if asker is None:
+                continue
+            row = totals[asker]
+            if message.role is MessageRole.USER:
+                row["questions"] += 1
+            else:
+                row["answers"] += 1
+                row["latencies"].append(message.latency_ms)
+            row["input_tokens"] += message.input_tokens
+            row["output_tokens"] += message.output_tokens
+            if message.created_at and (
+                row["last_active_at"] is None or message.created_at > row["last_active_at"]
+            ):
+                row["last_active_at"] = message.created_at
+        return {
+            user_id: UsageTotals(
+                sessions=row["sessions"],
+                questions=row["questions"],
+                answers=row["answers"],
+                input_tokens=row["input_tokens"],
+                output_tokens=row["output_tokens"],
+                last_active_at=row["last_active_at"],
+                avg_latency_ms=(
+                    sum(row["latencies"]) / len(row["latencies"]) if row["latencies"] else None
+                ),
+            )
+            for user_id, row in totals.items()
+        }
+
 
 class _Evaluations:
     def __init__(self, db: MemoryDatabase) -> None:
@@ -1449,6 +1507,58 @@ class _Evaluations:
             (row for key, row in self._db.benchmarks.items() if key[0] == str(workspace_id)),
             key=lambda row: (row["benchmark_id"], row["version"]),
         )
+
+    async def add_review(self, review: dict[str, Any]) -> None:
+        for row in self._db.evaluation_reviews.values():
+            if (str(row["run_id"]), row["case_id"], str(row["assigned_to"])) == (
+                str(review["run_id"]),
+                review["case_id"],
+                str(review["assigned_to"]),
+            ):
+                raise ConcurrencyConflict("this case is already assigned to this reviewer")
+        row = {"status": "assigned", "scores": {}, "flags": [], **review}
+        row["_sequence"] = len(self._db.evaluation_reviews)
+        self._db.evaluation_reviews[str(review["id"])] = row
+
+    async def update_review(self, review: dict[str, Any]) -> None:
+        current = self._db.evaluation_reviews.get(str(review["id"]))
+        if current is None:
+            raise KeyError(f"evaluation review {review['id']} does not exist")
+        current.update({key: value for key, value in review.items() if key != "_sequence"})
+
+    async def get_review(self, workspace_id: UUID, review_id: UUID) -> dict[str, Any] | None:
+        row = self._db.evaluation_reviews.get(str(review_id))
+        if row is None or str(row.get("workspace_id")) != str(workspace_id):
+            return None
+        return row
+
+    async def list_reviews(
+        self,
+        workspace_id: UUID,
+        *,
+        run_id: UUID | None = None,
+        assigned_to: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = [
+            row
+            for row in self._db.evaluation_reviews.values()
+            if str(row.get("workspace_id")) == str(workspace_id)
+            and (run_id is None or str(row["run_id"]) == str(run_id))
+            and (assigned_to is None or str(row["assigned_to"]) == str(assigned_to))
+        ]
+        return sorted(rows, key=lambda row: row.get("_sequence", 0))
+
+    async def list_release_gates(self, workspace_id: UUID) -> list[dict[str, Any]]:
+        return sorted(
+            (row for key, row in self._db.release_gates.items() if key[0] == str(workspace_id)),
+            key=lambda row: row["benchmark_id"],
+        )
+
+    async def set_release_gate(self, gate: dict[str, Any]) -> None:
+        self._db.release_gates[(str(gate["workspace_id"]), gate["benchmark_id"])] = dict(gate)
+
+    async def clear_release_gate(self, workspace_id: UUID, benchmark_id: str) -> None:
+        self._db.release_gates.pop((str(workspace_id), benchmark_id), None)
 
 
 class MemoryUnitOfWork:

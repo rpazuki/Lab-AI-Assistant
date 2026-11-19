@@ -16,6 +16,22 @@ vi.mock("@/lib/api", async (importOriginal) => {
     registerBenchmark: vi.fn(),
     requestEvaluationRun: vi.fn(),
     getEvaluationRun: vi.fn(),
+    listReleaseGates: vi.fn(async () => ({ items: [] })),
+    setReleaseGate: vi.fn(async () => ({ items: [] })),
+    cancelEvaluationRun: vi.fn(),
+    compareEvaluationRuns: vi.fn(),
+    listEvaluationReviewers: vi.fn(async () => [
+      { user_id: "u7", email: "reviewer@lab.invalid", full_name: "Rev Iewer", role: "reviewer" },
+    ]),
+    listRunReviews: vi.fn(async () => ({
+      run_id: "run-g",
+      assigned: 2,
+      submitted: 1,
+      mean_scores: { correctness: 4, completeness: null },
+      flag_counts: { corpus_gap: 1, hallucination: 0 },
+      items: [],
+    })),
+    assignEvaluationReviews: vi.fn(async () => ({ items: [{ id: "a1" }] })),
   };
 });
 
@@ -139,5 +155,77 @@ describe("EvaluationClient", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("cancels a queued run", async () => {
+    vi.mocked(api.listEvaluationRuns).mockResolvedValue([run({ status: "queued", metrics: {} })]);
+    vi.mocked(api.cancelEvaluationRun).mockResolvedValue(run({ status: "cancelled" }));
+    render(<EvaluationClient />);
+    await userEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(api.cancelEvaluationRun).toHaveBeenCalledWith("run-1");
+  });
+
+  it("compares two finished runs", async () => {
+    vi.mocked(api.listEvaluationRuns).mockResolvedValue([
+      run(),
+      run({ id: "run-2", release_id: "rel-1" }),
+    ]);
+    vi.mocked(api.compareEvaluationRuns).mockResolvedValue({
+      base: { id: "run-1", benchmark: "rla-retrieval@1.0.0", release_id: "rel-2" },
+      candidate: { id: "run-2", benchmark: "rla-retrieval@1.0.0", release_id: "rel-1" },
+      same_version: true,
+      metrics: [{ name: "recall@5", base: 0.5, candidate: 0.75, delta: 0.25 }],
+      gates: [{ name: "retrieval:recall@5", base: false, candidate: true }],
+      changed_cases: [{ case_id: "q1", only_in: null, changes: { hits: { base: 0, candidate: 1 } } }],
+      unchanged_cases: 3,
+    });
+    render(<EvaluationClient />);
+    const compare = await screen.findByRole("button", { name: "Compare selected (0/2)" });
+    expect(compare).toBeDisabled();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Compare rla-retrieval@1.0.0 on corpus@1.1.0" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Compare rla-retrieval@1.0.0 on corpus@1.0.0" }));
+    await userEvent.click(screen.getByRole("button", { name: "Compare selected (2/2)" }));
+
+    expect(api.compareEvaluationRuns).toHaveBeenCalledWith("run-1", "run-2");
+    expect(await screen.findByText("+0.250")).toBeInTheDocument();
+    expect(screen.getByText("1 case changed, 3 unchanged")).toBeInTheDocument();
+    expect(screen.getByText("hits: 0 → 1")).toBeInTheDocument();
+  });
+
+  it("requires a benchmark for publishing", async () => {
+    render(<EvaluationClient />);
+    await userEvent.click(await screen.findByRole("button", { name: "Require for publishing" }));
+    expect(api.setReleaseGate).toHaveBeenCalledWith("rla-retrieval", "1.0.0");
+  });
+
+  it("shows a required benchmark and lets it be lifted", async () => {
+    vi.mocked(api.listReleaseGates).mockResolvedValue({
+      items: [{ benchmark_id: "rla-retrieval", version: "1.0.0", key: "rla-retrieval@1.0.0", set_by: null, set_at: null }],
+    });
+    render(<EvaluationClient />);
+    expect(await screen.findByText("required_for_publishing")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Stop requiring" }));
+    expect(api.setReleaseGate).toHaveBeenCalledWith("rla-retrieval", null);
+  });
+
+  it("assigns a generation run's answers for human review", async () => {
+    const generation = run({ id: "run-g", kind: "generation", passed: true, gates: { g: true }, failures: [] });
+    vi.mocked(api.listEvaluationRuns).mockResolvedValue([generation]);
+    vi.mocked(api.getEvaluationRun).mockResolvedValue(generation);
+    render(<EvaluationClient />);
+    await userEvent.click(await screen.findByRole("button", { name: "Details" }));
+    const section = await screen.findByRole("region", { name: "Human review" });
+    expect(section).toHaveTextContent("1 of 2 answers graded.");
+    expect(section).toHaveTextContent("corpus gap ×1");
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Rev Iewer" }));
+    await userEvent.clear(screen.getByRole("spinbutton", { name: "Answers to sample" }));
+    await userEvent.type(screen.getByRole("spinbutton", { name: "Answers to sample" }), "5");
+    await userEvent.click(screen.getByRole("button", { name: "Assign answers" }));
+    expect(api.assignEvaluationReviews).toHaveBeenCalledWith("run-g", {
+      reviewer_ids: ["u7"],
+      sample_size: 5,
+    });
+    expect(await screen.findByText("1 answer assigned.")).toBeInTheDocument();
   });
 });

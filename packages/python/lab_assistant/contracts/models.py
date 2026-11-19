@@ -9,6 +9,7 @@ first-class outcome — a flagged answer — not a 500.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -22,6 +23,7 @@ __all__ = [
     "GenerationResult",
     "LLMProvider",
     "ProviderProperties",
+    "StreamUsage",
     "StructuredRequest",
     "StructuredResult",
     "VectorIndexKind",
@@ -134,6 +136,21 @@ class GenerationResult(BaseModel):
     truncated: bool = False
 
 
+@dataclass(slots=True)
+class StreamUsage:
+    """Token counts a provider reports once a stream has finished.
+
+    Passed in by the caller and filled by the provider, because a generator's
+    return value is not visible to `async for`, and a shared provider instance
+    must not hold per-request state. Usage is metered against a member's token
+    allowance, so a stream that reported nothing would make every answer free.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    stop_reason: str | None = None
+
+
 class StructuredRequest(BaseModel):
     model_config = {"frozen": True}
 
@@ -169,7 +186,9 @@ class LLMProvider(Protocol):
 
     async def generate(self, request: GenerationRequest) -> GenerationResult: ...
 
-    def stream(self, request: GenerationRequest) -> AsyncIterator[str]: ...
+    def stream(
+        self, request: GenerationRequest, *, usage: StreamUsage | None = None
+    ) -> AsyncIterator[str]: ...
 
     async def structured(self, request: StructuredRequest) -> StructuredResult: ...
 

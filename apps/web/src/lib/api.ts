@@ -11,7 +11,9 @@
 
 import type {
   AcquisitionPlan,
+  Allowance,
   AskEvent,
+  AnswerReview,
   AuditEvent,
   Benchmark,
   Candidate,
@@ -20,13 +22,19 @@ import type {
   CorpusStats,
   DiscoveryRun,
   EvaluationRun,
+  GateStatus,
   Invitation,
   InvitationPreview,
   Me,
   Member,
+  MemberSession,
   ProblemDetails,
   Release,
+  ReleaseGate,
+  Reviewer,
   ReviewItem,
+  RunComparison,
+  RunReviewSummary,
   ScopeGateReport,
   ScopeVersion,
   TaskSnapshot,
@@ -107,6 +115,9 @@ export async function logout(): Promise<void> {
 
 export const getMe = () => request<Me>("/auth/me");
 
+/** The signed-in member's own token allowance. */
+export const getAllowance = () => request<Allowance>("/chat/quota");
+
 // ── ask ───────────────────────────────────────────────────────────────────
 export const createSession = () =>
   request<ChatSession>("/chat/sessions", { method: "POST" });
@@ -146,12 +157,16 @@ export async function ask(
     signal: options.signal,
   });
   if (!response.ok || !response.body) {
+    // A refusal before the stream opens (a used-up allowance, a missing
+    // capability) is a problem document: say what it says.
+    const problem = (await response.json().catch(() => ({}))) as Partial<ProblemDetails>;
     throw new ApiError({
       type: "about:blank",
       title: "ask failed",
       status: response.status,
-      detail: "the answer stream could not be started",
-      error_class: "internal",
+      detail: problem.detail ?? "the answer stream could not be started",
+      error_class: problem.error_class ?? "internal",
+      context: problem.context,
     });
   }
 
@@ -345,6 +360,45 @@ export async function assistedUpload(
   };
 }
 
+/** One file's fate in a bulk import. */
+export interface BulkImportItem {
+  filename: string;
+  outcome: "imported" | "blocked" | "unmatched" | "ambiguous" | "rejected" | "matched";
+  identifiers: string[];
+  plan_id: string | null;
+  work_id: string | null;
+  asset_id: string | null;
+  parse_task_id: string | null;
+  detail: string | null;
+}
+
+/**
+ * Match a batch of PDFs to waiting acquisitions and import the clear matches.
+ * With `dryRun` nothing is stored: the answer says what would happen.
+ */
+export async function bulkImport(
+  files: File[],
+  form: { accessBasis: string; attestation: string; dryRun: boolean },
+): Promise<{ dry_run: boolean; counts: Record<string, number>; items: BulkImportItem[] }> {
+  const body = new FormData();
+  for (const file of files) body.append("files", file);
+  body.set("access_basis", form.accessBasis);
+  body.set("attestation", form.attestation);
+  body.set("dry_run", form.dryRun ? "true" : "false");
+  const response = await fetch(appPath("/api/backend/bulk-imports"), { method: "POST", body });
+  if (!response.ok) {
+    const problem = (await response.json().catch(() => ({}))) as Partial<ProblemDetails>;
+    throw new ApiError({
+      type: "about:blank",
+      title: "bulk import failed",
+      status: response.status,
+      detail: problem.detail ?? "the batch was not accepted",
+      error_class: problem.error_class ?? "internal",
+    });
+  }
+  return response.json();
+}
+
 // ── review ────────────────────────────────────────────────────────────────
 export const listReviewQueue = (includeInvalid = false) =>
   request<{ items: ReviewItem[] }>(
@@ -402,10 +456,14 @@ export const approveRelease = (releaseId: string) =>
     { method: "POST", body: JSON.stringify({ evaluation_run_id: null }) },
   );
 
-export const publishRelease = (releaseId: string, alias = "current") =>
-  request<{ alias: string; release_id: string }>(
+/** Publish. `overrideReason` lets an admin publish past a required benchmark. */
+export const publishRelease = (releaseId: string, alias = "current", overrideReason?: string) =>
+  request<{ alias: string; release_id: string; previous_release_id: string | null }>(
     `/corpus-releases/${releaseId}/publish?alias=${encodeURIComponent(alias)}`,
-    { method: "POST" },
+    {
+      method: "POST",
+      body: overrideReason ? JSON.stringify({ override_reason: overrideReason }) : undefined,
+    },
   );
 
 export const rollbackRelease = (alias = "current") =>
@@ -419,6 +477,15 @@ export const buildExport = (releaseId: string) =>
     `/exports/${releaseId}`,
     { method: "POST" },
   );
+
+/**
+ * Where to download an export: the whole package as a zip, or one file of it.
+ * A plain link, so the browser streams the file to disk with the session cookie.
+ */
+export function exportDownloadUrl(releaseId: string, file?: string): string {
+  const query = file ? `?file=${encodeURIComponent(file)}` : "";
+  return appPath(`/api/backend/exports/${releaseId}/download${query}`);
+}
 
 // ── analytics and operations ──────────────────────────────────────────────
 export const corpusStats = () => request<CorpusStats>("/analytics/corpus");
@@ -454,10 +521,22 @@ export const listAuditEvents = (limit = 100) =>
 
 // ── members and invitations ───────────────────────────────────────────────
 export const listMembers = () =>
-  request<{ items: Member[] }>("/members").then((body) => body.items);
+  request<{ items: Member[]; token_limit_default: number; chat_admin_access: boolean }>(
+    "/members",
+  );
 
-export const updateMember = (userId: string, change: { role?: string; status?: string }) =>
-  request<Member>(`/members/${userId}`, { method: "PATCH", body: JSON.stringify(change) });
+/** `token_limit: null` returns the member to the installation default. */
+export const updateMember = (
+  userId: string,
+  change: { role?: string; status?: string; token_limit?: number | null },
+) => request<Member>(`/members/${userId}`, { method: "PATCH", body: JSON.stringify(change) });
+
+/** A member's conversations. Every call is recorded in the audit log. */
+export const listMemberSessions = (userId: string) =>
+  request<{ items: MemberSession[] }>(`/members/${userId}/sessions`).then((body) => body.items);
+
+export const getMemberSession = (userId: string, sessionId: string) =>
+  request<MemberSession & { messages: ChatMessage[] }>(`/members/${userId}/sessions/${sessionId}`);
 
 /** Sign a member out everywhere without changing their access. */
 export const revokeMemberSessions = (userId: string) =>
@@ -544,3 +623,57 @@ export const requestEvaluationRun = (payload: {
 
 export const getEvaluationRun = (runId: string) =>
   request<EvaluationRun>(`/evaluation/runs/${runId}`);
+
+export const cancelEvaluationRun = (runId: string) =>
+  request<EvaluationRun>(`/evaluation/runs/${runId}/cancel`, { method: "POST" });
+
+export const compareEvaluationRuns = (baseId: string, candidateId: string) =>
+  request<RunComparison>(
+    `/evaluation/compare?base=${encodeURIComponent(baseId)}&candidate=${encodeURIComponent(candidateId)}`,
+  );
+
+/** The benchmarks publishing requires; with a release, whether it passes each. */
+export const listReleaseGates = (releaseId?: string) =>
+  request<{ items: ReleaseGate[]; status?: GateStatus[] }>(
+    `/evaluation/release-gates${releaseId ? `?release_id=${encodeURIComponent(releaseId)}` : ""}`,
+  );
+
+/** Require a benchmark version for publishing; `version: null` stops requiring it. */
+export const setReleaseGate = (benchmarkId: string, version: string | null) =>
+  request<{ items: ReleaseGate[] }>("/evaluation/release-gates", {
+    method: "PUT",
+    body: JSON.stringify({ benchmark_id: benchmarkId, version }),
+  });
+
+export const listEvaluationReviewers = () =>
+  request<{ items: Reviewer[] }>("/evaluation/reviewers").then((body) => body.items);
+
+export const assignEvaluationReviews = (
+  runId: string,
+  payload: { reviewer_ids: string[]; sample_size: number },
+) =>
+  request<{ items: AnswerReview[] }>(`/evaluation/runs/${runId}/reviews`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const listRunReviews = (runId: string) =>
+  request<RunReviewSummary>(`/evaluation/runs/${runId}/reviews`);
+
+export const listMyAnswerReviews = () =>
+  request<{ items: AnswerReview[]; scores: string[]; flags: string[] }>("/evaluation/reviews/mine");
+
+export const submitAnswerReview = (
+  reviewId: string,
+  payload: {
+    scores: Record<string, number>;
+    flags: string[];
+    reviewer_confidence: number | null;
+    comment: string | null;
+    suggested_answer: string | null;
+  },
+) =>
+  request<AnswerReview>(`/evaluation/reviews/${reviewId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });

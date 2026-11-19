@@ -20,11 +20,13 @@ import pytest
 
 from lab_assistant.adapters.models.fake import FakeLLMProvider
 from lab_assistant.application.chat import ChatService
+from lab_assistant.application.releases import ReleaseService
 from lab_assistant.contracts.connector import IdentifierScheme
 from lab_assistant.contracts.errors import (
     ConcurrencyConflict,
     InstallationDenied,
     PolicyDenied,
+    StateTransitionError,
     ValidationFailure,
 )
 from lab_assistant.domain.identity import WorkIdentifier
@@ -34,6 +36,7 @@ from lab_assistant.domain.workspace import Role
 from lab_assistant.evaluation.benchmarks import Benchmark
 from lab_assistant.evaluation.runner import EvaluationRunner
 from lab_assistant.evaluation.service import EvaluationService, run_json
+from lab_assistant.evaluation.workbench import EvaluationWorkbench
 from lab_assistant.testing import build_harness, make_actor
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -325,3 +328,254 @@ class TestGenerationMetrics:
         uncited = await self._run_with(stack, _AddsAFigure(cite=False))
         assert uncited["case"]["unsupported_numbers"] == ["9.75"]
         assert uncited["case"]["faithfulness_proxy"] == cited["case"]["faithfulness_proxy"]
+
+
+# ── the workbench: cancel, compare, release gates, human review ────────────
+async def _queue(stack: dict[str, Any], definition: dict[str, Any]) -> dict[str, Any]:
+    service, steward = stack["service"], stack["steward"]
+    row, _ = await service.register_benchmark(steward, definition)
+    return await service.request_run(
+        steward,
+        benchmark_id=row["benchmark_id"],
+        version=row["version"],
+        release_id=stack["release_id"],
+    )
+
+
+class TestCancel:
+    async def test_a_queued_run_is_cancelled_and_the_worker_leaves_it(self, stack) -> None:
+        workbench = EvaluationWorkbench(stack["harness"].context)
+        queued = await _queue(stack, _retrieval_benchmark([str(stack["yeast_id"])]))
+        cancelled = await workbench.cancel_run(stack["steward"], run_id=queued["id"])
+        assert cancelled["status"] == "cancelled"
+
+        await stack["harness"].run_all_tasks()
+        run = await stack["service"].get_run(stack["steward"], run_id=queued["id"])
+        assert run["status"] == "cancelled"
+        assert run["metrics"] == {}
+
+    async def test_a_finished_run_cannot_be_cancelled(self, stack) -> None:
+        run = await _run(stack, _retrieval_benchmark([str(stack["yeast_id"])]))
+        with pytest.raises(StateTransitionError, match="succeeded run"):
+            await EvaluationWorkbench(stack["harness"].context).cancel_run(
+                stack["steward"], run_id=run["id"]
+            )
+
+
+class TestCompare:
+    async def test_two_runs_of_one_benchmark_compare_case_by_case(self, stack) -> None:
+        found = await _run(stack, _retrieval_benchmark([str(stack["yeast_id"])]))
+        missed = await _run(
+            stack, _retrieval_benchmark(["doi:10.1/not-in-the-corpus"], version="1.0.1")
+        )
+        report = await EvaluationWorkbench(stack["harness"].context).compare_runs(
+            stack["steward"], base_id=found["id"], candidate_id=missed["id"]
+        )
+        assert report["same_version"] is False
+        recall = next(item for item in report["metrics"] if item["name"] == "recall@5")
+        assert recall["base"] == 1.0 and recall["candidate"] == 0.0 and recall["delta"] == -1.0
+        [case] = report["changed_cases"]
+        assert case["case_id"] == "lipid-yield"
+        assert case["changes"]
+
+    async def test_different_benchmarks_are_not_compared(self, stack) -> None:
+        retrieval = await _run(stack, _retrieval_benchmark([str(stack["yeast_id"])]))
+        generation = await _run(stack, _synthetic("generation-citations.json"))
+        with pytest.raises(ValidationFailure, match="same benchmark"):
+            await EvaluationWorkbench(stack["harness"].context).compare_runs(
+                stack["steward"], base_id=retrieval["id"], candidate_id=generation["id"]
+            )
+
+
+class TestReleaseGate:
+    async def test_publishing_needs_a_passing_run_of_a_required_benchmark(self, stack) -> None:
+        steward, release_id = stack["steward"], stack["release_id"]
+        workbench = EvaluationWorkbench(stack["harness"].context)
+        definition = _retrieval_benchmark([str(stack["yeast_id"])])
+        row, _ = await stack["service"].register_benchmark(steward, definition)
+        await workbench.set_release_gate(
+            steward, benchmark_id=row["benchmark_id"], version=row["version"]
+        )
+        releases = ReleaseService(stack["harness"].context)
+        with pytest.raises(ValidationFailure, match="required benchmark") as refused:
+            await releases.publish(steward, release_id=release_id)
+        assert refused.value.context["blockers"] == [
+            "evaluation:lab-retrieval@1.0.0 has not passed"
+        ]
+        [status] = await workbench.gate_status(steward, release_id=release_id)
+        assert status["passed"] is False
+
+        run = await _run(stack, definition)
+        assert run["passed"] is True
+        [status] = await workbench.gate_status(steward, release_id=release_id)
+        assert status == {**status, "passed": True, "run_id": run["id"]}
+
+    async def test_only_an_admin_overrides_and_the_override_is_audited(self, stack) -> None:
+        steward, release_id = stack["steward"], stack["release_id"]
+        workbench = EvaluationWorkbench(stack["harness"].context)
+        row, _ = await stack["service"].register_benchmark(
+            steward, _retrieval_benchmark([str(stack["yeast_id"])])
+        )
+        await workbench.set_release_gate(
+            steward, benchmark_id=row["benchmark_id"], version=row["version"]
+        )
+        data_steward = make_actor(
+            user_id=stack["deployment"].outsider_actor.user_id,
+            workspace_id=steward.workspace_id,
+            role=Role.DATA_STEWARD,
+        )
+        releases = ReleaseService(stack["harness"].context)
+        with pytest.raises(PolicyDenied, match="only an admin"):
+            await releases.publish(data_steward, release_id=release_id, override_reason="urgent")
+
+        # The seeded release is already published; an approved one is what a steward
+        # would be publishing.
+        async with stack["harness"].context.uow_factory() as uow:
+            release = await uow.releases.get(steward.workspace_id, release_id)
+            release.status = ReleaseState.APPROVED
+            await uow.releases.update(release)
+            await uow.commit()
+        await releases.publish(steward, release_id=release_id, override_reason="benchmark is stale")
+        async with stack["harness"].context.uow_factory() as uow:
+            events = await uow.audit.list_events(steward.workspace_id, limit=50)
+        [override] = [e for e in events if e.action.value == "release_gate_overridden"]
+        assert override.metadata["reason"] == "benchmark is stale"
+        assert override.metadata["unmet"] == ["lab-retrieval@1.0.0"]
+
+    async def test_a_gate_is_lifted_by_clearing_its_version(self, stack) -> None:
+        steward = stack["steward"]
+        workbench = EvaluationWorkbench(stack["harness"].context)
+        row, _ = await stack["service"].register_benchmark(
+            steward, _retrieval_benchmark([str(stack["yeast_id"])])
+        )
+        assert await workbench.set_release_gate(
+            steward, benchmark_id=row["benchmark_id"], version=row["version"]
+        )
+        assert (
+            await workbench.set_release_gate(
+                steward, benchmark_id=row["benchmark_id"], version=None
+            )
+            == []
+        )
+
+
+class TestHumanReview:
+    async def _generation_run(self, stack) -> dict[str, Any]:
+        run = await _run(stack, _synthetic("generation-citations.json"))
+        assert run["status"] == "succeeded", run["error_detail"]
+        return run
+
+    async def test_cases_are_sampled_assigned_graded_and_summarised(self, stack) -> None:
+        steward = stack["steward"]
+        workbench = EvaluationWorkbench(stack["harness"].context)
+        run = await self._generation_run(stack)
+        created = await workbench.assign_reviews(
+            steward, run_id=run["id"], reviewer_ids=[steward.user_id], sample_size=1
+        )
+        assert len(created) == 1
+        # Asking again takes the next case, not the same one twice.
+        again = await workbench.assign_reviews(
+            steward, run_id=run["id"], reviewer_ids=[steward.user_id], sample_size=5
+        )
+        assert len(again) == 1
+        assert {row["case_id"] for row in created} != {row["case_id"] for row in again}
+
+        [first, _second] = await workbench.my_reviews(steward)
+        assert first["case"]["question"] and first["case"]["answer"]
+        submitted = await workbench.submit_review(
+            steward,
+            review_id=first["id"],
+            scores={"correctness": 4, "citation_support": 5},
+            flags=["corpus_gap"],
+            reviewer_confidence=3,
+            comment="Mostly right.",
+            suggested_answer=None,
+        )
+        assert submitted["status"] == "submitted"
+        summary = await workbench.run_reviews(steward, run_id=run["id"])
+        assert (summary["assigned"], summary["submitted"]) == (2, 1)
+        assert summary["mean_scores"]["correctness"] == 4
+        assert summary["mean_scores"]["usefulness"] is None
+        assert summary["flag_counts"]["corpus_gap"] == 1
+        mine = await workbench.my_reviews(steward)
+        assert [item["status"] for item in mine] == ["assigned", "submitted"]
+
+    async def test_a_researcher_cannot_be_a_reviewer(self, stack) -> None:
+        run = await self._generation_run(stack)
+        with pytest.raises(ValidationFailure, match="cannot review"):
+            await EvaluationWorkbench(stack["harness"].context).assign_reviews(
+                stack["steward"],
+                run_id=run["id"],
+                reviewer_ids=[stack["deployment"].outsider_actor.user_id],
+                sample_size=1,
+            )
+
+    async def test_a_retrieval_run_has_no_answers_to_review(self, stack) -> None:
+        run = await _run(stack, _retrieval_benchmark([str(stack["yeast_id"])]))
+        with pytest.raises(ValidationFailure, match="generation run"):
+            await EvaluationWorkbench(stack["harness"].context).assign_reviews(
+                stack["steward"],
+                run_id=run["id"],
+                reviewer_ids=[stack["steward"].user_id],
+                sample_size=1,
+            )
+
+    @pytest.mark.parametrize(
+        ("scores", "message"),
+        [
+            ({"correctness": 6}, "between 1 and 5"),
+            ({"usefulness": 3}, "correctness"),
+            ({"correctness": 3, "vibes": 2}, "unknown scores"),
+        ],
+    )
+    async def test_a_malformed_review_is_refused(self, stack, scores, message) -> None:
+        steward = stack["steward"]
+        workbench = EvaluationWorkbench(stack["harness"].context)
+        run = await self._generation_run(stack)
+        [assigned] = await workbench.assign_reviews(
+            steward, run_id=run["id"], reviewer_ids=[steward.user_id], sample_size=1
+        )
+        with pytest.raises(ValidationFailure, match=message):
+            await workbench.submit_review(
+                steward,
+                review_id=assigned["id"],
+                scores=scores,
+                flags=[],
+                reviewer_confidence=None,
+                comment=None,
+                suggested_answer=None,
+            )
+
+    async def test_someone_elses_review_cannot_be_submitted(self, stack) -> None:
+        steward = stack["steward"]
+        workbench = EvaluationWorkbench(stack["harness"].context)
+        run = await self._generation_run(stack)
+        [assigned] = await workbench.assign_reviews(
+            steward, run_id=run["id"], reviewer_ids=[steward.user_id], sample_size=1
+        )
+        other = make_actor(
+            user_id=stack["deployment"].outsider_actor.user_id,
+            workspace_id=steward.workspace_id,
+            role=Role.REVIEWER,
+        )
+        with pytest.raises(PolicyDenied, match="someone else"):
+            await workbench.submit_review(
+                other,
+                review_id=assigned["id"],
+                scores={"correctness": 3},
+                flags=[],
+                reviewer_confidence=None,
+                comment=None,
+                suggested_answer=None,
+            )
+
+
+def test_run_json_still_reports_cancelled_runs_as_not_passed() -> None:
+    row = {
+        "id": "r",
+        "benchmark": "b@1",
+        "benchmark_checksum": "c",
+        "status": "cancelled",
+        "gates": {"g": True},
+    }
+    assert run_json(row)["passed"] is False

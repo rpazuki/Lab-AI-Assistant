@@ -399,6 +399,23 @@ def _parser() -> argparse.ArgumentParser:
             required=name in ("validate", "publish", "rollback", "withdraw", "retract-work"),
         )
 
+    acquisition = subparsers.add_parser("acquisition", help="acquisition operations")
+    acquisition_sub = acquisition.add_subparsers(dest="acquisition_command", required=True)
+    import_folder = acquisition_sub.add_parser(
+        "import-folder",
+        help="match every PDF in a folder to a waiting acquisition and import the clear matches",
+    )
+    import_folder.add_argument("folder", help="directory of PDFs (not searched recursively)")
+    import_folder.add_argument("--workspace", required=True, help="workspace slug")
+    import_folder.add_argument("--actor", required=True, help="user id the imports are made as")
+    import_folder.add_argument("--access-basis", default="institutional_subscription_copy")
+    import_folder.add_argument(
+        "--attestation", default="", help="how these copies were obtained; required to import"
+    )
+    import_folder.add_argument(
+        "--dry-run", action="store_true", help="report matches without importing anything"
+    )
+
     package = subparsers.add_parser("package", help="export package operations")
     package_sub = package.add_subparsers(dest="package_command", required=True)
     validate_package = package_sub.add_parser("validate", help="validate a package directory")
@@ -458,6 +475,8 @@ def _dispatch(args: argparse.Namespace, settings: Settings, provenance: ConfigPr
             return asyncio.run(_task(args, settings))
         case "worker":
             return asyncio.run(_worker(args, settings))
+        case "acquisition":
+            return asyncio.run(_acquisition(args, settings))
         case "release":
             return asyncio.run(_release(args, settings))
         case "package":
@@ -1823,6 +1842,67 @@ async def _worker(args: argparse.Namespace, settings: Settings) -> int:
     except KeyboardInterrupt:  # pragma: no cover - operator interrupt
         print("worker stopping", file=sys.stderr)
         return 0
+    finally:
+        for hook in container.shutdown:
+            await hook()
+
+
+async def _acquisition(args: argparse.Namespace, settings: Settings) -> int:
+    """`lab acquisition import-folder`: the server-side bulk import.
+
+    The same service as the web drop, so a folder imported here gets exactly the
+    checks a file dropped in the browser does. Batches of the service's maximum
+    size are sent in turn, so a large folder is not one all-or-nothing request.
+    """
+    from pathlib import Path
+
+    from lab_assistant.application.bulk_import import MAX_FILES, BulkFile, BulkImportService
+    from lab_assistant.application.context import resolve_actor
+    from lab_assistant_api.deps import build_container
+
+    folder = Path(args.folder)
+    if not folder.is_dir():
+        print(f"{folder} is not a directory", file=sys.stderr)
+        return 1
+    paths = sorted(path for path in folder.iterdir() if path.suffix.lower() == ".pdf")
+    if not paths:
+        print(f"no PDF files in {folder}", file=sys.stderr)
+        return 1
+    container = build_container(settings)
+    try:
+        async with container.context.uow_factory() as uow:
+            workspace = await uow.workspaces.get_by_slug(args.workspace.lower())
+        if workspace is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+        actor = await resolve_actor(
+            container.context, user_id=UUID(args.actor), workspace_id=workspace.id
+        )
+        service = BulkImportService(container.context, container.orchestrator)
+        totals: dict[str, int] = {}
+        for start in range(0, len(paths), MAX_FILES):
+            batch = [
+                BulkFile(
+                    filename=path.name, content=path.read_bytes(), media_type="application/pdf"
+                )
+                for path in paths[start : start + MAX_FILES]
+            ]
+            for result in await service.run(
+                actor,
+                files=batch,
+                access_basis=args.access_basis,
+                attestation=args.attestation,
+                dry_run=args.dry_run,
+            ):
+                totals[result.outcome.value] = totals.get(result.outcome.value, 0) + 1
+                print(
+                    f"{result.outcome.value:<9}  {result.filename}"
+                    + (f"  plan={result.plan_id}" if result.plan_id else "")
+                    + (f"  ({result.detail})" if result.detail else "")
+                )
+        print(json.dumps(totals, sort_keys=True))
+        failed = totals.get("rejected", 0)
+        return 1 if failed else 0
     finally:
         for hook in container.shutdown:
             await hook()

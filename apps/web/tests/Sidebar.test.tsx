@@ -91,7 +91,7 @@ describe("Sidebar", () => {
     );
     render(<Sidebar />);
     await screen.findByRole("button", { name: "Sign out" });
-    expect(sections()).toEqual(["Ask", "Analytics", "Collections", "Review"]);
+    expect(sections()).toEqual(["Ask", "Analytics", "Collections", "Review", "Answer reviews"]);
   });
 
   it("gives an admin every section, grouped", async () => {
@@ -99,7 +99,8 @@ describe("Sidebar", () => {
     render(<Sidebar />);
     await screen.findByRole("button", { name: "Sign out" });
     expect(sections()).toEqual([
-      "Ask", "Analytics", "Collections", "Review", "Releases", "Evaluation", "Members", "Operations",
+      "Ask", "Analytics", "Collections", "Review", "Answer reviews", "Releases", "Evaluation",
+      "Members", "Operations",
     ]);
     expect(groupHeaders()).toEqual(["Research", "Curation", "Publishing", "Administration"]);
     expect(screen.getByRole("link", { name: "Ask" })).toHaveAttribute("aria-current", "page");

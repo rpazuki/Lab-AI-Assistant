@@ -14,6 +14,7 @@ Conventions the whole API keeps:
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -33,13 +34,21 @@ from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseServi
 from lab_assistant.application.retrieval import RetrievalService
 from lab_assistant.application.review import ReviewService
 from lab_assistant.application.scopes import ScopeService
+from lab_assistant.application.usage import UsageService
 from lab_assistant.contracts.errors import NotFound, PolicyDenied
+from lab_assistant.domain.chat import UsageTotals
 from lab_assistant.domain.claims import ReviewDecision
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.scope import ConnectorPlanEntry
 from lab_assistant.domain.states import RelevanceState
 from lab_assistant.domain.workspace import Capability, MembershipStatus, Role
 from lab_assistant.evaluation.service import EvaluationService, benchmark_json, run_json
+from lab_assistant.evaluation.workbench import (
+    REVIEW_FLAGS,
+    REVIEW_SCORES,
+    EvaluationWorkbench,
+    review_json,
+)
 from lab_assistant_api.deps import (
     ApiContainer,
     CurrentActor,
@@ -106,6 +115,9 @@ class AcceptInvitationRequest(BaseModel):
 class MemberUpdateRequest(BaseModel):
     role: Role | None = None
     status: MembershipStatus | None = None
+    #: A number sets the member's own limit; an explicit null returns them to the
+    #: installation default; leaving it out changes nothing.
+    token_limit: int | None = Field(default=None, ge=0, le=2_000_000_000)
 
 
 class AskRequest(BaseModel):
@@ -263,6 +275,8 @@ async def me(actor: CurrentActor, container: Container) -> dict[str, Any]:
             "name": workspace.display_name,
         },
         "role": actor.membership.role.value if actor.membership else None,
+        # Said to every member, so the Ask page can tell them before they type.
+        "chat_visible_to_admins": container.settings.chat_admin_access,
         "capabilities": sorted(
             c.value for c in (actor.membership.capabilities() if actor.membership else set())
         ),
@@ -275,7 +289,44 @@ async def me(actor: CurrentActor, container: Container) -> dict[str, Any]:
 @router.get("/members")
 async def list_members(actor: CurrentActor, container: Container) -> dict[str, Any]:
     members = await container.accounts.list_members(actor)
-    return {"items": [_member_json(view) for view in members]}
+    usage = await UsageService(container.context).members_usage(actor)
+    return {
+        "items": [_member_json(view, usage.get(view.user.id), container) for view in members],
+        "token_limit_default": container.settings.chat_token_limit_default,
+        "chat_admin_access": container.settings.chat_admin_access,
+    }
+
+
+@router.get("/members/{user_id}/sessions")
+async def member_sessions(
+    user_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """A member's conversations, for an admin. Audited; see `UsageService`."""
+    sessions = await UsageService(container.context).member_sessions(actor, user_id=user_id)
+    return {
+        "items": [{**_session_json(session), "deleted": session.is_deleted} for session in sessions]
+    }
+
+
+@router.get("/members/{user_id}/sessions/{session_id}")
+async def member_session(
+    user_id: UUID, session_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    session, messages = await UsageService(container.context).member_session(
+        actor, user_id=user_id, session_id=session_id
+    )
+    return {
+        **_session_json(session),
+        "deleted": session.is_deleted,
+        "messages": [
+            {
+                **_message_json(message),
+                "input_tokens": message.input_tokens,
+                "output_tokens": message.output_tokens,
+            }
+            for message in messages
+        ],
+    }
 
 
 @router.patch(
@@ -289,9 +340,15 @@ async def update_member(
     payload: MemberUpdateRequest = Body(...),
 ) -> dict[str, Any]:
     view = await container.accounts.update_member(
-        actor, user_id=user_id, role=payload.role, status=payload.status
+        actor,
+        user_id=user_id,
+        role=payload.role,
+        status=payload.status,
+        token_limit=payload.token_limit,
+        reset_token_limit="token_limit" in payload.model_fields_set and payload.token_limit is None,
     )
-    return _member_json(view)
+    usage = await UsageService(container.context).members_usage(actor)
+    return _member_json(view, usage.get(user_id), container)
 
 
 @router.post(
@@ -419,6 +476,12 @@ async def accept_invitation(
     )
 
 
+@router.get("/chat/quota")
+async def chat_quota(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """The caller's own token allowance: limit, used, remaining."""
+    return (await UsageService(container.context).allowance(actor)).as_dict()
+
+
 # ── ask ─────────────────────────────────────────────────────────────────────
 @router.post("/chat/sessions", dependencies=[requires(InstallationCapability.RECORD_INTERACTION)])
 async def create_session(actor: CurrentActor, container: Container) -> dict[str, Any]:
@@ -486,6 +549,9 @@ async def ask(
     payload: AskRequest = Body(...),
 ) -> StreamingResponse:
     """Stream an answer as server-sent events: sources, tokens, then done."""
+    # Refused before the stream opens, so a used-up allowance is a 429 problem
+    # document the client can branch on, not an error event mid-stream.
+    await UsageService(container.context).require_allowance(actor)
     chat = ChatService(container.context)
 
     async def event_stream():
@@ -956,6 +1022,49 @@ async def assisted_upload(
     }
 
 
+@router.post(
+    "/bulk-imports",
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
+async def bulk_import(
+    actor: CurrentActor,
+    container: Container,
+    files: Annotated[list[UploadFile], File()],
+    access_basis: Annotated[str, Form()] = "institutional_subscription_copy",
+    attestation: Annotated[str, Form()] = "",
+    dry_run: Annotated[bool, Form()] = False,
+) -> dict[str, Any]:
+    """Match a batch of PDFs to waiting acquisitions, and import the clear matches.
+
+    Each import is an assisted upload in every respect; see `BulkImportService`.
+    With `dry_run` nothing is stored and the answer says what would happen.
+    """
+    from lab_assistant.application.bulk_import import MAX_FILES, BulkFile, BulkImportService
+    from lab_assistant.contracts.errors import ValidationFailure
+
+    if len(files) > MAX_FILES:
+        raise ValidationFailure(f"at most {MAX_FILES} files per batch; split the folder")
+    batch = [
+        BulkFile(
+            filename=upload.filename or "upload.pdf",
+            content=await upload.read(),
+            media_type=upload.content_type,
+        )
+        for upload in files
+    ]
+    results = await BulkImportService(container.context, container.orchestrator).run(
+        actor,
+        files=batch,
+        access_basis=access_basis,
+        attestation=attestation,
+        dry_run=dry_run,
+    )
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result.outcome.value] = counts.get(result.outcome.value, 0) + 1
+    return {"dry_run": dry_run, "counts": counts, "items": [r.as_dict() for r in results]}
+
+
 # ── review ──────────────────────────────────────────────────────────────────
 @router.get("/claims")
 async def review_queue(
@@ -1144,9 +1253,11 @@ async def publish_release(
     actor: CurrentActor,
     container: Container,
     alias: Annotated[str, Query()] = "current",
+    override_reason: Annotated[str | None, Body(embed=True, max_length=500)] = None,
 ) -> dict[str, Any]:
+    """Publish. `override_reason` lets an admin publish past a required benchmark."""
     switched = await ReleaseService(container.context).publish(
-        actor, release_id=release_id, alias=alias
+        actor, release_id=release_id, alias=alias, override_reason=override_reason
     )
     return {
         "alias": switched.alias,
@@ -1194,6 +1305,57 @@ async def build_export(
         "row_counts": package.manifest.row_counts,
         "files": sorted(package.files),
     }
+
+
+_EXPORT_TYPES = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".csv": "text/csv; charset=utf-8",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".md": "text/markdown; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+}
+
+
+@router.get(
+    "/exports/{release_id}/download",
+    dependencies=[requires(InstallationCapability.PRIVATE_EXPORT)],
+)
+async def download_export(
+    release_id: UUID,
+    actor: CurrentActor,
+    container: Container,
+    file: Annotated[str | None, Query(max_length=300)] = None,
+    purpose: Annotated[str, Query()] = "internal_research",
+) -> Response:
+    """The export package as a zip, or one file of it (`file=data/wide-form.xlsx`).
+
+    Built on request rather than kept: the package is deterministic for a release,
+    so rebuilding it gives the same bytes, and nothing an export contains has to
+    be stored a second time. The same capability and policy checks as building it.
+    """
+    package = await ExportService(container.context).build(
+        actor, release_id=release_id, purpose=purpose
+    )
+    stem = f"release-{str(release_id)[:8]}"
+    if file is None:
+        body, media, name = package.to_object_bytes(), "application/zip", f"{stem}.zip"
+    else:
+        if file not in package.files:
+            raise NotFound(f"the export has no file {file!r}")
+        suffix = "." + file.rsplit(".", 1)[-1] if "." in file else ""
+        body = package.files[file]
+        media = _EXPORT_TYPES.get(suffix, "application/octet-stream")
+        name = f"{stem}-{file.rsplit('/', 1)[-1]}"
+    return Response(
+        content=body,
+        media_type=media,
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 # ── analytics ───────────────────────────────────────────────────────────────
@@ -1332,6 +1494,161 @@ async def get_evaluation_run(
     return run_json(run, include_cases=True)
 
 
+@router.post(
+    "/evaluation/runs/{run_id}/cancel",
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def cancel_evaluation_run(
+    run_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    run = await EvaluationWorkbench(container.context).cancel_run(actor, run_id=run_id)
+    return run_json(run)
+
+
+@router.get("/evaluation/compare")
+async def compare_evaluation_runs(
+    actor: CurrentActor,
+    container: Container,
+    base: Annotated[UUID, Query()],
+    candidate: Annotated[UUID, Query()],
+) -> dict[str, Any]:
+    return await EvaluationWorkbench(container.context).compare_runs(
+        actor, base_id=base, candidate_id=candidate
+    )
+
+
+class ReleaseGateRequest(BaseModel):
+    benchmark_id: str = Field(min_length=1, max_length=200)
+    #: The version to require; null stops requiring the benchmark.
+    version: str | None = Field(default=None, max_length=100)
+
+
+@router.get("/evaluation/release-gates")
+async def list_release_gates(
+    actor: CurrentActor,
+    container: Container,
+    release_id: Annotated[UUID | None, Query()] = None,
+) -> dict[str, Any]:
+    """The required benchmarks; with `release_id`, whether that release passes each."""
+    workbench = EvaluationWorkbench(container.context)
+    gates = await workbench.list_release_gates(actor)
+    body: dict[str, Any] = {"items": [_gate_json(gate) for gate in gates]}
+    if release_id is not None:
+        body["status"] = await workbench.gate_status(actor, release_id=release_id)
+    return body
+
+
+@router.put(
+    "/evaluation/release-gates",
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def set_release_gate(
+    actor: CurrentActor, container: Container, payload: ReleaseGateRequest = Body(...)
+) -> dict[str, Any]:
+    gates = await EvaluationWorkbench(container.context).set_release_gate(
+        actor, benchmark_id=payload.benchmark_id, version=payload.version
+    )
+    return {"items": [_gate_json(gate) for gate in gates]}
+
+
+class ReviewAssignmentRequest(BaseModel):
+    reviewer_ids: list[UUID] = Field(min_length=1, max_length=50)
+    sample_size: int = Field(default=10, ge=1, le=200)
+
+
+class ReviewSubmission(BaseModel):
+    scores: dict[str, int]
+    flags: list[str] = Field(default_factory=list)
+    reviewer_confidence: int | None = Field(default=None, ge=1, le=5)
+    comment: str | None = Field(default=None, max_length=5000)
+    suggested_answer: str | None = Field(default=None, max_length=20000)
+
+
+@router.post(
+    "/evaluation/runs/{run_id}/reviews",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def assign_evaluation_reviews(
+    run_id: UUID,
+    actor: CurrentActor,
+    container: Container,
+    payload: ReviewAssignmentRequest = Body(...),
+) -> dict[str, Any]:
+    created = await EvaluationWorkbench(container.context).assign_reviews(
+        actor, run_id=run_id, reviewer_ids=payload.reviewer_ids, sample_size=payload.sample_size
+    )
+    return {"items": [review_json(row) for row in created]}
+
+
+@router.get("/evaluation/runs/{run_id}/reviews")
+async def list_evaluation_reviews(
+    run_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    return await EvaluationWorkbench(container.context).run_reviews(actor, run_id=run_id)
+
+
+@router.get("/evaluation/reviewers")
+async def evaluation_reviewers(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """Members who may grade answers. Names only: the member list itself is admin's."""
+    actor.require(Capability.RUN_EVALUATION)
+    async with container.context.uow_factory() as uow:
+        memberships = await uow.workspaces.list_memberships(actor.workspace_id)
+        items = []
+        for membership in memberships:
+            if not membership.has(Capability.REVIEW_CLAIMS):
+                continue
+            user = await uow.users.get(membership.user_id)
+            if user is not None:
+                items.append(
+                    {
+                        "user_id": str(user.id),
+                        "email": user.email_display,
+                        "full_name": user.full_name,
+                        "role": membership.role.value,
+                    }
+                )
+    return {"items": sorted(items, key=lambda item: item["email"])}
+
+
+@router.get("/evaluation/reviews/mine")
+async def my_evaluation_reviews(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    items = await EvaluationWorkbench(container.context).my_reviews(actor)
+    return {"items": items, "scores": list(REVIEW_SCORES), "flags": list(REVIEW_FLAGS)}
+
+
+@router.put(
+    "/evaluation/reviews/{review_id}",
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def submit_evaluation_review(
+    review_id: UUID,
+    actor: CurrentActor,
+    container: Container,
+    payload: ReviewSubmission = Body(...),
+) -> dict[str, Any]:
+    return await EvaluationWorkbench(container.context).submit_review(
+        actor,
+        review_id=review_id,
+        scores=payload.scores,
+        flags=payload.flags,
+        reviewer_confidence=payload.reviewer_confidence,
+        comment=payload.comment,
+        suggested_answer=payload.suggested_answer,
+    )
+
+
+def _gate_json(gate: dict[str, Any]) -> dict[str, Any]:
+    set_at = gate.get("set_at")
+    return {
+        "benchmark_id": gate["benchmark_id"],
+        "version": gate["version"],
+        "key": f"{gate['benchmark_id']}@{gate['version']}",
+        "set_by": str(gate["set_by"]) if gate.get("set_by") else None,
+        "set_at": set_at.isoformat() if isinstance(set_at, datetime) else set_at,
+    }
+
+
 # ── operations ──────────────────────────────────────────────────────────────
 @router.get("/operations/tasks")
 async def task_snapshot(actor: CurrentActor, container: Container) -> dict[str, Any]:
@@ -1400,8 +1717,12 @@ def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
-def _member_json(view: MemberView) -> dict[str, Any]:
+def _member_json(
+    view: MemberView, usage: UsageTotals | None, container: ApiContainer
+) -> dict[str, Any]:
     membership, user = view.membership, view.user
+    totals = usage or UsageTotals()
+    limit, custom = UsageService(container.context).limit_for(membership)
     return {
         "user_id": str(user.id),
         "email": user.email_display,
@@ -1413,6 +1734,19 @@ def _member_json(view: MemberView) -> dict[str, Any]:
         "accepted_at": membership.accepted_at.isoformat() if membership.accepted_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "account_active": user.is_active,
+        "token_limit": limit,
+        "custom_token_limit": custom,
+        "usage": {
+            "sessions": totals.sessions,
+            "questions": totals.questions,
+            "answers": totals.answers,
+            "input_tokens": totals.input_tokens,
+            "output_tokens": totals.output_tokens,
+            "total_tokens": totals.total_tokens,
+            "last_active_at": totals.last_active_at.isoformat() if totals.last_active_at else None,
+            "avg_latency_ms": totals.avg_latency_ms,
+        },
+        "limit_reached": totals.total_tokens >= limit,
     }
 
 

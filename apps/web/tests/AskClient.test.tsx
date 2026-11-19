@@ -9,6 +9,22 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...actual,
     listSessions: vi.fn(async () => []),
+    getAllowance: vi.fn(async () => ({
+      token_limit: 1_000_000,
+      used_tokens: 1200,
+      remaining_tokens: 998_800,
+      limit_reached: false,
+      custom_limit: false,
+    })),
+    getMe: vi.fn(async () => ({
+      user_id: "u1",
+      email: "member@lab.invalid",
+      full_name: null,
+      workspace: { id: "w1", slug: "rlalab", name: "RLA Lab" },
+      role: "researcher",
+      capabilities: ["ask"],
+      chat_visible_to_admins: true,
+    })),
     createSession: vi.fn(async () => ({
       id: "s1",
       title: null,
@@ -139,5 +155,26 @@ describe("AskClient", () => {
     await userEvent.type(screen.getByLabelText(/question/i), "yield?");
     await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent("no release is published");
+  });
+
+  it("tells the member admins can read, and how much allowance is used", async () => {
+    render(<AskClient />);
+    expect(
+      await screen.findByText("Admins of this workspace can read your conversations. Every read is recorded."),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(/1,200 of 1,000,000/)).toBeInTheDocument();
+  });
+
+  it("stops offering to ask once the allowance is used up", async () => {
+    vi.mocked(api.getAllowance).mockResolvedValueOnce({
+      token_limit: 1000,
+      used_tokens: 1000,
+      remaining_tokens: 0,
+      limit_reached: true,
+      custom_limit: true,
+    });
+    render(<AskClient />);
+    expect(await screen.findByText(/You have used your token allowance/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
   });
 });

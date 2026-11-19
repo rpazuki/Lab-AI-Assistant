@@ -14,7 +14,9 @@ COPY packages/python /app/packages/python
 COPY services/api /app/services/api
 COPY database /app/database
 COPY infra/environments /app/infra/environments
-RUN pip install -e "/app/packages/python[anthropic]" -e /app/services/api
+# `parsers` brings openpyxl (the wide XLSX in an export) and pypdf (reading a
+# bulk-imported PDF for its DOI). Both are pure Python.
+RUN pip install -e "/app/packages/python[parsers,anthropic]" -e /app/services/api
 
 RUN useradd --create-home --uid 10001 api \
  && mkdir -p /var/lib/lab-assistant/objects /var/lib/lab-assistant/model-cache \

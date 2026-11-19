@@ -232,6 +232,14 @@ class Settings(BaseSettings):
     password_hash_scheme: str = "argon2id"
     login_rate_limit_per_minute: int = 10
 
+    # ── chat allowance and oversight ────────────────────────────────────────
+    #: Tokens (question and answer, summed over every answer) a member may use,
+    #: unless an admin sets their own limit. The predecessor's default.
+    chat_token_limit_default: int = 1_000_000
+    #: Whether admins may read members' conversations. When on, members are told
+    #: so on the Ask page, and every read is audited.
+    chat_admin_access: bool = True
+
     # ── model providers ─────────────────────────────────────────────────────
     llm_provider: str = "fake"  # fake | anthropic
     llm_model: str = "claude-sonnet-4-6"

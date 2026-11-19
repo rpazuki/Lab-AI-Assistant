@@ -15,7 +15,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="flex min-h-screen">
         <Sidebar />
-        <main className="min-w-0 flex-1 px-4 py-8 sm:px-8">
+        {/* A container, so a page lays out by the room it has beside the sidebar. */}
+        <main className="@container min-w-0 flex-1 px-4 py-8 sm:px-8">
           <div className="mx-auto max-w-7xl">{children}</div>
         </main>
       </body>

@@ -17,6 +17,36 @@ vi.mock("@/lib/api", async (importOriginal) => {
     revokeInvitation: vi.fn(async () => ({ id: "i1", state: "revoked" })),
     updateMember: vi.fn(),
     revokeMemberSessions: vi.fn(async () => ({ user_id: "u2" })),
+    listMemberSessions: vi.fn(async () => [
+      {
+        id: "s1",
+        title: "Lipid yields",
+        pinned_release_id: null,
+        created_at: "2026-11-18T10:00:00Z",
+        updated_at: "2026-11-18T10:05:00Z",
+        deleted: true,
+      },
+    ]),
+    getMemberSession: vi.fn(async () => ({
+      id: "s1",
+      title: "Lipid yields",
+      pinned_release_id: null,
+      created_at: null,
+      updated_at: null,
+      deleted: true,
+      messages: [
+        {
+          id: "m1",
+          role: "user",
+          content: "What lipid yield was reported?",
+          created_at: null,
+          release_id: null,
+          citations: [],
+          citation_validation_passed: true,
+          unsupported_handles: [],
+        },
+      ],
+    })),
   };
 });
 
@@ -43,8 +73,25 @@ function member(overrides: Partial<Member>): Member {
     accepted_at: "2026-11-01T10:00:00Z",
     last_login_at: null,
     account_active: true,
+    token_limit: 1_000_000,
+    custom_token_limit: false,
+    usage: {
+      sessions: 2,
+      questions: 3,
+      answers: 3,
+      input_tokens: 1000,
+      output_tokens: 500,
+      total_tokens: 1500,
+      last_active_at: null,
+      avg_latency_ms: 800,
+    },
+    limit_reached: false,
     ...overrides,
   };
+}
+
+function roster(items: Member[]) {
+  return { items, token_limit_default: 1_000_000, chat_admin_access: true };
 }
 
 const OPEN: Invitation = {
@@ -62,10 +109,12 @@ describe("MembersClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.getMe).mockResolvedValue(ME);
-    vi.mocked(api.listMembers).mockResolvedValue([
-      member({ user_id: "u1", email: "admin@lab.invalid", full_name: "Lab Admin", role: "admin" }),
-      member({}),
-    ]);
+    vi.mocked(api.listMembers).mockResolvedValue(
+      roster([
+        member({ user_id: "u1", email: "admin@lab.invalid", full_name: "Lab Admin", role: "admin" }),
+        member({}),
+      ]),
+    );
     vi.mocked(api.listInvitations).mockResolvedValue([OPEN]);
   });
 
@@ -125,7 +174,7 @@ describe("MembersClient", () => {
   });
 
   it("offers reinstatement to a suspended member", async () => {
-    vi.mocked(api.listMembers).mockResolvedValue([member({ status: "suspended" })]);
+    vi.mocked(api.listMembers).mockResolvedValue(roster([member({ status: "suspended" })]));
     render(<MembersClient />);
     expect(await screen.findByRole("button", { name: "Reinstate" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Sign out everywhere" })).toBeDisabled();
@@ -151,5 +200,60 @@ describe("MembersClient", () => {
     const select = await screen.findByRole("combobox", { name: "Role of researcher@lab.invalid" });
     await userEvent.selectOptions(select, "admin");
     expect(await screen.findByRole("alert")).toHaveTextContent("only an admin can grant");
+  });
+
+  it("shows workspace totals and each member's usage", async () => {
+    render(<MembersClient />);
+    const tiles = await screen.findByLabelText("Workspace usage");
+    expect(tiles).toHaveTextContent("Questions asked6");
+    expect(tiles).toHaveTextContent("Tokens used3k");
+    expect(screen.getAllByText("1.5k / 1M tokens (default)")).toHaveLength(2);
+  });
+
+  it("sets a member's token limit", async () => {
+    vi.mocked(api.updateMember).mockResolvedValue(member({ token_limit: 5000, custom_token_limit: true }));
+    render(<MembersClient />);
+    await screen.findByText("(you)");
+    const rows = screen.getAllByRole("row");
+    const researcher = rows.find((item) => item.textContent?.includes("researcher@lab.invalid")) as HTMLElement;
+    await userEvent.click(within(researcher).getByRole("button", { name: "Change limit" }));
+    const input = screen.getByRole("spinbutton", { name: "Token limit for researcher@lab.invalid" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "5000");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(api.updateMember).toHaveBeenCalledWith("u2", { token_limit: 5000 });
+  });
+
+  it("returns a member with their own limit to the default", async () => {
+    vi.mocked(api.listMembers).mockResolvedValue(
+      roster([member({ token_limit: 5000, custom_token_limit: true })]),
+    );
+    vi.mocked(api.updateMember).mockResolvedValue(member({}));
+    render(<MembersClient />);
+    await userEvent.click(await screen.findByRole("button", { name: "Change limit" }));
+    await userEvent.click(screen.getByRole("button", { name: "Use default (1M)" }));
+    expect(api.updateMember).toHaveBeenCalledWith("u2", { token_limit: null });
+  });
+
+  it("reads a member's conversations behind an audit notice", async () => {
+    render(<MembersClient />);
+    await screen.findByText("(you)");
+    const rows = screen.getAllByRole("row");
+    const researcher = rows.find((item) => item.textContent?.includes("researcher@lab.invalid")) as HTMLElement;
+    await userEvent.click(within(researcher).getByRole("button", { name: "Read chats" }));
+
+    expect(await screen.findByText(/recorded in the audit log under your name/)).toBeInTheDocument();
+    const session = await screen.findByRole("button", { name: /Lipid yields/ });
+    expect(session).toHaveTextContent("deleted by the member");
+    await userEvent.click(session);
+    expect(await screen.findByText("What lipid yield was reported?")).toBeInTheDocument();
+    expect(api.getMemberSession).toHaveBeenCalledWith("u2", "s1");
+  });
+
+  it("offers no chat reading when the installation turns it off", async () => {
+    vi.mocked(api.listMembers).mockResolvedValue({ ...roster([member({})]), chat_admin_access: false });
+    render(<MembersClient />);
+    await screen.findByRole("button", { name: "Suspend" });
+    expect(screen.queryByRole("button", { name: "Read chats" })).not.toBeInTheDocument();
   });
 });

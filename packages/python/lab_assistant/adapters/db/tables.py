@@ -169,6 +169,7 @@ memberships = Table(
     Column("role", Text, nullable=False),
     Column("status", Text, nullable=False, server_default=text("'active'")),
     Column("extra_capabilities", _ARRAY_TEXT, nullable=False, server_default=text("'{}'")),
+    Column("token_limit", Integer),
     Column("invited_by", _UUID),
     Column("accepted_at", DateTime(timezone=True)),
     Column("expires_at", DateTime(timezone=True)),
@@ -1099,6 +1100,44 @@ evaluation_runs = Table(
     Column("error_detail", Text),
     Column("completed_at", DateTime(timezone=True)),
     Index("ix_evaluation_runs_release", "workspace_id", "release_id"),
+)
+
+#: A person's grades for one case of a generation run (0007). The scores and
+#: flags are the predecessor's review form; they sit beside the automatic metrics
+#: and never replace them.
+evaluation_reviews = Table(
+    "evaluation_reviews",
+    METADATA,
+    Column("id", _UUID, primary_key=True),
+    Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    Column("run_id", _UUID, ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False),
+    Column("case_id", Text, nullable=False),
+    Column("assigned_to", _UUID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("assigned_by", _UUID, ForeignKey("users.id", ondelete="SET NULL")),
+    Column("status", Text, nullable=False, server_default=text("'assigned'")),
+    Column("scores", _JSONB, nullable=False, server_default=text("'{}'")),
+    Column("flags", _ARRAY_TEXT, nullable=False, server_default=text("'{}'")),
+    Column("reviewer_confidence", Integer),
+    Column("comment", Text),
+    Column("suggested_answer", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("submitted_at", DateTime(timezone=True)),
+    UniqueConstraint("run_id", "case_id", "assigned_to", name="evaluation_review_assignment"),
+    Index("ix_evaluation_reviews_assignee", "workspace_id", "assigned_to", "status"),
+)
+
+#: Benchmarks a release must pass before it is published (0007). One version per
+#: benchmark: requiring a new version replaces the old requirement.
+release_gate_benchmarks = Table(
+    "release_gate_benchmarks",
+    METADATA,
+    Column(
+        "workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
+    ),
+    Column("benchmark_id", Text, primary_key=True),
+    Column("version", Text, nullable=False),
+    Column("set_by", _UUID, ForeignKey("users.id", ondelete="SET NULL")),
+    Column("set_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 
 #: Benchmarks registered with this installation (0005). A version is immutable:

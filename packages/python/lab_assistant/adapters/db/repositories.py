@@ -39,7 +39,7 @@ from lab_assistant.domain.assets import (
     Manifestation,
     RightsDecision,
 )
-from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback
+from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback, MessageRole, UsageTotals
 from lab_assistant.domain.claims import Claim, ClaimRevision, Entity, Experiment, Review
 from lab_assistant.domain.identity import IdentityDecision, Work, WorkIdentifier, WorkRelation
 from lab_assistant.domain.objects import ObjectRecord
@@ -1468,6 +1468,45 @@ class _Chat(_Base):
     async def list_feedback(self, workspace_id: UUID, *, limit: int = 100) -> list[Feedback]:
         return await self._many(FEEDBACK, self._scope(FEEDBACK, workspace_id), limit=limit)
 
+    async def usage_by_user(
+        self, workspace_id: UUID, *, user_ids: Sequence[UUID] | None = None
+    ) -> dict[UUID, UsageTotals]:
+        sessions, messages = t.chat_sessions, t.chat_messages
+        is_user = messages.c.role == MessageRole.USER.value
+        is_answer = messages.c.role == MessageRole.ASSISTANT.value
+        statement = (
+            select(
+                sessions.c.user_id,
+                func.count(func.distinct(sessions.c.id)).label("sessions"),
+                func.count(messages.c.id).filter(is_user).label("questions"),
+                func.count(messages.c.id).filter(is_answer).label("answers"),
+                func.coalesce(func.sum(messages.c.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(messages.c.output_tokens), 0).label("output_tokens"),
+                func.max(messages.c.created_at).label("last_active_at"),
+                func.avg(messages.c.latency_ms).filter(is_answer).label("avg_latency_ms"),
+            )
+            .select_from(sessions.outerjoin(messages, messages.c.session_id == sessions.c.id))
+            .where(sessions.c.workspace_id == workspace_id)
+            .group_by(sessions.c.user_id)
+        )
+        if user_ids is not None:
+            statement = statement.where(sessions.c.user_id.in_(list(user_ids)))
+        result = await self._c.execute(statement)
+        return {
+            UUID(str(row.user_id)): UsageTotals(
+                sessions=int(row.sessions or 0),
+                questions=int(row.questions or 0),
+                answers=int(row.answers or 0),
+                input_tokens=int(row.input_tokens or 0),
+                output_tokens=int(row.output_tokens or 0),
+                last_active_at=row.last_active_at,
+                avg_latency_ms=(
+                    float(row.avg_latency_ms) if row.avg_latency_ms is not None else None
+                ),
+            )
+            for row in result
+        }
+
 
 class _Evaluations(_Base):
     _RUN_MUTABLE = (
@@ -1585,6 +1624,106 @@ class _Evaluations(_Base):
             .order_by(t.benchmarks.c.benchmark_id, t.benchmarks.c.version)
         )
         return [dict(row) for row in result.mappings().all()]
+
+    _REVIEW_MUTABLE = (
+        "status",
+        "scores",
+        "flags",
+        "reviewer_confidence",
+        "comment",
+        "suggested_answer",
+        "submitted_at",
+    )
+
+    async def add_review(self, review: dict[str, Any]) -> None:
+        await self._c.execute(
+            insert(t.evaluation_reviews).values(
+                id=uuid_or_none(review["id"]),
+                workspace_id=uuid_or_none(review["workspace_id"]),
+                run_id=uuid_or_none(review["run_id"]),
+                case_id=review["case_id"],
+                assigned_to=uuid_or_none(review["assigned_to"]),
+                assigned_by=uuid_or_none(review.get("assigned_by")),
+                status=review.get("status", "assigned"),
+                scores=review.get("scores", {}),
+                flags=[str(flag) for flag in review.get("flags", [])],
+                reviewer_confidence=review.get("reviewer_confidence"),
+                comment=review.get("comment"),
+                suggested_answer=review.get("suggested_answer"),
+                created_at=review.get("created_at") or datetime.now(tz=_utc()),
+                submitted_at=review.get("submitted_at"),
+            )
+        )
+
+    async def update_review(self, review: dict[str, Any]) -> None:
+        values: dict[str, Any] = {key: review[key] for key in self._REVIEW_MUTABLE if key in review}
+        if "flags" in values:
+            values["flags"] = [str(flag) for flag in values["flags"]]
+        await self._c.execute(
+            update(t.evaluation_reviews)
+            .where(
+                t.evaluation_reviews.c.workspace_id == uuid_or_none(review["workspace_id"]),
+                t.evaluation_reviews.c.id == uuid_or_none(review["id"]),
+            )
+            .values(**values)
+        )
+
+    async def get_review(self, workspace_id: UUID, review_id: UUID) -> dict[str, Any] | None:
+        result = await self._c.execute(
+            select(t.evaluation_reviews).where(
+                t.evaluation_reviews.c.workspace_id == workspace_id,
+                t.evaluation_reviews.c.id == review_id,
+            )
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+    async def list_reviews(
+        self,
+        workspace_id: UUID,
+        *,
+        run_id: UUID | None = None,
+        assigned_to: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        conditions = [t.evaluation_reviews.c.workspace_id == workspace_id]
+        if run_id is not None:
+            conditions.append(t.evaluation_reviews.c.run_id == run_id)
+        if assigned_to is not None:
+            conditions.append(t.evaluation_reviews.c.assigned_to == assigned_to)
+        result = await self._c.execute(
+            select(t.evaluation_reviews)
+            .where(*conditions)
+            .order_by(t.evaluation_reviews.c.created_at, t.evaluation_reviews.c.case_id)
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+    async def list_release_gates(self, workspace_id: UUID) -> list[dict[str, Any]]:
+        result = await self._c.execute(
+            select(t.release_gate_benchmarks)
+            .where(t.release_gate_benchmarks.c.workspace_id == workspace_id)
+            .order_by(t.release_gate_benchmarks.c.benchmark_id)
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+    async def set_release_gate(self, gate: dict[str, Any]) -> None:
+        await self.clear_release_gate(UUID(str(gate["workspace_id"])), gate["benchmark_id"])
+        await self._c.execute(
+            insert(t.release_gate_benchmarks).values(
+                workspace_id=uuid_or_none(gate["workspace_id"]),
+                benchmark_id=gate["benchmark_id"],
+                version=gate["version"],
+                set_by=uuid_or_none(gate.get("set_by")),
+                set_at=gate.get("set_at") or datetime.now(tz=_utc()),
+            )
+        )
+
+    async def clear_release_gate(self, workspace_id: UUID, benchmark_id: str) -> None:
+        await self._c.execute(
+            delete(t.release_gate_benchmarks).where(
+                t.release_gate_benchmarks.c.workspace_id == workspace_id,
+                t.release_gate_benchmarks.c.benchmark_id == benchmark_id,
+            )
+        )
 
 
 def _utc():

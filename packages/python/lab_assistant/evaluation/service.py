@@ -291,7 +291,9 @@ class EvaluationHandler:
             run = await uow.evaluations.get_run(workspace_id, run_id)
             if run is None:
                 raise NotFound(f"evaluation run {run_id} not found")
-            if run.get("status") == "succeeded":
+            if run.get("status") in ("succeeded", "cancelled"):
+                # A cancelled run stays cancelled: a task that was already leased
+                # when the run was cancelled must not bring it back.
                 return StageResult(stage=StageName.EVALUATION, status=StageStatus.SUCCEEDED_NOOP)
             benchmark_id, _, version = str(run["benchmark"]).rpartition("@")
             row = await uow.evaluations.get_benchmark(workspace_id, benchmark_id, version)
@@ -313,6 +315,11 @@ class EvaluationHandler:
             # Recorded on the run before the task engine decides whether to retry, so
             # the page shows why; a retry that succeeds overwrites it.
             async with context.uow_factory() as uow:
+                current = await uow.evaluations.get_run(workspace_id, run_id)
+                if current is not None and current.get("status") == "cancelled":
+                    return StageResult(
+                        stage=StageName.EVALUATION, status=StageStatus.SUCCEEDED_NOOP
+                    )
                 await uow.evaluations.update_run(
                     {
                         "id": run_id,
@@ -326,6 +333,11 @@ class EvaluationHandler:
             raise
 
         async with context.uow_factory() as uow:
+            current = await uow.evaluations.get_run(workspace_id, run_id)
+            if current is not None and current.get("status") == "cancelled":
+                # Cancelled while it was being measured: the measurement is dropped,
+                # because whoever cancelled it decided it should not count.
+                return StageResult(stage=StageName.EVALUATION, status=StageStatus.SUCCEEDED_NOOP)
             await uow.evaluations.update_run(
                 {
                     "id": run_id,

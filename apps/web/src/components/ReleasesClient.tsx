@@ -4,15 +4,18 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Alert, Button, Empty, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
+  ApiError,
   approveRelease,
   buildExport,
+  exportDownloadUrl,
   draftRelease,
+  listReleaseGates,
   listReleases,
   publishRelease,
   rollbackRelease,
   validateRelease,
 } from "@/lib/api";
-import type { Release } from "@/types";
+import type { GateStatus, Release } from "@/types";
 
 /**
  * Releases and exports.
@@ -27,6 +30,14 @@ export function ReleasesClient() {
     { alias: string; release_id: string | null; previous_release_id: string | null }[]
   >([]);
   const [status, setStatus] = useState<string | null>(null);
+  const [gateStatus, setGateStatus] = useState<Record<string, GateStatus[]>>({});
+  const [refused, setRefused] = useState<{ releaseId: string; blockers: string[] } | null>(null);
+  const [exported, setExported] = useState<{
+    releaseId: string;
+    valid: boolean;
+    problems: string[];
+    files: string[];
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -34,6 +45,16 @@ export function ReleasesClient() {
       const body = await listReleases();
       setReleases(body.items);
       setAliases(body.aliases);
+      // Required benchmarks, for the releases that could be published next.
+      const candidates = body.items.filter((release) => release.status === "approved");
+      const statuses = await Promise.all(
+        candidates.map((release) =>
+          listReleaseGates(release.id)
+            .then((answer) => [release.id, answer.status ?? []] as const)
+            .catch(() => [release.id, [] as GateStatus[]] as const),
+        ),
+      );
+      setGateStatus(Object.fromEntries(statuses));
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "releases could not be loaded");
@@ -43,6 +64,33 @@ export function ReleasesClient() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  /**
+   * Publish, and when the refusal is a required benchmark rather than the release
+   * itself, say which ones and offer an admin's override with a reason.
+   */
+  async function publish(release: Release, overrideReason?: string) {
+    setRefused(null);
+    setStatus("publishing…");
+    try {
+      await publishRelease(release.id, "current", overrideReason);
+      setStatus(`${release.name}@${release.semantic_version} is now current.`);
+      setError(null);
+      await refresh();
+    } catch (caught) {
+      setStatus(null);
+      const blockers =
+        caught instanceof ApiError && Array.isArray(caught.context.blockers)
+          ? (caught.context.blockers as unknown[]).map(String)
+          : [];
+      if (blockers.length > 0 && blockers.every((item) => item.startsWith("evaluation:"))) {
+        setRefused({ releaseId: release.id, blockers });
+        setError(null);
+      } else {
+        setError(caught instanceof Error ? caught.message : "publish failed");
+      }
+    }
+  }
 
   async function run(label: string, action: () => Promise<unknown>) {
     setStatus(`${label}…`);
@@ -169,23 +217,110 @@ export function ReleasesClient() {
                       failed.length > 0 ||
                       release.projection_ready_profiles.length === 0
                     }
-                    onClick={() => run("publish", () => publishRelease(release.id))}
+                    onClick={() => publish(release)}
                   >
                     Publish
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => run("export", () => buildExport(release.id))}
+                    onClick={async () => {
+                      setStatus("Building the export…");
+                      try {
+                        const built = await buildExport(release.id);
+                        setExported({ releaseId: release.id, ...built });
+                        setStatus(null);
+                        setError(null);
+                      } catch (caught) {
+                        setStatus(null);
+                        setError(caught instanceof Error ? caught.message : "the export failed");
+                      }
+                    }}
                   >
                     Build export
                   </Button>
                 </div>
+                {(gateStatus[release.id] ?? []).length > 0 ? (
+                  <ul aria-label="Required benchmarks" className="mt-2 flex flex-wrap gap-1">
+                    {(gateStatus[release.id] ?? []).map((gate) => (
+                      <li key={gate.key}>
+                        <StateChip state={`${gate.key}=${gate.passed ? "pass" : gate.run_status ?? "not run"}`} />
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {refused?.releaseId === release.id ? (
+                  <div className="mt-3 space-y-2">
+                    <Alert tone="warning" role="alert">
+                      Not published: a required benchmark has not passed on this release (
+                      {refused.blockers.map((item) => item.replace(/^evaluation:| has not passed$/g, "")).join(", ")}
+                      ). Run it on the Evaluation page, or an admin may publish anyway.
+                    </Alert>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => {
+                        const reason = window.prompt(
+                          "Why publish without a passing run? The reason is recorded in the audit log.",
+                        );
+                        if (reason && reason.trim()) void publish(release, reason.trim());
+                      }}
+                    >
+                      Publish anyway (admin)
+                    </Button>
+                  </div>
+                ) : null}
+                {exported?.releaseId === release.id ? (
+                  <ExportFiles exported={exported} />
+                ) : null}
               </li>
             );
           })}
         </ul>
       </Panel>
+    </div>
+  );
+}
+
+/** The files of a built export, each a download, with the whole package as a zip. */
+export function ExportFiles({
+  exported,
+}: {
+  exported: { releaseId: string; valid: boolean; problems: string[]; files: string[] };
+}) {
+  const data = exported.files.filter((file) => file.startsWith("data/"));
+  const other = exported.files.filter((file) => !file.startsWith("data/"));
+  return (
+    <div className="mt-3 space-y-2 rounded-control border border-border bg-surface-subtle px-4 py-3 text-sm">
+      {exported.valid ? null : (
+        <Alert tone="warning" role="status">
+          The package did not validate: {exported.problems.join("; ")}
+        </Alert>
+      )}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <a
+          className="font-semibold text-link underline hover:no-underline"
+          href={exportDownloadUrl(exported.releaseId)}
+          download
+        >
+          Download everything (.zip)
+        </a>
+        {data.map((file) => (
+          <a
+            key={file}
+            className="font-mono text-xs text-link underline hover:no-underline"
+            href={exportDownloadUrl(exported.releaseId, file)}
+            download
+          >
+            {file.replace(/^data\//, "")}
+          </a>
+        ))}
+      </div>
+      {other.length > 0 ? (
+        <p className="text-xs text-muted">
+          Also in the zip: {other.join(", ")}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -826,3 +826,112 @@ class TestEvaluationsOverSql:
         assert finished["failures"] == ["one miss"]
         assert finished["per_case"][0]["unresolved_relevant"] == ["pmid:1"]
         assert finished["requested_by"] == user.id
+
+    async def test_reviews_and_release_gates_round_trip(self, sql_stack) -> None:
+        from datetime import UTC, datetime
+
+        from lab_assistant.domain.chat import ChatMessage, ChatSession, MessageRole
+
+        accounts, context = sql_stack["accounts"], sql_stack["context"]
+        user = await accounts.create_user(email="r@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="review-lab", display_name="Review Lab", owner_user_id=user.id
+        )
+        now = datetime(2026, 11, 20, 9, tzinfo=UTC)
+        run_id, review_id = context.id_factory(), context.id_factory()
+        session = ChatSession(
+            id=context.id_factory(),
+            workspace_id=workspace.id,
+            user_id=user.id,
+            created_at=now,
+            updated_at=now,
+            deleted_at=now,
+        )
+        async with context.uow_factory() as uow:
+            await uow.evaluations.add_run(
+                {
+                    "id": run_id,
+                    "workspace_id": workspace.id,
+                    "benchmark": "gen@1",
+                    "benchmark_checksum": "c",
+                    "status": "succeeded",
+                    "kind": "generation",
+                    "created_at": now,
+                }
+            )
+            await uow.evaluations.add_review(
+                {
+                    "id": review_id,
+                    "workspace_id": workspace.id,
+                    "run_id": run_id,
+                    "case_id": "q1",
+                    "assigned_to": user.id,
+                    "assigned_by": user.id,
+                    "created_at": now,
+                }
+            )
+            await uow.evaluations.update_review(
+                {
+                    "id": review_id,
+                    "workspace_id": workspace.id,
+                    "status": "submitted",
+                    "scores": {"correctness": 4},
+                    "flags": ["corpus_gap"],
+                    "reviewer_confidence": 3,
+                    "comment": "ok",
+                    "submitted_at": now,
+                }
+            )
+            await uow.evaluations.set_release_gate(
+                {
+                    "workspace_id": workspace.id,
+                    "benchmark_id": "gen",
+                    "version": "1",
+                    "set_by": user.id,
+                    "set_at": now,
+                }
+            )
+            # Requiring a new version replaces the old requirement.
+            await uow.evaluations.set_release_gate(
+                {
+                    "workspace_id": workspace.id,
+                    "benchmark_id": "gen",
+                    "version": "2",
+                    "set_by": user.id,
+                    "set_at": now,
+                }
+            )
+            # Usage counts a deleted session's answers.
+            await uow.chat.add_session(session)
+            await uow.chat.add_message(
+                ChatMessage(
+                    id=context.id_factory(),
+                    workspace_id=workspace.id,
+                    session_id=session.id,
+                    role=MessageRole.ASSISTANT,
+                    content="a",
+                    input_tokens=30,
+                    output_tokens=12,
+                    latency_ms=400,
+                    created_at=now,
+                )
+            )
+            await uow.commit()
+
+        async with context.uow_factory() as uow:
+            [review] = await uow.evaluations.list_reviews(workspace.id, assigned_to=user.id)
+            gates = await uow.evaluations.list_release_gates(workspace.id)
+            usage = await uow.chat.usage_by_user(workspace.id)
+        assert review["status"] == "submitted"
+        assert review["scores"] == {"correctness": 4}
+        assert review["flags"] == ["corpus_gap"]
+        assert [(gate["benchmark_id"], gate["version"]) for gate in gates] == [("gen", "2")]
+        totals = usage[user.id]
+        assert (totals.sessions, totals.answers, totals.total_tokens) == (1, 1, 42)
+        assert totals.avg_latency_ms == 400
+
+        async with context.uow_factory() as uow:
+            await uow.evaluations.clear_release_gate(workspace.id, "gen")
+            await uow.commit()
+        async with context.uow_factory() as uow:
+            assert await uow.evaluations.list_release_gates(workspace.id) == []

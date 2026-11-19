@@ -201,6 +201,9 @@ class Membership(BaseModel):
     status: MembershipStatus = MembershipStatus.ACTIVE
     #: Capabilities granted beyond the role bundle.
     extra_capabilities: frozenset[Capability] = frozenset()
+    #: Tokens this member may use for answers, in total. None follows the
+    #: installation default (`chat_token_limit_default`).
+    token_limit: int | None = None
     invited_by: UUID | None = None
     accepted_at: datetime | None = None
     expires_at: datetime | None = None

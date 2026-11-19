@@ -364,6 +364,9 @@ class TestMembers:
         assert accepted.status_code == 200, accepted.text
         me = await client.get("/api/v1/auth/me", headers=_auth(accepted.json()["access_token"]))
         assert me.json()["role"] == "reviewer"
+        listed = (await client.get("/api/v1/members", headers=_auth(admin))).json()["items"]
+        joined = next(row for row in listed if row["email"] == "new.person@lab.invalid")
+        assert joined["last_login_at"] is not None
 
         again = await client.post(
             "/api/v1/invitations/accept", json={"token": token, "password": PASSWORD}
@@ -511,6 +514,163 @@ class TestMembers:
         assert response.status_code == 200
         assert (await client.get("/api/v1/auth/me", headers=_auth(researcher))).status_code == 401
         assert await _login(client, "researcher@lab.invalid")
+
+
+async def _seed_answer(api, *, tokens: int, deleted: bool = False) -> str:
+    """Record one question and answer for the researcher, as if asked earlier."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from lab_assistant.domain.chat import ChatMessage, ChatSession, MessageRole
+
+    harness, workspace = api["harness"], api["workspace"]
+    now = datetime.now(tz=UTC)
+    session = ChatSession(
+        id=uuid4(),
+        workspace_id=workspace.id,
+        user_id=api["researcher"].id,
+        title="Lipid yields",
+        created_at=now,
+        updated_at=now,
+        deleted_at=now if deleted else None,
+    )
+    async with harness.context.uow_factory() as uow:
+        await uow.chat.add_session(session)
+        for role, content, used in (
+            (MessageRole.USER, "What lipid yield was reported?", 0),
+            (MessageRole.ASSISTANT, "About 40% of dry cell weight.", tokens),
+        ):
+            await uow.chat.add_message(
+                ChatMessage(
+                    id=uuid4(),
+                    workspace_id=workspace.id,
+                    session_id=session.id,
+                    role=role,
+                    content=content,
+                    input_tokens=used // 2,
+                    output_tokens=used - used // 2,
+                    latency_ms=900 if role is MessageRole.ASSISTANT else 0,
+                    created_at=now,
+                )
+            )
+        await uow.commit()
+    return str(session.id)
+
+
+class TestUsageAndAllowance:
+    async def test_a_member_sees_their_own_allowance(self, api) -> None:
+        await _seed_answer(api, tokens=1200)
+        token = await _login(api["client"], "researcher@lab.invalid")
+        quota = (await api["client"].get("/api/v1/chat/quota", headers=_auth(token))).json()
+        assert quota == {
+            "token_limit": 1_000_000,
+            "used_tokens": 1200,
+            "remaining_tokens": 998_800,
+            "limit_reached": False,
+            "custom_limit": False,
+        }
+
+    async def test_deleting_a_conversation_does_not_refund_it(self, api) -> None:
+        await _seed_answer(api, tokens=500, deleted=True)
+        token = await _login(api["client"], "researcher@lab.invalid")
+        quota = (await api["client"].get("/api/v1/chat/quota", headers=_auth(token))).json()
+        assert quota["used_tokens"] == 500
+
+    async def test_asking_is_refused_once_the_allowance_is_used(self, api) -> None:
+        client = api["client"]
+        await _seed_answer(api, tokens=1000)
+        admin = await _login(client, "steward@lab.invalid")
+        limited = await client.patch(
+            f"/api/v1/members/{api['researcher'].id}",
+            json={"token_limit": 1000},
+            headers=_auth(admin),
+        )
+        assert limited.json()["limit_reached"] is True
+        assert limited.json()["custom_token_limit"] is True
+
+        token = await _login(client, "researcher@lab.invalid")
+        session_id = (await client.post("/api/v1/chat/sessions", headers=_auth(token))).json()["id"]
+        refused = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/messages",
+            headers=_auth(token),
+            json={"question": "Anything new?"},
+        )
+        assert refused.status_code == 429
+        assert refused.json()["error_class"] == "budget_exceeded"
+        assert refused.json()["context"]["token_limit"] == 1000
+
+        # Null returns the member to the default, which is far above 1000.
+        reset = await client.patch(
+            f"/api/v1/members/{api['researcher'].id}",
+            json={"token_limit": None},
+            headers=_auth(admin),
+        )
+        assert reset.json()["token_limit"] == 1_000_000
+        assert reset.json()["custom_token_limit"] is False
+
+    async def test_an_admin_sets_their_own_limit_but_not_their_role(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        own = f"/api/v1/members/{api['steward'].id}"
+        assert (
+            await client.patch(own, json={"token_limit": 5}, headers=_auth(admin))
+        ).status_code == 200
+        assert (
+            await client.patch(own, json={"role": "reviewer"}, headers=_auth(admin))
+        ).status_code == 403
+
+    async def test_members_list_carries_usage(self, api) -> None:
+        await _seed_answer(api, tokens=300)
+        admin = await _login(api["client"], "steward@lab.invalid")
+        body = (await api["client"].get("/api/v1/members", headers=_auth(admin))).json()
+        researcher = next(row for row in body["items"] if row["email"] == "researcher@lab.invalid")
+        assert researcher["usage"]["questions"] == 1
+        assert researcher["usage"]["answers"] == 1
+        assert researcher["usage"]["total_tokens"] == 300
+        assert researcher["usage"]["avg_latency_ms"] == 900
+        assert body["token_limit_default"] == 1_000_000
+        assert body["chat_admin_access"] is True
+
+
+class TestChatOversight:
+    async def test_an_admin_reads_a_members_chat_and_it_is_audited(self, api) -> None:
+        client = api["client"]
+        session_id = await _seed_answer(api, tokens=100)
+        admin = await _login(client, "steward@lab.invalid")
+        member = f"/api/v1/members/{api['researcher'].id}"
+
+        listed = await client.get(f"{member}/sessions", headers=_auth(admin))
+        assert [item["id"] for item in listed.json()["items"]] == [session_id]
+        read = await client.get(f"{member}/sessions/{session_id}", headers=_auth(admin))
+        assert [m["role"] for m in read.json()["messages"]] == ["user", "assistant"]
+
+        events = (await client.get("/api/v1/audit-events", headers=_auth(admin))).json()["items"]
+        reads = [e for e in events if e["action"] == "member_chat_read"]
+        assert {e["reason_code"] for e in reads} == {"admin_oversight_list", "admin_oversight_read"}
+
+    async def test_members_are_told_admins_can_read(self, api) -> None:
+        token = await _login(api["client"], "researcher@lab.invalid")
+        me = (await api["client"].get("/api/v1/auth/me", headers=_auth(token))).json()
+        assert me["chat_visible_to_admins"] is True
+
+    async def test_a_researcher_cannot_read_another_members_chat(self, api) -> None:
+        session_id = await _seed_answer(api, tokens=100)
+        token = await _login(api["client"], "researcher@lab.invalid")
+        response = await api["client"].get(
+            f"/api/v1/members/{api['researcher'].id}/sessions/{session_id}", headers=_auth(token)
+        )
+        assert response.status_code == 403
+
+    async def test_oversight_can_be_switched_off(self, api) -> None:
+        api["harness"].settings.chat_admin_access = False
+        try:
+            admin = await _login(api["client"], "steward@lab.invalid")
+            response = await api["client"].get(
+                f"/api/v1/members/{api['researcher'].id}/sessions", headers=_auth(admin)
+            )
+            assert response.status_code == 403
+        finally:
+            api["harness"].settings.chat_admin_access = True
 
 
 class TestSessionsAndAsk:
@@ -785,3 +945,175 @@ class TestEvaluation:
         )
         assert response.status_code == 422
         assert "not valid" in response.json()["detail"]
+
+
+class TestExportDownload:
+    async def _published(self, api):
+        from lab_assistant.application.context import resolve_actor
+        from lab_assistant.testing import publish_demo_corpus
+
+        steward = await resolve_actor(
+            api["harness"].context, user_id=api["steward"].id, workspace_id=api["workspace"].id
+        )
+        workspace = api["workspace"]
+        for action in (PolicyAction.EXPORT_CLAIMS, PolicyAction.EXPORT_METADATA):
+            await api["harness"].accounts.grant(
+                steward,
+                subject_type=SubjectType.WORKSPACE,
+                subject_id=workspace.id,
+                resource_type=ResourceType.WORKSPACE,
+                resource_id=workspace.id,
+                action=action,
+                effect=Effect.ALLOW,
+                policy_basis="workspace_export",
+            )
+        return await publish_demo_corpus(api["harness"], steward)
+
+    async def test_the_whole_package_downloads_as_a_zip(self, api) -> None:
+        import io
+        import zipfile
+
+        corpus = await self._published(api)
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        built = await api["client"].post(f"/api/v1/exports/{corpus.release_id}", headers=headers)
+        response = await api["client"].get(
+            f"/api/v1/exports/{corpus.release_id}/download", headers=headers
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        assert "attachment" in response.headers["content-disposition"]
+        names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
+        assert sorted(names) == built.json()["files"]
+
+    async def test_one_file_downloads_with_its_type(self, api) -> None:
+        corpus = await self._published(api)
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        files = (
+            await api["client"].post(f"/api/v1/exports/{corpus.release_id}", headers=headers)
+        ).json()["files"]
+        # The CSV is always there; the XLSX beside it needs openpyxl (`parsers`).
+        assert "data/wide-form.csv" in files
+        response = await api["client"].get(
+            f"/api/v1/exports/{corpus.release_id}/download",
+            params={"file": "data/wide-form.csv"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert response.headers["content-disposition"].endswith('-wide-form.csv"')
+
+    async def test_an_unknown_file_is_not_found(self, api) -> None:
+        corpus = await self._published(api)
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        response = await api["client"].get(
+            f"/api/v1/exports/{corpus.release_id}/download",
+            params={"file": "../../etc/passwd"},
+            headers=headers,
+        )
+        assert response.status_code == 404
+
+    async def test_a_researcher_cannot_download(self, api) -> None:
+        corpus = await self._published(api)
+        headers = _auth(await _login(api["client"], "researcher@lab.invalid"))
+        response = await api["client"].get(
+            f"/api/v1/exports/{corpus.release_id}/download", headers=headers
+        )
+        assert response.status_code == 403
+
+
+class TestBulkImport:
+    async def test_a_dry_run_reports_each_file(self, api) -> None:
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        response = await api["client"].post(
+            "/api/v1/bulk-imports",
+            headers=headers,
+            data={"dry_run": "true"},
+            files=[
+                ("files", ("10.1234_nothing.waiting.pdf", b"%PDF-1.7", "application/pdf")),
+                ("files", ("notes.pdf", b"%PDF-1.7", "application/pdf")),
+            ],
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["dry_run"] is True
+        assert body["counts"] == {"unmatched": 2}
+        assert [item["identifiers"] for item in body["items"]] == [
+            ["doi:10.1234/nothing.waiting"],
+            [],
+        ]
+
+    async def test_importing_without_an_attestation_is_refused(self, api) -> None:
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        response = await api["client"].post(
+            "/api/v1/bulk-imports",
+            headers=headers,
+            files=[("files", ("a.pdf", b"%PDF-1.7", "application/pdf"))],
+        )
+        assert response.status_code == 422
+
+
+class TestEvaluationWorkbench:
+    async def test_a_required_benchmark_blocks_publishing_until_overridden(self, api) -> None:
+        from lab_assistant.application.context import resolve_actor
+        from lab_assistant.domain.states import ReleaseState
+        from lab_assistant.testing import publish_demo_corpus
+
+        harness, client = api["harness"], api["client"]
+        steward = await resolve_actor(
+            harness.context, user_id=api["steward"].id, workspace_id=api["workspace"].id
+        )
+        corpus = await publish_demo_corpus(harness, steward)
+        async with harness.context.uow_factory() as uow:
+            release = await uow.releases.get(steward.workspace_id, corpus.release_id)
+            release.status = ReleaseState.APPROVED
+            await uow.releases.update(release)
+            await uow.commit()
+        headers = _auth(await _login(client, "steward@lab.invalid"))
+        await client.post("/api/v1/evaluation/benchmarks", json=_EVAL_BENCHMARK, headers=headers)
+
+        required = await client.put(
+            "/api/v1/evaluation/release-gates",
+            json={"benchmark_id": "api-retrieval", "version": "1.0.0"},
+            headers=headers,
+        )
+        assert [gate["key"] for gate in required.json()["items"]] == ["api-retrieval@1.0.0"]
+        status = await client.get(
+            "/api/v1/evaluation/release-gates",
+            params={"release_id": str(corpus.release_id)},
+            headers=headers,
+        )
+        assert status.json()["status"][0]["passed"] is False
+
+        refused = await client.post(
+            f"/api/v1/corpus-releases/{corpus.release_id}/publish", headers=headers
+        )
+        assert refused.status_code == 422
+        assert refused.json()["context"]["blockers"] == [
+            "evaluation:api-retrieval@1.0.0 has not passed"
+        ]
+        published = await client.post(
+            f"/api/v1/corpus-releases/{corpus.release_id}/publish",
+            json={"override_reason": "gold set is being rewritten"},
+            headers=headers,
+        )
+        assert published.status_code == 200, published.text
+
+    async def test_reviewers_and_my_reviews_are_listed(self, api) -> None:
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        reviewers = await api["client"].get("/api/v1/evaluation/reviewers", headers=headers)
+        # The researcher holds no reviewer capability; the admin does.
+        assert [item["email"] for item in reviewers.json()["items"]] == ["steward@lab.invalid"]
+        mine = await api["client"].get("/api/v1/evaluation/reviews/mine", headers=headers)
+        assert mine.json()["items"] == []
+        assert mine.json()["scores"][0] == "correctness"
+
+    async def test_comparing_unknown_runs_is_not_found(self, api) -> None:
+        from uuid import uuid4
+
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        response = await api["client"].get(
+            "/api/v1/evaluation/compare",
+            params={"base": str(uuid4()), "candidate": str(uuid4())},
+            headers=headers,
+        )
+        assert response.status_code == 404

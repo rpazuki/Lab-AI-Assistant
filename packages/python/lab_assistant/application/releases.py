@@ -17,9 +17,11 @@ from uuid import UUID
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.objects import register_object
 from lab_assistant.application.pagination import collect_pages
+from lab_assistant.application.release_gates import evaluation_gate_status
 from lab_assistant.contracts.canonical import canonical_json
 from lab_assistant.contracts.errors import (
     NotFound,
+    PolicyDenied,
     StateTransitionError,
     ValidationFailure,
 )
@@ -40,7 +42,7 @@ from lab_assistant.domain.release import (
     compute_release_diff,
 )
 from lab_assistant.domain.states import ParseState, ReleaseState, RelevanceState, ReviewState
-from lab_assistant.domain.workspace import Capability
+from lab_assistant.domain.workspace import Capability, Role
 
 __all__ = ["DEFAULT_ALIAS", "ReleaseDraftRequest", "ReleaseService"]
 
@@ -430,16 +432,40 @@ class ReleaseService:
         )
 
     async def publish(
-        self, actor: ActorContext, *, release_id: UUID, alias: str = DEFAULT_ALIAS
+        self,
+        actor: ActorContext,
+        *,
+        release_id: UUID,
+        alias: str = DEFAULT_ALIAS,
+        override_reason: str | None = None,
     ) -> SearchAlias:
-        """Switch the alias atomically, or refuse with the blockers."""
+        """Switch the alias atomically, or refuse with the blockers.
+
+        Required benchmarks (see ``release_gates``) are blockers like any other,
+        except that an admin may publish past them by giving ``override_reason``,
+        which is audited. Nothing overrides the release's own blockers.
+        """
         self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         actor.require(Capability.APPROVE_RELEASE)
+        reason = (override_reason or "").strip()
         context = self._context
         async with context.uow_factory() as uow:
             release = await uow.releases.get(actor.workspace_id, release_id)
             if release is None:
                 raise NotFound(f"release {release_id} not found")
+            gate_status = await evaluation_gate_status(uow, actor.workspace_id, release_id)
+            unmet = [status for status in gate_status if not status.passed]
+            is_admin = actor.membership is not None and actor.membership.role is Role.ADMIN
+            if unmet and reason and not is_admin:
+                raise PolicyDenied("only an admin can publish past a required benchmark")
+            if unmet and not reason:
+                raise ValidationFailure(
+                    "release cannot be published: a required benchmark has not passed on it",
+                    context={
+                        "blockers": [f"evaluation:{status.key} has not passed" for status in unmet],
+                        "evaluation_gates": [status.as_dict() for status in gate_status],
+                    },
+                )
             if release.status is ReleaseState.APPROVED:
                 release.transition_to(ReleaseState.PUBLISHING)
             blockers = release.publish_blockers()
@@ -488,6 +514,23 @@ class ReleaseService:
                     },
                 )
             )
+            if unmet:
+                await uow.audit.append(
+                    context.audit.build(
+                        workspace_id=actor.workspace_id,
+                        actor_type=ActorType.USER,
+                        actor_id=actor.user_id,
+                        action=AuditAction.RELEASE_GATE_OVERRIDDEN,
+                        subject_type="corpus_release",
+                        subject_id=release_id,
+                        previous_hash=await uow.audit.latest_hash(actor.workspace_id),
+                        reason_code="admin_override",
+                        metadata={
+                            "reason": reason[:500],
+                            "unmet": [status.key for status in unmet],
+                        },
+                    )
+                )
             await uow.audit.add_outbox(
                 _outbox_event(
                     context,

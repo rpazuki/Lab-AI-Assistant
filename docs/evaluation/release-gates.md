@@ -1,6 +1,6 @@
 Status: active
 Owner: data steward
-Last verified: 2026-08-12
+Last verified: 2026-11-20
 Source of truth: `packages/python/lab_assistant/domain/release.py`
 
 # Release gates
@@ -44,3 +44,18 @@ cannot be consciously overridden with a recorded reason gets bypassed by other m
 the threshold, and the report digest. Fix the corpus, the template, or the parameters —
 then re-run evaluation and re-validate. Editing the threshold is a recorded change to
 the scope version, visible in the release manifest, not a quiet fix.
+
+## Required benchmarks
+
+A data steward can mark a registered benchmark version **required for publishing** on
+the Evaluation page (`PUT /api/v1/evaluation/release-gates`). Publishing a release then
+needs, for every required benchmark, a run against *that* release that succeeded with
+every gate true. The check is made when publishing, beside the release's own blockers
+(`application/release_gates.py`), and the Releases page shows each approved release's
+standing against every requirement.
+
+This is the one gate an admin may **consciously override**: publishing with an
+`override_reason` succeeds, and writes a `release_gate_overridden` audit event with the
+reason and the unmet benchmarks. Only an admin may do it, and it applies to one publish
+— the next release is gated again. Hard gates and the release's own blockers have no
+override.

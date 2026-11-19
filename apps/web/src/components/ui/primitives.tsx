@@ -163,9 +163,9 @@ export function Alert({
 function stateTone(state: string): Tone {
   return /fail|reject|conflict|quarantin|dead/.test(state)
     ? "danger"
-    : /await|degrad|unreview|pending|draft|proposed|queued|running|suspend/.test(state)
+    : /await|degrad|unreview|pending|draft|proposed|queued|running|suspend|ambig|unmatch/.test(state)
       ? "warning"
-      : /publish|accept|succe|ready|resolved|included|valid|pass|^active$|^open$/.test(state)
+      : /publish|accept|succe|ready|resolved|included|valid|pass|^active$|^open$|^imported$|^matched$/.test(state)
         ? "success"
         : "neutral";
 }

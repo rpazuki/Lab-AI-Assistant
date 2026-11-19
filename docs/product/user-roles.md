@@ -1,6 +1,6 @@
 Status: active
 Owner: product owner
-Last verified: 2026-08-12
+Last verified: 2026-11-20
 Source of truth: `packages/python/lab_assistant/domain/workspace.py`
 
 # Roles and capabilities
@@ -43,6 +43,20 @@ no override flag, because a flag like that becomes the normal path within a mont
 
 ## Joining and leaving
 
-Members are invited by an admin; there is no self-registration. Deactivating a member
-bumps their `auth_epoch`, which invalidates every issued session immediately — a
-revocation that waits for a token to expire is not a revocation.
+Members are invited by an admin; there is no self-registration. On the **Members** page
+an admin enters an address and a role and gets a link, shown once, to send however
+they like: there is no mailer. The link carries its token after `#`, so no server ever
+logs it; it expires (seven days by default), and inviting the same address again
+revokes the earlier link. Someone who already has an account accepts with their
+existing password.
+
+Suspending a member bumps their `auth_epoch`, which invalidates every issued session
+immediately — a revocation that waits for a token to expire is not a revocation — and
+refuses their sign-in until an admin reinstates them. "Sign out everywhere" bumps the
+epoch without suspending. Nobody changes their own role or status, and only an admin
+grants or removes the admin role, so a workspace cannot lose its last admin by
+accident.
+
+Each member has a **token allowance**: the tokens their answers have used, in total,
+against a limit (the installation default unless an admin sets one). At the limit,
+asking is refused until an admin raises it.

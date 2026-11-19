@@ -65,6 +65,11 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="12" cy="13" r="1" />
     </>
   ),
+  "answer-reviews": (
+    <>
+      <path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.3 6.8 19.1l1-5.8-4.3-4.1 5.9-.9z" />
+    </>
+  ),
   members: (
     <>
       <circle cx="9" cy="7" r="4" />
