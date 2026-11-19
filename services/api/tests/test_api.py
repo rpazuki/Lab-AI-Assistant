@@ -1178,3 +1178,28 @@ class TestDatasheets:
         headers = _auth(await _login(api["client"], "researcher@lab.invalid"))
         response = await api["client"].get("/api/v1/extraction/templates", headers=headers)
         assert response.status_code == 403
+
+
+class TestScopeLookup:
+    async def test_queries_are_written_per_source(self, api) -> None:
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        response = await api["client"].post(
+            "/api/v1/lookup/queries",
+            json={"organism_terms": ["Yarrowia lipolytica"], "product_terms": ["oleic acid"]},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert set(response.json()["queries"]) == {
+            "pubmed",
+            "europepmc",
+            "openalex",
+            "datacite",
+            "crossref",
+        }
+
+    async def test_a_researcher_cannot_build_scope_queries(self, api) -> None:
+        headers = _auth(await _login(api["client"], "researcher@lab.invalid"))
+        response = await api["client"].post(
+            "/api/v1/lookup/queries", json={"organism_terms": ["x"]}, headers=headers
+        )
+        assert response.status_code == 403

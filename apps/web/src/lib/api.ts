@@ -729,3 +729,51 @@ export function workingSheetCsvUrl(shape: "wide" | "long", template?: string): s
   if (template) params.set("template", template);
   return appPath(`/api/backend/extraction/rows.csv?${params.toString()}`);
 }
+
+// ── scope query lookup ────────────────────────────────────────────────────
+export interface OrganismSeed {
+  taxid: number;
+  scientific_name: string;
+  rank: string | null;
+  synonyms: string[];
+  common_names: string[];
+  lineage: string[];
+  search_terms: string[];
+}
+
+export interface ProductSeed {
+  cid: number;
+  preferred_name: string;
+  synonyms: string[];
+  molecular_formula: string | null;
+  inchikey: string | null;
+  search_terms: string[];
+}
+
+export const lookupOrganism = (params: { q?: string; taxid?: number; resolve?: boolean }) => {
+  const query = new URLSearchParams();
+  if (params.q) query.set("q", params.q);
+  if (params.taxid) query.set("taxid", String(params.taxid));
+  if (params.resolve) query.set("resolve", "true");
+  return request<{
+    suggestions: { taxid: number; scientific_name: string; rank: string | null; common_name: string | null }[];
+    seed: OrganismSeed | null;
+  }>(`/lookup/organism?${query.toString()}`);
+};
+
+export const lookupProduct = (params: { q?: string; cid?: number; resolve?: boolean }) => {
+  const query = new URLSearchParams();
+  if (params.q) query.set("q", params.q);
+  if (params.cid) query.set("cid", String(params.cid));
+  if (params.resolve) query.set("resolve", "true");
+  return request<{ suggestions: { name: string; cid: number | null }[]; seed: ProductSeed | null }>(
+    `/lookup/product?${query.toString()}`,
+  );
+};
+
+/** Each source's query for the chosen names, in that source's own dialect. */
+export const buildSourceQueries = (organismTerms: string[], productTerms: string[]) =>
+  request<{ queries: Record<string, string> }>("/lookup/queries", {
+    method: "POST",
+    body: JSON.stringify({ organism_terms: organismTerms, product_terms: productTerms }),
+  }).then((body) => body.queries);

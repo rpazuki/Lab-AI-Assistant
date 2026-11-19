@@ -22,6 +22,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, Query, Request, Respon
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from lab_assistant.adapters.connectors.seed_lookup import SeedLookupService, build_queries
 from lab_assistant.application.accounts import MemberView, invitation_state
 from lab_assistant.application.acquisition import AcquisitionService
 from lab_assistant.application.analytics import AnalyticsService
@@ -818,6 +819,59 @@ async def freeze_discovery(
         "metrics": run.metrics,
         "tasks": [str(task.id) for task in submitted],
     }
+
+
+# ── organism and product lookup, for scope queries ──────────────────────────
+class QueryTermsRequest(BaseModel):
+    organism_terms: list[str] = Field(default_factory=list, max_length=60)
+    product_terms: list[str] = Field(default_factory=list, max_length=60)
+
+
+@router.get("/lookup/organism")
+async def lookup_organism(
+    actor: CurrentActor,
+    container: Container,
+    q: Annotated[str, Query(max_length=200)] = "",
+    taxid: Annotated[int | None, Query(ge=1)] = None,
+    resolve: Annotated[bool, Query()] = False,
+) -> dict[str, Any]:
+    """Typeahead over NCBI Taxonomy; with `taxid` or `resolve`, the full seed."""
+    service = SeedLookupService(container.context)
+    suggestions = await service.suggest_organisms(actor, q) if taxid is None else []
+    seed = (
+        await service.resolve_organism(actor, query=q, taxid=taxid)
+        if taxid is not None or resolve
+        else None
+    )
+    return {"query": q, "suggestions": suggestions, "seed": seed.as_dict() if seed else None}
+
+
+@router.get("/lookup/product")
+async def lookup_product(
+    actor: CurrentActor,
+    container: Container,
+    q: Annotated[str, Query(max_length=200)] = "",
+    cid: Annotated[int | None, Query(ge=1)] = None,
+    resolve: Annotated[bool, Query()] = False,
+) -> dict[str, Any]:
+    """Typeahead over PubChem compounds; with `cid` or `resolve`, the full seed."""
+    service = SeedLookupService(container.context)
+    suggestions = await service.suggest_products(actor, q) if cid is None else []
+    seed = (
+        await service.resolve_product(actor, query=q, cid=cid)
+        if cid is not None or resolve
+        else None
+    )
+    return {"query": q, "suggestions": suggestions, "seed": seed.as_dict() if seed else None}
+
+
+@router.post("/lookup/queries", dependencies=[requires(InstallationCapability.CURATE_CORPUS)])
+async def lookup_queries(
+    actor: CurrentActor, payload: QueryTermsRequest = Body(...)
+) -> dict[str, Any]:
+    """Each source's query for the chosen names. Pure: nothing is stored or fetched."""
+    actor.require(Capability.MANAGE_SCOPE)
+    return {"queries": build_queries(payload.organism_terms, payload.product_terms)}
 
 
 # ── collections: identity decisions ─────────────────────────────────────────

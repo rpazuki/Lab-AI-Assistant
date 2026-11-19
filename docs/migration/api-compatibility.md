@@ -101,6 +101,7 @@ parsing, extraction, review, releases, and export. There is nothing to redirect;
 | `/runs/{id}/extraction-estimate` | `GET /api/v1/extraction/estimate` | sampled; priced at the configured rates |
 | `/runs/{id}/rows`, `/runs/{id}/candidates`, `/runs/{id}/datasheet.csv` | `GET /api/v1/extraction/rows`, `GET /extraction/rows.csv?shape=wide|long` | the working sheet of current proposals; the citable sheet is the release export |
 | `/runs/{id}/manifest.csv`, `/runs/{id}/acquisition-links.csv` | `GET /api/v1/acquisition-plans` | **retired as files**: the acquisition queue is a page |
+| `/admin/datasheets/lookup/organism`, `/lookup/product` | `GET /api/v1/lookup/organism`, `GET /api/v1/lookup/product`, `POST /api/v1/lookup/queries` | NCBI Taxonomy synonyms and PubChem names, then one query per source in its own dialect; used by the scope form, and only proposals until a steward saves the scope |
 
 ## Evaluation
 

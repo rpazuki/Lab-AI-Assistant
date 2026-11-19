@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { QueryHelper } from "@/components/QueryHelper";
 import {
   Alert,
   Button,
@@ -359,6 +360,18 @@ function ScopeForm({
           />
         </Field>
       </div>
+      <QueryHelper
+        onQueries={(written) =>
+          setQueries(
+            Object.fromEntries(
+              CONNECTORS.filter((connector) => connector.id in written).map((connector) => [
+                connector.id,
+                written[connector.id] ?? "",
+              ]),
+            ),
+          )
+        }
+      />
       <fieldset className="space-y-2">
         <legend className="mb-1 text-sm font-medium text-ink">
           Sources, each with a query in its own syntax
