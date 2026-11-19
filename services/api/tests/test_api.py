@@ -520,3 +520,77 @@ class TestOpenApi:
                 .replace("{handle}", "E0123456789"),
             )
             assert response.status_code != 200, f"{path} answered without a session"
+
+
+_EVAL_BENCHMARK = {
+    "benchmark_id": "api-retrieval",
+    "version": "1.0.0",
+    "kind": "retrieval",
+    "description": "Round trip through the API.",
+    "origin": "written for this test",
+    "licence": "internal",
+    "permitted_use": "testing",
+    "cases": [{"case_id": "c1", "question": "lipid yield", "relevant": ["doi:10.1/absent"]}],
+    "thresholds": {"recall@5": 0.5},
+}
+
+
+class TestEvaluation:
+    """Register a benchmark, queue a run, let the worker finish it, read the result."""
+
+    async def test_register_queue_and_read_a_run(self, api) -> None:
+        from lab_assistant.application.context import resolve_actor
+        from lab_assistant.testing import publish_demo_corpus
+
+        harness, client = api["harness"], api["client"]
+        steward = await resolve_actor(
+            harness.context, user_id=api["steward"].id, workspace_id=api["workspace"].id
+        )
+        corpus = await publish_demo_corpus(harness, steward)
+        headers = _auth(await _login(client, "steward@lab.invalid"))
+
+        created = await client.post(
+            "/api/v1/evaluation/benchmarks", json=_EVAL_BENCHMARK, headers=headers
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["key"] == "api-retrieval@1.0.0"
+        again = await client.post(
+            "/api/v1/evaluation/benchmarks", json=_EVAL_BENCHMARK, headers=headers
+        )
+        assert (again.status_code, again.json()["created"]) == (200, False)
+
+        queued = await client.post(
+            "/api/v1/evaluation/runs",
+            json={
+                "benchmark_id": "api-retrieval",
+                "version": "1.0.0",
+                "release_id": str(corpus.release_id),
+            },
+            headers=headers,
+        )
+        assert queued.status_code == 202, queued.text
+        assert queued.json()["status"] == "queued"
+
+        await harness.run_all_tasks()
+        run = await client.get(f"/api/v1/evaluation/runs/{queued.json()['id']}", headers=headers)
+        body = run.json()
+        assert body["status"] == "succeeded", body["error_detail"]
+        # The gold DOI is not in the corpus: a recall failure, reported by case.
+        assert body["passed"] is False
+        assert body["per_case"][0]["unresolved_relevant"] == ["doi:10.1/absent"]
+
+        listed = await client.get("/api/v1/evaluation/runs", headers=headers)
+        assert [item["id"] for item in listed.json()["items"]] == [body["id"]]
+
+    async def test_a_researcher_cannot_see_evaluation(self, api) -> None:
+        headers = _auth(await _login(api["client"], "researcher@lab.invalid"))
+        response = await api["client"].get("/api/v1/evaluation/benchmarks", headers=headers)
+        assert response.status_code == 403
+
+    async def test_an_invalid_file_says_what_is_wrong(self, api) -> None:
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        response = await api["client"].post(
+            "/api/v1/evaluation/benchmarks", json={"kind": "retrieval"}, headers=headers
+        )
+        assert response.status_code == 422
+        assert "not valid" in response.json()["detail"]

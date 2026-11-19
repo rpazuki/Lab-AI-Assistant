@@ -198,6 +198,12 @@ def build_container(settings: Settings) -> ApiContainer:
     # an empty registry is a clearer statement than a populated one guarded at
     # every entry point.
     handlers = build_handler_registry(context) if processes or curates else HandlerRegistry()
+    if installation.has(InstallationCapability.PUBLISH_RELEASES):
+        # Registered here, not in `build_handler_registry`: the application layer
+        # may not import evaluation, which sits above it.
+        from lab_assistant.evaluation.service import EvaluationHandler
+
+        handlers.register(EvaluationHandler(context))
     return ApiContainer(
         settings=settings,
         context=context,

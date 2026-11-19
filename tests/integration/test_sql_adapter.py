@@ -760,3 +760,69 @@ class TestEndToEndOverSql:
             events = await uow.audit.list_events(workspace.id, limit=500)
         ok, problems = verify_chain(events)
         assert ok, problems
+
+
+class TestEvaluationsOverSql:
+    async def test_benchmarks_and_run_lifecycle_round_trip(self, sql_stack) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        accounts, context = sql_stack["accounts"], sql_stack["context"]
+        user = await accounts.create_user(email="e@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="eval-lab", display_name="Eval Lab", owner_user_id=user.id
+        )
+        started = datetime(2026, 11, 19, 10, tzinfo=UTC)
+        older, newer = context.id_factory(), context.id_factory()
+        async with context.uow_factory() as uow:
+            await uow.evaluations.add_benchmark(
+                {
+                    "id": context.id_factory(),
+                    "workspace_id": workspace.id,
+                    "benchmark_id": "lab-retrieval",
+                    "version": "1.0.0",
+                    "kind": "retrieval",
+                    "checksum": "c1",
+                    "sensitivity": "internal",
+                    "definition": {"cases": [{"case_id": "q1"}]},
+                    "registered_by": user.id,
+                }
+            )
+            for run_id, offset in ((older, 0), (newer, 5)):
+                await uow.evaluations.add_run(
+                    {
+                        "id": run_id,
+                        "workspace_id": workspace.id,
+                        "benchmark": "lab-retrieval@1.0.0",
+                        "benchmark_checksum": "c1",
+                        "status": "queued",
+                        "kind": "retrieval",
+                        "requested_by": user.id,
+                        "created_at": started + timedelta(minutes=offset),
+                    }
+                )
+            await uow.evaluations.update_run(
+                {
+                    "id": older,
+                    "workspace_id": workspace.id,
+                    "status": "succeeded",
+                    "metrics": {"recall@5": 0.5},
+                    "gates": {"retrieval:recall@5": True},
+                    "failures": ["one miss"],
+                    "per_case": [{"case_id": "q1", "unresolved_relevant": ["pmid:1"]}],
+                    "completed_at": started + timedelta(minutes=2),
+                }
+            )
+            await uow.commit()
+
+        async with context.uow_factory() as uow:
+            benchmark = await uow.evaluations.get_benchmark(workspace.id, "lab-retrieval", "1.0.0")
+            listed = await uow.evaluations.list_runs(workspace.id)
+            finished = await uow.evaluations.get_run(workspace.id, older)
+        assert benchmark is not None and benchmark["definition"] == {"cases": [{"case_id": "q1"}]}
+        # Newest first, so the run just queued is at the top of the page.
+        assert [row["id"] for row in listed] == [newer, older]
+        assert finished is not None
+        assert finished["status"] == "succeeded"
+        assert finished["failures"] == ["one miss"]
+        assert finished["per_case"][0]["unresolved_relevant"] == ["pmid:1"]
+        assert finished["requested_by"] == user.id

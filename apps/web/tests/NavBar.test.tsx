@@ -88,7 +88,7 @@ describe("NavBar", () => {
     vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
     render(<NavBar />);
     await screen.findByRole("button", { name: "Sign out" });
-    expect(sections()).toEqual(["Ask", "Collections", "Review", "Releases", "Analytics"]);
+    expect(sections()).toEqual(["Ask", "Collections", "Review", "Releases", "Evaluation", "Analytics"]);
     expect(screen.getByRole("link", { name: "Ask" })).toHaveAttribute("aria-current", "page");
   });
 

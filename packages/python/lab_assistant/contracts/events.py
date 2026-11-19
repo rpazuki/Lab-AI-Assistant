@@ -70,6 +70,9 @@ class AuditAction(StrEnum):
     RELEASE_PUBLISHED = "release_published"
     RELEASE_ROLLED_BACK = "release_rolled_back"
     RELEASE_WITHDRAWN = "release_withdrawn"
+    BENCHMARK_REGISTERED = "benchmark_registered"
+    EVALUATION_REQUESTED = "evaluation_requested"
+    EVALUATION_COMPLETED = "evaluation_completed"
     # serving and export
     ANSWER_GENERATED = "answer_generated"
     CITATION_VALIDATION_FAILED = "citation_validation_failed"

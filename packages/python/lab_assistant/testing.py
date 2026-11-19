@@ -38,7 +38,11 @@ from lab_assistant.application.objects import register_object
 from lab_assistant.application.tasks import HandlerRegistry, TaskOrchestrator
 from lab_assistant.config import LabEnv, Settings
 from lab_assistant.contracts.runtime import FixedClock, SequentialIds
-from lab_assistant.domain.installation import InstallationRole, InstanceCapabilities
+from lab_assistant.domain.installation import (
+    InstallationCapability,
+    InstallationRole,
+    InstanceCapabilities,
+)
 from lab_assistant.domain.workspace import Capability, Membership, MembershipStatus, Role
 from lab_assistant.policy.engine import PolicyEngine
 from lab_assistant.policy.model_transfer import ModelTransferPolicy
@@ -195,6 +199,10 @@ def build_harness(
         installation=InstanceCapabilities(role=installation_role),
     )
     handlers = build_handler_registry(context)
+    if context.installation.has(InstallationCapability.PUBLISH_RELEASES):
+        from lab_assistant.evaluation.service import EvaluationHandler
+
+        handlers.register(EvaluationHandler(context))
     return Harness(
         settings=settings,
         db=db,

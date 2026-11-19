@@ -1470,6 +1470,17 @@ class _Chat(_Base):
 
 
 class _Evaluations(_Base):
+    _RUN_MUTABLE = (
+        "status",
+        "metrics",
+        "gates",
+        "failures",
+        "per_case",
+        "error_detail",
+        "completed_at",
+        "task_id",
+    )
+
     async def add_run(self, run: dict[str, Any]) -> None:
         await self._c.execute(
             insert(t.evaluation_runs).values(
@@ -1482,8 +1493,29 @@ class _Evaluations(_Base):
                 gates=run.get("gates", {}),
                 failures=[str(item) for item in run.get("failures", [])],
                 per_case=run.get("per_case", []),
-                created_at=datetime.now(tz=_utc()),
+                created_at=run.get("created_at") or datetime.now(tz=_utc()),
+                status=run.get("status", "succeeded"),
+                kind=run.get("kind"),
+                task_id=uuid_or_none(run.get("task_id")),
+                requested_by=uuid_or_none(run.get("requested_by")),
+                error_detail=run.get("error_detail"),
+                completed_at=run.get("completed_at"),
             )
+        )
+
+    async def update_run(self, run: dict[str, Any]) -> None:
+        values: dict[str, Any] = {key: run[key] for key in self._RUN_MUTABLE if key in run}
+        if "failures" in values:
+            values["failures"] = [str(item) for item in values["failures"]]
+        if "task_id" in values:
+            values["task_id"] = uuid_or_none(values["task_id"])
+        await self._c.execute(
+            update(t.evaluation_runs)
+            .where(
+                t.evaluation_runs.c.workspace_id == uuid_or_none(run["workspace_id"]),
+                t.evaluation_runs.c.id == uuid_or_none(run["id"]),
+            )
+            .values(**values)
         )
 
     async def get_run(self, workspace_id: UUID, run_id: UUID) -> dict[str, Any] | None:
@@ -1497,12 +1529,61 @@ class _Evaluations(_Base):
         return dict(row) if row else None
 
     async def list_runs(
-        self, workspace_id: UUID, *, benchmark_id: str | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        benchmark_id: str | None = None,
+        release_id: UUID | None = None,
+        limit: int = 100,
     ) -> list[dict[str, Any]]:
         conditions = [t.evaluation_runs.c.workspace_id == workspace_id]
         if benchmark_id is not None:
             conditions.append(t.evaluation_runs.c.benchmark.like(f"{benchmark_id}%"))
-        result = await self._c.execute(select(t.evaluation_runs).where(*conditions))
+        if release_id is not None:
+            conditions.append(t.evaluation_runs.c.release_id == release_id)
+        result = await self._c.execute(
+            select(t.evaluation_runs)
+            .where(*conditions)
+            .order_by(t.evaluation_runs.c.created_at.desc(), t.evaluation_runs.c.id)
+            .limit(limit)
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+    async def add_benchmark(self, benchmark: dict[str, Any]) -> None:
+        await self._c.execute(
+            insert(t.benchmarks).values(
+                id=uuid_or_none(benchmark["id"]),
+                workspace_id=uuid_or_none(benchmark["workspace_id"]),
+                benchmark_id=benchmark["benchmark_id"],
+                version=benchmark["version"],
+                kind=benchmark["kind"],
+                checksum=benchmark["checksum"],
+                sensitivity=benchmark["sensitivity"],
+                definition=benchmark["definition"],
+                registered_by=uuid_or_none(benchmark.get("registered_by")),
+                created_at=benchmark.get("created_at") or datetime.now(tz=_utc()),
+            )
+        )
+
+    async def get_benchmark(
+        self, workspace_id: UUID, benchmark_id: str, version: str
+    ) -> dict[str, Any] | None:
+        result = await self._c.execute(
+            select(t.benchmarks).where(
+                t.benchmarks.c.workspace_id == workspace_id,
+                t.benchmarks.c.benchmark_id == benchmark_id,
+                t.benchmarks.c.version == version,
+            )
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+    async def list_benchmarks(self, workspace_id: UUID) -> list[dict[str, Any]]:
+        result = await self._c.execute(
+            select(t.benchmarks)
+            .where(t.benchmarks.c.workspace_id == workspace_id)
+            .order_by(t.benchmarks.c.benchmark_id, t.benchmarks.c.version)
+        )
         return [dict(row) for row in result.mappings().all()]
 
 

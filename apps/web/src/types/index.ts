@@ -163,4 +163,44 @@ export interface ProblemDetails {
   status: number;
   detail: string;
   error_class: string;
+  /** Structured detail, such as `problems` for an invalid benchmark file. */
+  context?: Record<string, unknown>;
+}
+
+/** A registered benchmark version. Immutable: a change is a new version. */
+export interface Benchmark {
+  benchmark_id: string;
+  version: string;
+  key: string;
+  kind: string;
+  description: string;
+  sensitivity: string;
+  blinded: boolean;
+  checksum: string;
+  cases: number;
+  probes: number;
+  thresholds: Record<string, number>;
+  registered_by: string | null;
+  created_at: string | null;
+  definition?: Record<string, unknown>;
+}
+
+/** One evaluation of a benchmark against a release. `passed` is the API's verdict. */
+export interface EvaluationRun {
+  id: string;
+  benchmark: string;
+  benchmark_checksum: string;
+  release_id: string | null;
+  kind: string | null;
+  status: "queued" | "running" | "succeeded" | "failed";
+  passed: boolean;
+  metrics: Record<string, number>;
+  gates: Record<string, boolean>;
+  failures: string[];
+  task_id: string | null;
+  requested_by: string | null;
+  error_detail: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+  per_case?: Record<string, unknown>[];
 }

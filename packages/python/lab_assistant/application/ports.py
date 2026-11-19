@@ -931,11 +931,35 @@ class ChatRepository(Protocol):
 
 @runtime_checkable
 class EvaluationRepository(Protocol):
+    """Evaluation runs and the benchmark versions they measured against.
+
+    Rows are plain dictionaries, as the run record has always been: ids may come
+    back as ``UUID`` or ``str`` and times as ``datetime`` or absent, so callers
+    normalise on the way out.
+    """
+
     async def add_run(self, run: dict[str, Any]) -> None: ...
+    async def update_run(self, run: dict[str, Any]) -> None:
+        """Replace the mutable fields of an existing run: status, results, times."""
+        ...
+
     async def get_run(self, workspace_id: UUID, run_id: UUID) -> dict[str, Any] | None: ...
     async def list_runs(
-        self, workspace_id: UUID, *, benchmark_id: str | None = None
-    ) -> list[dict[str, Any]]: ...
+        self,
+        workspace_id: UUID,
+        *,
+        benchmark_id: str | None = None,
+        release_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Newest first."""
+        ...
+
+    async def add_benchmark(self, benchmark: dict[str, Any]) -> None: ...
+    async def get_benchmark(
+        self, workspace_id: UUID, benchmark_id: str, version: str
+    ) -> dict[str, Any] | None: ...
+    async def list_benchmarks(self, workspace_id: UUID) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable

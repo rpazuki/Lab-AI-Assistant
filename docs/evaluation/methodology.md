@@ -1,6 +1,6 @@
 Status: active
 Owner: technical owner + data steward
-Last verified: 2026-08-12
+Last verified: 2026-11-19
 Source of truth: `packages/python/lab_assistant/evaluation/`
 
 # Evaluation methodology
@@ -58,6 +58,44 @@ A run produces a report object: suite, benchmark id and digest, release id, embe
 profile, retrieval parameters, per-metric values, and per-case detail. Reports are
 stored and referenced by digest from the release manifest, so "which evaluation gated
 this release" always has an answer.
+
+## Evaluating a release on an installation
+
+The synthetic runner above proves wiring. To measure the corpus an installation
+actually serves, register a benchmark with it and run it against a release, from the
+**Evaluation** page (members with `run_evaluation`: admins and data stewards) or the
+API under `/api/v1/evaluation/`. Source: `evaluation/service.py`.
+
+- **Register.** The page takes the benchmark JSON file. A registered `id@version` is
+  immutable: the same version with different content is refused, so a corrected gold
+  label is a new version and every run's checksum names what it measured against.
+  Only `retrieval`, `generation` and `policy` benchmarks can run against a release.
+- **Name papers as people know them.** A case's `relevant` list may hold `doi:…`,
+  `pmid:…`, `pmcid:…` or a work id. Each is resolved to the work this installation
+  holds. One that resolves to nothing stays in the case as a miss and is listed as
+  `unresolved_relevant`: a gold paper the corpus lacks is a recall failure, not a
+  case to skip.
+- **Run.** A run is queued on the `evaluation` stage and completed by the compute
+  worker, because a generation run asks the model once per case. It executes as the
+  member who requested it, with their grants, and records who that was. A release can
+  be measured once it is approved and its projection is indexed.
+- **Restricted benchmarks never reach the model.** A `restricted` benchmark runs
+  retrieval and policy suites only; a generation run is refused.
+- **Policy probes name real accounts.** `user_email` and `workspace_slug` are resolved
+  on the installation; a probe whose subject does not exist fails, because it would
+  otherwise prove nothing.
+
+Two limits to know when reading the numbers:
+
+1. **A run does not gate publication yet.** Indexing happens after approval, so a
+   run can only exist between approval and publish; requiring a passing run there is a
+   release-policy decision that has not been made. Today the result informs the
+   approver, who decides.
+2. **The generation suite's two scores are not yet measurements.** The runner passes
+   the answer as its own evidence and the cited handles as their own supply, so
+   `faithfulness_proxy` and `citation_validity` read 1.0 unless an answer cites a
+   handle it was not given. Treat a generation run as a check for unsupported
+   citations until the runner is given the retrieved evidence.
 
 ## Interpretation
 

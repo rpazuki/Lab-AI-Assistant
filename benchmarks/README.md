@@ -2,7 +2,7 @@
 
 Status: active
 Owner: scientific owner + technical owner
-Last verified: 2026-08-12
+Last verified: 2026-11-19
 Source of truth: the JSON files in this directory
 
 Benchmarks are versioned data. Each one records its origin, licence, permitted use,
@@ -66,3 +66,17 @@ the public work, and does not see the restricted one.
 
 Release gates read the same files: see
 [`docs/evaluation/release-gates.md`](../docs/evaluation/release-gates.md).
+
+## Registering a benchmark with an installation
+
+A real gold set is registered with the installation that serves the corpus, not
+committed here: open **Evaluation**, choose **Add benchmark**, and upload the file.
+The same shape as `synthetic/`, with two differences:
+
+- `relevant` names papers as `doi:…`, `pmid:…`, `pmcid:…` or a work id, never a seed
+  key. Seed keys only mean something to the fixture corpus.
+- A registered version cannot change. Register a corrected label as a new `version`.
+
+Record the benchmark's manifest in `manifests/` as usual. See
+[the methodology](../docs/evaluation/methodology.md#evaluating-a-release-on-an-installation)
+for how runs execute and what their numbers mean.

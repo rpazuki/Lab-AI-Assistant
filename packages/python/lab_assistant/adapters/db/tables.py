@@ -1090,7 +1090,34 @@ evaluation_runs = Table(
     Column("failures", _ARRAY_TEXT, nullable=False, server_default=text("'{}'")),
     Column("per_case", _JSONB, nullable=False, server_default=text("'[]'")),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # Added in 0005. A run is recorded when it is requested, so the queue is visible
+    # before the worker reaches it; rows written before then were complete runs.
+    Column("status", Text, nullable=False, server_default=text("'succeeded'")),
+    Column("kind", Text),
+    Column("task_id", _UUID),
+    Column("requested_by", _UUID, ForeignKey("users.id", ondelete="SET NULL")),
+    Column("error_detail", Text),
+    Column("completed_at", DateTime(timezone=True)),
     Index("ix_evaluation_runs_release", "workspace_id", "release_id"),
+)
+
+#: Benchmarks registered with this installation (0005). A version is immutable:
+#: re-registering it with different content is refused, so a changed gold label is
+#: a new version and every run's checksum still names what it measured against.
+benchmarks = Table(
+    "benchmarks",
+    METADATA,
+    Column("id", _UUID, primary_key=True),
+    Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    Column("benchmark_id", Text, nullable=False),
+    Column("version", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("checksum", Text, nullable=False),
+    Column("sensitivity", Text, nullable=False),
+    Column("definition", _JSONB, nullable=False),
+    Column("registered_by", _UUID, ForeignKey("users.id", ondelete="SET NULL")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    UniqueConstraint("workspace_id", "benchmark_id", "version", name="benchmark_version"),
 )
 
 legacy_object_map = Table(

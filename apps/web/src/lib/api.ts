@@ -14,8 +14,10 @@ import type {
   AskEvent,
   Candidate,
   ChatMessage,
+  Benchmark,
   ChatSession,
   CorpusStats,
+  EvaluationRun,
   Me,
   ProblemDetails,
   Release,
@@ -26,12 +28,14 @@ import { appPath } from "@/lib/config";
 export class ApiError extends Error {
   readonly status: number;
   readonly errorClass: string;
+  readonly context: Record<string, unknown>;
 
   constructor(problem: ProblemDetails) {
     super(problem.detail);
     this.name = "ApiError";
     this.status = problem.status;
     this.errorClass = problem.error_class;
+    this.context = problem.context ?? {};
   }
 }
 
@@ -396,3 +400,35 @@ export const taskSnapshot = () =>
     awaiting_user: { task_id: string; stage: string; action: string | null }[];
     dead_letters: { task_id: string; stage: string; error: string | null }[];
   }>("/operations/tasks");
+
+// ── evaluation ────────────────────────────────────────────────────────────
+export const listBenchmarks = () =>
+  request<{ items: Benchmark[] }>("/evaluation/benchmarks").then((body) => body.items);
+
+/** Register a benchmark file. Identical content registered again is not an error. */
+export const registerBenchmark = (definition: unknown) =>
+  request<Benchmark & { created: boolean }>("/evaluation/benchmarks", {
+    method: "POST",
+    body: JSON.stringify(definition),
+  });
+
+export const getBenchmark = (benchmarkId: string, version: string) =>
+  request<Benchmark>(
+    `/evaluation/benchmarks/${encodeURIComponent(benchmarkId)}/${encodeURIComponent(version)}`,
+  );
+
+export const listEvaluationRuns = (releaseId?: string) =>
+  request<{ items: EvaluationRun[] }>(
+    `/evaluation/runs${releaseId ? `?release_id=${encodeURIComponent(releaseId)}` : ""}`,
+  ).then((body) => body.items);
+
+/** Queue a run. It comes back `queued`; the evaluation worker completes it. */
+export const requestEvaluationRun = (payload: {
+  benchmark_id: string;
+  version: string;
+  release_id: string;
+}) =>
+  request<EvaluationRun>("/evaluation/runs", { method: "POST", body: JSON.stringify(payload) });
+
+export const getEvaluationRun = (runId: string) =>
+  request<EvaluationRun>(`/evaluation/runs/${runId}`);

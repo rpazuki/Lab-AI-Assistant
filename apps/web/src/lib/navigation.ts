@@ -27,6 +27,7 @@ export const NAV: readonly NavItem[] = [
     label: "Releases",
     anyOf: ["manage_release", "approve_release", "export"],
   },
+  { href: "/evaluation", label: "Evaluation", anyOf: ["run_evaluation"] },
   { href: "/analytics", label: "Analytics", anyOf: ["view_analytics"] },
 ];
 

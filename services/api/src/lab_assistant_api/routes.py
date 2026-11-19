@@ -38,6 +38,7 @@ from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.scope import ConnectorPlanEntry
 from lab_assistant.domain.states import RelevanceState
 from lab_assistant.domain.workspace import Capability
+from lab_assistant.evaluation.service import EvaluationService, benchmark_json, run_json
 from lab_assistant_api.deps import (
     ApiContainer,
     CurrentActor,
@@ -89,6 +90,12 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     top_k: int | None = Field(default=None, ge=1, le=50)
     alias: str = "current"
+
+
+class EvaluationRunRequest(BaseModel):
+    benchmark_id: str = Field(min_length=1, max_length=200)
+    version: str = Field(min_length=1, max_length=100)
+    release_id: UUID
 
 
 class FeedbackRequest(BaseModel):
@@ -1070,6 +1077,78 @@ async def sources(
 ) -> dict[str, Any]:
     service = AnalyticsService(container.context)
     return {"items": await service.sources(actor, release_id=release_id)}
+
+
+# ── evaluation ──────────────────────────────────────────────────────────────
+@router.get("/evaluation/benchmarks")
+async def list_benchmarks(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    rows = await EvaluationService(container.context).list_benchmarks(actor)
+    return {"items": [benchmark_json(row) for row in rows]}
+
+
+@router.post(
+    "/evaluation/benchmarks",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def register_benchmark(
+    actor: CurrentActor,
+    container: Container,
+    response: Response,
+    definition: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    """Register a benchmark version. The body is the benchmark file itself."""
+    row, created = await EvaluationService(container.context).register_benchmark(actor, definition)
+    if not created:
+        # Identical content registered again: nothing changed, nothing to create.
+        response.status_code = 200
+    return {**benchmark_json(row), "created": created}
+
+
+@router.get("/evaluation/benchmarks/{benchmark_id}/{version}")
+async def get_benchmark(
+    benchmark_id: str, version: str, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    row = await EvaluationService(container.context).get_benchmark(
+        actor, benchmark_id=benchmark_id, version=version
+    )
+    return benchmark_json(row, include_definition=True)
+
+
+@router.get("/evaluation/runs")
+async def list_evaluation_runs(
+    actor: CurrentActor,
+    container: Container,
+    release_id: Annotated[UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> dict[str, Any]:
+    rows = await EvaluationService(container.context).list_runs(
+        actor, release_id=release_id, limit=limit
+    )
+    return {"items": [run_json(row) for row in rows]}
+
+
+@router.post(
+    "/evaluation/runs",
+    status_code=202,
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def request_evaluation_run(
+    body: EvaluationRunRequest, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Queue a run. The evaluation worker completes it; poll the run for the result."""
+    run = await EvaluationService(container.context, container.orchestrator).request_run(
+        actor, benchmark_id=body.benchmark_id, version=body.version, release_id=body.release_id
+    )
+    return run_json(run)
+
+
+@router.get("/evaluation/runs/{run_id}")
+async def get_evaluation_run(
+    run_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    run = await EvaluationService(container.context).get_run(actor, run_id=run_id)
+    return run_json(run, include_cases=True)
 
 
 # ── operations ──────────────────────────────────────────────────────────────

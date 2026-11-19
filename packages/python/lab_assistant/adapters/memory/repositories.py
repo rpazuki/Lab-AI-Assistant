@@ -25,7 +25,7 @@ from lab_assistant.application.ports import (
 )
 from lab_assistant.contracts.archive import StageResultEnvelope
 from lab_assistant.contracts.archive_import import ImportRecord, ImportState
-from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
+from lab_assistant.contracts.errors import ConcurrencyConflict, ErrorClass, LabAssistantError
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
 from lab_assistant.contracts.publication import PublicationRecord
@@ -122,6 +122,7 @@ class MemoryDatabase:
     chat_messages: dict[UUID, ChatMessage] = field(default_factory=dict)
     feedback: dict[UUID, Feedback] = field(default_factory=dict)
     evaluation_runs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    benchmarks: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     #: Per-stage leases, tracked by task id rather than as a counter. Rows here
     #: are mutated in place, so "what state was this task in before?" is not a
     #: question this store can answer — a counter would leak on every update.
@@ -1396,23 +1397,58 @@ class _Evaluations:
         self._db = db
 
     async def add_run(self, run: dict[str, Any]) -> None:
-        self._db.evaluation_runs[str(run["id"])] = run
+        row = {"status": "succeeded", "created_at": None, **run}
+        # Insertion order stands in for created_at, which the memory store does not
+        # stamp; a counter keeps "newest first" deterministic under a fixed clock.
+        row["_sequence"] = len(self._db.evaluation_runs)
+        self._db.evaluation_runs[str(run["id"])] = row
+
+    async def update_run(self, run: dict[str, Any]) -> None:
+        current = self._db.evaluation_runs.get(str(run["id"]))
+        if current is None:
+            raise KeyError(f"evaluation run {run['id']} does not exist")
+        current.update({key: value for key, value in run.items() if key != "_sequence"})
 
     async def get_run(self, workspace_id: UUID, run_id: UUID) -> dict[str, Any] | None:
         run = self._db.evaluation_runs.get(str(run_id))
-        if run is None or run.get("workspace_id") != str(workspace_id):
+        if run is None or str(run.get("workspace_id")) != str(workspace_id):
             return None
         return run
 
     async def list_runs(
-        self, workspace_id: UUID, *, benchmark_id: str | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        benchmark_id: str | None = None,
+        release_id: UUID | None = None,
+        limit: int = 100,
     ) -> list[dict[str, Any]]:
-        return [
+        runs = [
             run
             for run in self._db.evaluation_runs.values()
-            if run.get("workspace_id") == str(workspace_id)
+            if str(run.get("workspace_id")) == str(workspace_id)
             and (benchmark_id is None or str(run.get("benchmark", "")).startswith(benchmark_id))
+            and (release_id is None or str(run.get("release_id")) == str(release_id))
         ]
+        runs.sort(key=lambda run: run.get("_sequence", 0), reverse=True)
+        return runs[:limit]
+
+    async def add_benchmark(self, benchmark: dict[str, Any]) -> None:
+        key = (str(benchmark["workspace_id"]), benchmark["benchmark_id"], benchmark["version"])
+        if key in self._db.benchmarks:
+            raise ConcurrencyConflict(f"benchmark {key[1]}@{key[2]} already exists")
+        self._db.benchmarks[key] = dict(benchmark)
+
+    async def get_benchmark(
+        self, workspace_id: UUID, benchmark_id: str, version: str
+    ) -> dict[str, Any] | None:
+        return self._db.benchmarks.get((str(workspace_id), benchmark_id, version))
+
+    async def list_benchmarks(self, workspace_id: UUID) -> list[dict[str, Any]]:
+        return sorted(
+            (row for key, row in self._db.benchmarks.items() if key[0] == str(workspace_id)),
+            key=lambda row: (row["benchmark_id"], row["version"]),
+        )
 
 
 class MemoryUnitOfWork:
