@@ -16,6 +16,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     registerBenchmark: vi.fn(),
     requestEvaluationRun: vi.fn(),
     getEvaluationRun: vi.fn(),
+    getBenchmark: vi.fn(),
     listReleaseGates: vi.fn(async () => ({ items: [] })),
     setReleaseGate: vi.fn(async () => ({ items: [] })),
     cancelEvaluationRun: vi.fn(),
@@ -227,5 +228,29 @@ describe("EvaluationClient", () => {
       sample_size: 5,
     });
     expect(await screen.findByText("1 answer assigned.")).toBeInTheDocument();
+  });
+
+  it("opens a registered benchmark in the editor and registers the next version", async () => {
+    vi.mocked(api.getBenchmark).mockResolvedValue({
+      ...BENCHMARK,
+      definition: {
+        benchmark_id: "rla-retrieval",
+        version: "1.0.0",
+        kind: "retrieval",
+        description: "Lab questions",
+        origin: "lab",
+        licence: "internal",
+        permitted_use: "testing",
+        cases: [{ case_id: "q1", question: "Which strain?", relevant: ["doi:10.1/a"] }],
+        thresholds: { "recall@5": 0.6 },
+      },
+    });
+    vi.mocked(api.registerBenchmark).mockResolvedValue({ ...BENCHMARK, version: "1.0.1", key: "rla-retrieval@1.0.1", created: true });
+    render(<EvaluationClient />);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit as new version" }));
+    expect(api.getBenchmark).toHaveBeenCalledWith("rla-retrieval", "1.0.0");
+    await userEvent.click(await screen.findByRole("button", { name: "Register rla-retrieval@1.0.1" }));
+    expect(api.registerBenchmark).toHaveBeenCalledWith(expect.objectContaining({ version: "1.0.1" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Registered rla-retrieval@1.0.1.");
   });
 });

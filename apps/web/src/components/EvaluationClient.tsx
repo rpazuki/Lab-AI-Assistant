@@ -3,10 +3,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
+import {
+  BenchmarkEditor,
+  EMPTY_BENCHMARK,
+  type BenchmarkDefinition,
+} from "@/components/BenchmarkEditor";
 import { AnswerReviewSection, RunComparisonPanel } from "@/components/EvaluationWorkbench";
 import {
   ApiError,
   cancelEvaluationRun,
+  getBenchmark,
   getEvaluationRun,
   listBenchmarks,
   listEvaluationRuns,
@@ -455,6 +461,33 @@ function BenchmarksPanel({
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editor, setEditor] = useState<{ initial: BenchmarkDefinition; editing: boolean } | null>(
+    null,
+  );
+
+  async function openEditor(benchmark: Benchmark) {
+    try {
+      const full = await getBenchmark(benchmark.benchmark_id, benchmark.version);
+      setEditor({ initial: full.definition as BenchmarkDefinition, editing: true });
+      setAdding(false);
+    } catch (caught) {
+      onError(caught);
+    }
+  }
+
+  async function saveEdited(definition: BenchmarkDefinition) {
+    try {
+      const saved = await registerBenchmark(definition);
+      setEditor(null);
+      await onRegistered(
+        saved.created
+          ? `Registered ${saved.key}.`
+          : `${saved.key} was already registered with this content; nothing changed.`,
+      );
+    } catch (caught) {
+      onError(caught);
+    }
+  }
 
   async function readFile(file: File | undefined) {
     if (file) setText(await file.text());
@@ -490,11 +523,33 @@ function BenchmarksPanel({
       title="Benchmarks"
       flush
       aside={
-        <Button variant="ghost" size="sm" onClick={() => setAdding((value) => !value)}>
-          {adding ? "Cancel" : "Add benchmark"}
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setAdding(false);
+              setEditor({ initial: EMPTY_BENCHMARK, editing: false });
+            }}
+          >
+            Write one
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setAdding((value) => !value)}>
+            {adding ? "Cancel" : "Add benchmark"}
+          </Button>
+        </div>
       }
     >
+      {editor ? (
+        <div className="border-b border-border p-5">
+          <BenchmarkEditor
+            initial={editor.initial}
+            editing={editor.editing}
+            onSave={saveEdited}
+            onCancel={() => setEditor(null)}
+          />
+        </div>
+      ) : null}
       {adding ? (
         <div className="space-y-3 border-b border-border p-5">
           <Field label="Benchmark file (JSON)">
@@ -553,6 +608,9 @@ function BenchmarksPanel({
                   {" · "}
                   {benchmark.checksum.slice(0, 12)}
                 </span>
+                <Button variant="ghost" size="sm" onClick={() => openEditor(benchmark)}>
+                  Edit as new version
+                </Button>
                 {gates.some((gate) => gate.key === benchmark.key) ? (
                   <>
                     <StateChip state="required_for_publishing" />

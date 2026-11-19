@@ -106,7 +106,8 @@ parsing, extraction, review, releases, and export. There is nothing to redirect;
 
 | Predecessor | Successor | Notes |
 |---|---|---|
-| `/admin/evaluation/question-sets…`, `/questions/{id}` | `POST/GET /api/v1/evaluation/benchmarks` | a benchmark is a registered file; a version is immutable, so editing questions is a new version |
+| `/admin/evaluation/question-sets…`, `/questions/{id}`, `/question-sets/{id}/import` | `POST/GET /api/v1/evaluation/benchmarks` | a version is immutable: the Evaluation page's editor opens one and registers the edit as the next version; "Write one" starts a new benchmark |
+| `/question-sets/{id}/export` | `GET /api/v1/evaluation/benchmarks/{id}/{version}` | the definition is the export |
 | `/admin/evaluation/runs` (create + `/execute`) | `POST /api/v1/evaluation/runs` | queued on request, run by the evaluation worker |
 | `/runs/{id}`, `/runs/{id}/results` | `GET /api/v1/evaluation/runs/{id}` | per-case results are in the run |
 | `/runs/{id}/cancel` | `POST /api/v1/evaluation/runs/{id}/cancel` | |
