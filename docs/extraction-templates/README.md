@@ -1,6 +1,6 @@
 Status: active
 Owner: data steward
-Last verified: 2026-08-12
+Last verified: 2026-11-20
 Source of truth: `configs/examples/templates/`, `packages/python/lab_assistant/contracts/extraction.py`
 
 # Extraction templates
@@ -9,6 +9,28 @@ A template is **workspace data**, with a stable id and a semantic version. No do
 template is compiled into core code as an unexplained default — the predecessor's
 yeast-lipid schema lived in the extractor, so changing a target meant a code release,
 and two different template revisions shared a cache key.
+
+## Registering and approving
+
+A template does nothing until it is **registered and approved**. Extraction after
+parsing uses the newest approved template; with none approved it records "no
+extraction template configured" and stops, so a fresh installation extracts nothing
+until a steward chooses what to extract.
+
+* **Datasheets page** (Curation → Datasheets): paste or upload the YAML or JSON,
+  *Register* (it becomes a draft), then *Approve*.
+* **Command line**: `lab template register configs/examples/templates/yeast-lipid-datasheet.yaml
+  --workspace rlalab --actor <user-id> --approve`, and `lab template list`.
+
+Approving a version retires the template's earlier approved version; claims already
+extracted keep the version that produced them. A draft is never used by default, so an
+unreviewed template cannot fill the review queue.
+
+The same page estimates a run (documents to extract, tokens, and a price at
+`LAB_LLM_INPUT_USD_PER_MTOK` / `LAB_LLM_OUTPUT_USD_PER_MTOK`), runs extraction over
+documents already parsed, re-runs it, cancels a run, and shows the **working sheet**:
+every current proposal, reviewed or not, with wide and long CSV downloads. The citable
+datasheet is still the one in a release's export package.
 
 ## Required parts
 

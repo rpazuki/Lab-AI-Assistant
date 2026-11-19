@@ -1117,3 +1117,64 @@ class TestEvaluationWorkbench:
             headers=headers,
         )
         assert response.status_code == 404
+
+
+class TestDatasheets:
+    async def test_a_yaml_template_registers_approves_and_lists(self, api) -> None:
+        from pathlib import Path
+
+        example = Path(__file__).resolve().parents[3] / "configs/examples/templates"
+        text = (example / "yeast-lipid-datasheet.yaml").read_text()
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        created = await api["client"].post(
+            "/api/v1/extraction/templates", json={"yaml": text}, headers=headers
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["status"] == "draft" and created.json()["created"] is True
+        approved = await api["client"].post(
+            "/api/v1/extraction/templates/yeast-lipid-datasheet/1.0.0/approve", headers=headers
+        )
+        assert approved.json()["active"] is True
+        listed = await api["client"].get("/api/v1/extraction/templates", headers=headers)
+        assert [item["key"] for item in listed.json()["items"]] == ["yeast-lipid-datasheet@1.0.0"]
+
+    async def test_broken_yaml_says_so(self, api) -> None:
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        response = await api["client"].post(
+            "/api/v1/extraction/templates", json={"yaml": "targets: [unclosed"}, headers=headers
+        )
+        assert response.status_code == 422
+        assert "YAML" in response.json()["detail"]
+
+    async def test_nothing_runs_without_an_approved_template(self, api) -> None:
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        response = await api["client"].post("/api/v1/extraction/runs", json={}, headers=headers)
+        assert response.status_code == 422
+        assert "no extraction template is approved" in response.json()["detail"]
+
+    async def test_the_working_sheet_downloads_as_csv(self, api) -> None:
+        from pathlib import Path
+
+        example = Path(__file__).resolve().parents[3] / "configs/examples/templates"
+        headers = _auth(await _login(api["client"], "steward@lab.invalid"))
+        await api["client"].post(
+            "/api/v1/extraction/templates",
+            json={"yaml": (example / "yeast-lipid-datasheet.yaml").read_text()},
+            headers=headers,
+        )
+        await api["client"].post(
+            "/api/v1/extraction/templates/yeast-lipid-datasheet/1.0.0/approve", headers=headers
+        )
+        rows = await api["client"].get("/api/v1/extraction/rows", headers=headers)
+        assert rows.json()["claims"] == 0
+        assert rows.json()["wide"]["columns"][:3] == ["work_id", "experiment_id", "revision_ids"]
+        csv = await api["client"].get(
+            "/api/v1/extraction/rows.csv", params={"shape": "long"}, headers=headers
+        )
+        assert csv.headers["content-type"].startswith("text/csv")
+        assert csv.text.startswith("work_id,experiment_id,claim_id")
+
+    async def test_a_researcher_sees_no_templates(self, api) -> None:
+        headers = _auth(await _login(api["client"], "researcher@lab.invalid"))
+        response = await api["client"].get("/api/v1/extraction/templates", headers=headers)
+        assert response.status_code == 403

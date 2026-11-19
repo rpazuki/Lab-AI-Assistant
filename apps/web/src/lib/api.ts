@@ -22,6 +22,9 @@ import type {
   CorpusStats,
   DiscoveryRun,
   EvaluationRun,
+  ExtractionEstimate,
+  ExtractionRun,
+  ExtractionTemplate,
   GateStatus,
   Invitation,
   InvitationPreview,
@@ -38,6 +41,7 @@ import type {
   ScopeGateReport,
   ScopeVersion,
   TaskSnapshot,
+  WorkingSheet,
 } from "@/types";
 import { appPath } from "@/lib/config";
 
@@ -677,3 +681,51 @@ export const submitAnswerReview = (
     method: "PUT",
     body: JSON.stringify(payload),
   });
+
+// ── datasheets ────────────────────────────────────────────────────────────
+export const listExtractionTemplates = () =>
+  request<{ items: ExtractionTemplate[] }>("/extraction/templates").then((body) => body.items);
+
+/** Register a template version from YAML text or a JSON object. It starts as a draft. */
+export const registerExtractionTemplate = (source: { yaml: string } | { definition: unknown }) =>
+  request<ExtractionTemplate & { created: boolean }>("/extraction/templates", {
+    method: "POST",
+    body: JSON.stringify(source),
+  });
+
+/** Make a version the one extraction uses. */
+export const approveExtractionTemplate = (templateId: string, version: string) =>
+  request<ExtractionTemplate>(
+    `/extraction/templates/${encodeURIComponent(templateId)}/${encodeURIComponent(version)}/approve`,
+    { method: "POST" },
+  );
+
+const templateQuery = (template?: string) =>
+  template ? `?template=${encodeURIComponent(template)}` : "";
+
+export const estimateExtraction = (template?: string) =>
+  request<ExtractionEstimate>(`/extraction/estimate${templateQuery(template)}`);
+
+export const startExtractionRun = (payload: { template?: string; rerun?: boolean }) =>
+  request<{ run_id: string; template: string; tasks: number; rerun: boolean }>(
+    "/extraction/runs",
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+
+export const listExtractionRuns = () =>
+  request<{ items: ExtractionRun[] }>("/extraction/runs").then((body) => body.items);
+
+export const cancelExtractionRun = (runId: string) =>
+  request<{ run_id: string; cancelled_tasks: number }>(`/extraction/runs/${runId}/cancel`, {
+    method: "POST",
+  });
+
+export const workingSheet = (template?: string) =>
+  request<WorkingSheet>(`/extraction/rows${templateQuery(template)}`);
+
+/** A plain link: the browser downloads the CSV with the session cookie. */
+export function workingSheetCsvUrl(shape: "wide" | "long", template?: string): string {
+  const params = new URLSearchParams({ shape });
+  if (template) params.set("template", template);
+  return appPath(`/api/backend/extraction/rows.csv?${params.toString()}`);
+}

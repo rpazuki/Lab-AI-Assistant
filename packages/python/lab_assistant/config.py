@@ -245,6 +245,10 @@ class Settings(BaseSettings):
     llm_model: str = "claude-sonnet-4-6"
     llm_api_key: str | None = None
     llm_max_output_tokens: int = 2048
+    #: Prices for estimating an extraction run, in US dollars per million tokens.
+    #: Defaults are the published Claude Sonnet rates; set them to your contract's.
+    llm_input_usd_per_mtok: float = 3.0
+    llm_output_usd_per_mtok: float = 15.0
     llm_temperature: float = 0.1
     external_model_enabled: bool = False
 

@@ -681,13 +681,29 @@ class ExtractionHandler:
         if not configs:
             return None
         if template_key:
-            for config in configs:
-                if config.logical_key.endswith(str(template_key)) or (
-                    config.logical_id == str(template_key)
-                ):
-                    return TemplateVersionSpec.model_validate(config.payload)
+            key = str(template_key)
+            exact = [
+                config
+                for config in configs
+                if f"{config.logical_id}@{config.semantic_version}" == key
+            ]
+            if exact:
+                return TemplateVersionSpec.model_validate(exact[0].payload)
+            # A bare template id means its approved version, else its newest.
+            named = [config for config in configs if config.logical_id == key]
+            if named:
+                from lab_assistant.application.datasheets import active_template
+
+                chosen = active_template(named) or max(
+                    named, key=lambda config: config.semantic_version
+                )
+                return TemplateVersionSpec.model_validate(chosen.payload)
             raise NotFound(f"extraction template {template_key} not found")
-        return TemplateVersionSpec.model_validate(configs[0].payload)
+        # No template named: the approved one. A draft never fills the review queue.
+        from lab_assistant.application.datasheets import active_template
+
+        active = active_template(configs)
+        return TemplateVersionSpec.model_validate(active.payload) if active else None
 
 
 def _reclassify_abstention(proposal: ClaimProposal, selection: EvidenceSelection) -> ClaimProposal:

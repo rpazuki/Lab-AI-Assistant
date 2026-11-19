@@ -399,6 +399,21 @@ def _parser() -> argparse.ArgumentParser:
             required=name in ("validate", "publish", "rollback", "withdraw", "retract-work"),
         )
 
+    template = subparsers.add_parser("template", help="extraction templates")
+    template_sub = template.add_subparsers(dest="template_command", required=True)
+    register_template = template_sub.add_parser(
+        "register", help="register an extraction template version from a YAML or JSON file"
+    )
+    register_template.add_argument("file", help="template file (YAML or JSON)")
+    register_template.add_argument("--workspace", required=True, help="workspace slug")
+    register_template.add_argument("--actor", required=True, help="user id registering it")
+    register_template.add_argument(
+        "--approve", action="store_true", help="also make it the template extraction uses"
+    )
+    list_templates = template_sub.add_parser("list", help="list extraction templates")
+    list_templates.add_argument("--workspace", required=True, help="workspace slug")
+    list_templates.add_argument("--actor", required=True, help="user id listing them")
+
     acquisition = subparsers.add_parser("acquisition", help="acquisition operations")
     acquisition_sub = acquisition.add_subparsers(dest="acquisition_command", required=True)
     import_folder = acquisition_sub.add_parser(
@@ -477,6 +492,8 @@ def _dispatch(args: argparse.Namespace, settings: Settings, provenance: ConfigPr
             return asyncio.run(_worker(args, settings))
         case "acquisition":
             return asyncio.run(_acquisition(args, settings))
+        case "template":
+            return asyncio.run(_template(args, settings))
         case "release":
             return asyncio.run(_release(args, settings))
         case "package":
@@ -1841,6 +1858,49 @@ async def _worker(args: argparse.Namespace, settings: Settings) -> int:
                 await asyncio.sleep(settings.worker_poll_interval_seconds)
     except KeyboardInterrupt:  # pragma: no cover - operator interrupt
         print("worker stopping", file=sys.stderr)
+        return 0
+    finally:
+        for hook in container.shutdown:
+            await hook()
+
+
+async def _template(args: argparse.Namespace, settings: Settings) -> int:
+    """`lab template register|list`: the same service as the Datasheets page."""
+    from pathlib import Path
+
+    import yaml
+
+    from lab_assistant.application.context import resolve_actor
+    from lab_assistant.application.datasheets import DatasheetService
+    from lab_assistant_api.deps import build_container
+
+    container = build_container(settings)
+    try:
+        async with container.context.uow_factory() as uow:
+            workspace = await uow.workspaces.get_by_slug(args.workspace.lower())
+        if workspace is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+        actor = await resolve_actor(
+            container.context, user_id=UUID(args.actor), workspace_id=workspace.id
+        )
+        service = DatasheetService(container.context, container.orchestrator)
+        if args.template_command == "list":
+            for item in await service.list_templates(actor):
+                active = "  (active)" if item["active"] else ""
+                print(f"{item['key']:<40} {item['status']:<9} {item['title']}{active}")
+            return 0
+        definition = yaml.safe_load(Path(args.file).read_text(encoding="utf-8"))
+        if not isinstance(definition, dict):
+            print(f"{args.file} does not hold a template", file=sys.stderr)
+            return 1
+        template, created = await service.register_template(actor, definition)
+        print(f"{'registered' if created else 'already registered'} {template['key']}")
+        if args.approve:
+            approved = await service.approve_template(
+                actor, template_id=template["template_id"], version=template["version"]
+            )
+            print(f"approved {approved['key']}: extraction now uses it")
         return 0
     finally:
         for hook in container.shutdown:

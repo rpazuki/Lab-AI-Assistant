@@ -15,6 +15,7 @@ export type NavIcon =
   | "review"
   | "releases"
   | "evaluation"
+  | "datasheets"
   | "answer-reviews"
   | "members"
   | "operations";
@@ -53,6 +54,12 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         anyOf: ["manage_scope", "run_discovery", "decide_identity", "decide_rights", "acquire"],
       },
       { href: "/review", label: "Review", icon: "review", anyOf: ["review_claims", "review_parse"] },
+      {
+        href: "/datasheets",
+        label: "Datasheets",
+        icon: "datasheets",
+        anyOf: ["run_extraction"],
+      },
       {
         href: "/answer-reviews",
         label: "Answer reviews",

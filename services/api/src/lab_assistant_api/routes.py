@@ -26,6 +26,7 @@ from lab_assistant.application.accounts import MemberView, invitation_state
 from lab_assistant.application.acquisition import AcquisitionService
 from lab_assistant.application.analytics import AnalyticsService
 from lab_assistant.application.chat import ChatService
+from lab_assistant.application.datasheets import DatasheetService
 from lab_assistant.application.discovery import DiscoveryService
 from lab_assistant.application.export import ExportService
 from lab_assistant.application.reconciliation import IdentityService
@@ -1063,6 +1064,163 @@ async def bulk_import(
     for result in results:
         counts[result.outcome.value] = counts.get(result.outcome.value, 0) + 1
     return {"dry_run": dry_run, "counts": counts, "items": [r.as_dict() for r in results]}
+
+
+# ── datasheets: extraction templates, runs, the working sheet ───────────────
+class TemplateRequest(BaseModel):
+    """A template as a JSON object, or as the YAML text of a template file."""
+
+    definition: dict[str, Any] | None = None
+    yaml: str | None = Field(default=None, max_length=200_000)
+
+
+class ExtractionRunRequest(BaseModel):
+    template: str | None = Field(default=None, max_length=300)
+    rerun: bool = False
+
+
+def _template_definition(payload: TemplateRequest) -> dict[str, Any]:
+    from lab_assistant.contracts.errors import ValidationFailure
+
+    if payload.definition is not None:
+        return payload.definition
+    if payload.yaml:
+        import yaml
+
+        try:
+            loaded = yaml.safe_load(payload.yaml)
+        except yaml.YAMLError as exc:
+            raise ValidationFailure(
+                "the template is not valid YAML", context={"problems": [str(exc)[:500]]}
+            ) from exc
+        if isinstance(loaded, dict):
+            return loaded
+    raise ValidationFailure("send the template as `definition` (JSON) or `yaml` (text)")
+
+
+@router.get("/extraction/templates")
+async def list_extraction_templates(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    return {"items": await DatasheetService(container.context).list_templates(actor)}
+
+
+@router.post(
+    "/extraction/templates",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def register_extraction_template(
+    actor: CurrentActor, container: Container, payload: TemplateRequest = Body(...)
+) -> dict[str, Any]:
+    template, created = await DatasheetService(container.context).register_template(
+        actor, _template_definition(payload)
+    )
+    return {**template, "created": created}
+
+
+@router.post(
+    "/extraction/templates/{template_id}/{version}/approve",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def approve_extraction_template(
+    template_id: str, version: str, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    return await DatasheetService(container.context).approve_template(
+        actor, template_id=template_id, version=version
+    )
+
+
+@router.get("/extraction/estimate")
+async def estimate_extraction(
+    actor: CurrentActor,
+    container: Container,
+    template: Annotated[str | None, Query(max_length=300)] = None,
+) -> dict[str, Any]:
+    estimate = await DatasheetService(container.context).estimate(actor, template=template)
+    return estimate.as_dict()
+
+
+@router.post(
+    "/extraction/runs",
+    status_code=202,
+    dependencies=[requires(InstallationCapability.PROCESS_CONTENT)],
+)
+async def start_extraction_run(
+    actor: CurrentActor, container: Container, payload: ExtractionRunRequest = Body(...)
+) -> dict[str, Any]:
+    return await DatasheetService(container.context, container.orchestrator).start_run(
+        actor, template=payload.template, rerun=payload.rerun
+    )
+
+
+@router.get("/extraction/runs")
+async def list_extraction_runs(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    return {"items": await DatasheetService(container.context).list_runs(actor)}
+
+
+@router.post(
+    "/extraction/runs/{run_id}/cancel",
+    dependencies=[requires(InstallationCapability.PROCESS_CONTENT)],
+)
+async def cancel_extraction_run(
+    run_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    cancelled = await DatasheetService(container.context, container.orchestrator).cancel_run(
+        actor, run_id=run_id
+    )
+    return {"run_id": str(run_id), "cancelled_tasks": cancelled}
+
+
+def _wide_rows(long_form: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, str]]]:
+    import csv
+    import io
+
+    from lab_assistant.application.export import _wide_csv
+
+    reader = csv.DictReader(io.StringIO(_wide_csv(long_form).decode("utf-8")))
+    return list(reader.fieldnames or []), list(reader)
+
+
+@router.get("/extraction/rows")
+async def extraction_rows(
+    actor: CurrentActor,
+    container: Container,
+    template: Annotated[str | None, Query(max_length=300)] = None,
+) -> dict[str, Any]:
+    """The working datasheet: current claim revisions, long and wide."""
+    long_form = await DatasheetService(container.context).rows(actor, template=template)
+    columns, wide = _wide_rows(long_form)
+    statuses: dict[str, int] = {}
+    for row in long_form:
+        statuses[row["review_status"]] = statuses.get(row["review_status"], 0) + 1
+    return {
+        "template": long_form[0]["template_version"] if long_form else template,
+        "claims": len(long_form),
+        "review_status": statuses,
+        "long_form": long_form,
+        "wide": {"columns": columns, "rows": wide},
+    }
+
+
+@router.get("/extraction/rows.csv")
+async def extraction_rows_csv(
+    actor: CurrentActor,
+    container: Container,
+    template: Annotated[str | None, Query(max_length=300)] = None,
+    shape: Annotated[str, Query(pattern="^(wide|long)$")] = "wide",
+) -> Response:
+    """The working datasheet as a CSV, formula-escaped like an export."""
+    from lab_assistant.application.export import LONG_FORM_COLUMNS, _csv, _wide_csv
+
+    long_form = await DatasheetService(container.context).rows(actor, template=template)
+    body = _wide_csv(long_form) if shape == "wide" else _csv(long_form, LONG_FORM_COLUMNS)
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="working-datasheet-{shape}.csv"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ── review ──────────────────────────────────────────────────────────────────

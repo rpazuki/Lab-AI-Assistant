@@ -388,3 +388,57 @@ export interface RunReviewSummary {
   flag_counts: Record<string, number>;
   items: AnswerReview[];
 }
+
+/** One version of an extraction template. */
+export interface ExtractionTemplate {
+  id: string;
+  template_id: string;
+  version: string;
+  key: string;
+  title: string;
+  scientific_purpose: string;
+  cardinality: string;
+  targets: {
+    target_id: string;
+    predicate: string;
+    object_kind: string;
+    unit_expectation: string | null;
+    required: boolean;
+    deterministic_metadata: boolean;
+  }[];
+  status: "draft" | "in_review" | "approved" | "retired";
+  active: boolean;
+  checksum: string;
+  created_at: string | null;
+  definition: Record<string, unknown>;
+}
+
+export interface ExtractionEstimate {
+  template: string;
+  renditions: number;
+  already_extracted: number;
+  to_extract: number;
+  sampled: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  model: string | null;
+}
+
+export interface ExtractionRun {
+  run_id: string;
+  template: string | null;
+  states: Record<string, number>;
+  total: number;
+  finished: boolean;
+  created_at: string | null;
+  errors: string[];
+}
+
+export interface WorkingSheet {
+  template: string | null;
+  claims: number;
+  review_status: Record<string, number>;
+  long_form: Record<string, string>[];
+  wide: { columns: string[]; rows: Record<string, string>[] };
+}
