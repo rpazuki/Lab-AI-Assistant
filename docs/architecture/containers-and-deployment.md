@@ -46,7 +46,8 @@ itself *unavailable* rather than *clean*, and the upload is visibly blocked.
 
 `/health` answers if the process is up. `/ready` checks the control plane and the
 object store and reports each one, so a degraded dependency is visible rather than
-inferred. `deploy.sh` waits on both and rolls back if health does not come up.
+inferred. The updater (`scripts/deploy/update.sh`) waits on both and stops with the
+failing check named if they do not come up; it does not roll back.
 
 ## Refusing to start
 

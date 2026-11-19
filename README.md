@@ -269,12 +269,13 @@ Running the deployed server goes through the scripts in `scripts/`, never throug
 hand-typed Docker commands. Start with a dry run, which reports what *would* change:
 
 ```bash
-./scripts/deploy.sh --dry-run
+./scripts/deploy/update.sh --check
 ```
 
-`deploy.sh` pulls the new code, rebuilds only the parts whose files changed, updates
-the database, checks the application is healthy, and puts the previous version back if
-it is not. `status.sh`, `logs.sh`, and `restart.sh` cover day-to-day work.
+Run it as root (`sudo`). `scripts/deploy/update.sh` pulls the new code, rebuilds the images while the old
+version keeps serving, applies pending migrations, and checks the application is
+healthy. It does not put the previous version back on failure: after a migration that
+would run old code on a new schema, so it stops and says what to inspect instead. `status.sh`, `logs.sh`, and `restart.sh` cover day-to-day work.
 `collect-logs.sh` produces a support bundle for a bug report: it removes anything
 secret, then checks its own output and refuses to hand the bundle over if it finds
 something. Every flag is listed in [`scripts/README.md`](scripts/README.md), and each

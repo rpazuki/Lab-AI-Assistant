@@ -2,7 +2,7 @@
 
 Status: active
 Owner: operator
-Last verified: 2026-08-12
+Last verified: 2026-11-19
 Source of truth: the scripts themselves
 
 Ported from the predecessor because they encode real operational knowledge. Each
@@ -10,7 +10,8 @@ one is safe to run twice.
 
 | Script | What it does |
 |---|---|
-| `deploy.sh` | fast-forward from GitHub, rebuild only changed services, migrate, verify, roll back on failure |
+| `deploy/update.sh` | the updater: lock, fast-forward pull, build while serving, migrate, verify over loopback — never rolls back |
+| `deploy.sh` | entry point that hands to `deploy/update.sh` (`--dry-run` means `--check`) |
 | `restart.sh` | bounce or recreate services without touching git |
 | `status.sh` | deployed commit, container states, health, queue depth, disk |
 | `logs.sh` | live unified log view, redacted |
@@ -19,22 +20,23 @@ one is safe to run twice.
 ## Recipes
 
 ```bash
-./scripts/deploy.sh --dry-run              # what would rebuild, and why
-./scripts/deploy.sh                        # deploy main
-./scripts/deploy.sh --ref release/2026-08  # deploy a specific ref
-./scripts/deploy.sh --all                  # rebuild everything
+sudo bash scripts/deploy/update.sh --check          # preflight; what would deploy
+sudo bash scripts/deploy/update.sh                  # deploy the checked-out branch
+sudo bash scripts/deploy/update.sh --first-install  # first deployment of a checkout
 ./scripts/status.sh                        # is it healthy, and how deep is the queue
 ./scripts/logs.sh api --since 30m --grep error
 ./scripts/restart.sh worker-compute --recreate
 ./scripts/collect-logs.sh --since 2h --out ~/reports
 ```
 
-## Why deploy rebuilds selectively
+## Why the updater never rolls back
 
-`lib/common.sh` maps changed paths to services. A frontend-only change does not
-rebuild three Python images, and a `packages/python` change rebuilds the API *and*
-both workers because they share that package. Rebuilding everything every time
-costs minutes the VM does not have; rebuilding too little ships a stale worker.
+The previous `deploy.sh` reset git to the old commit when a health check failed. After
+a migration that runs old code against a schema it has never seen — the defect the code
+audit records as F14. The updater follows the Protocols Analysis updater on the same
+server instead: build everything while the old version serves (Docker's layer cache
+keeps an unchanged image cheap), migrate explicitly, and on failure stop and name what
+to inspect. Recovery is a backup restore to a matching commit, done deliberately.
 
 ## Why the bundle verifies its own redaction
 
@@ -49,6 +51,8 @@ too, because an operator sharing a screenshot is the most common way a token esc
 - print a secret, even when a command would be more convenient with one;
 - push to git, or create a commit;
 - run a migration without the deploy path having verified health afterwards;
+- roll the code back over a migrated schema;
+- touch nginx, SELinux, the firewall or another application on the server;
 - treat a passing health check as proof the release is correct — that is what the
   release gates and the evaluation run are for.
 

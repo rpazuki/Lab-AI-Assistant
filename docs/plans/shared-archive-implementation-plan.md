@@ -240,6 +240,11 @@ Work:
   and key recovery are untested; neither end of a backup has been S3. Encryption at rest
   is deliberately the operator's storage, not this command.
 - Repair unsafe schema/code rollback assumptions in deployment tooling before migrations.
+  **Done (2026-11-19):** `scripts/deploy/update.sh`, modelled on the Protocols Analysis
+  updater on the same server — root, a lock per checkout, fast-forward only, build while
+  serving, explicit migrations, loopback health — and it **never rolls back**.
+  `scripts/deploy.sh` used to `git reset --hard` after a failed health check, i.e. after
+  migrations; it now hands to the updater.
 - Keep existing filesystem profile and object UUIDs/citations backward-compatible.
 
 Acceptance: move a populated synthetic installation to a new VM/container environment with

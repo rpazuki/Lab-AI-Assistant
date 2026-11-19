@@ -1,6 +1,6 @@
 Status: active
 Owner: operator
-Last verified: 2026-10-19
+Last verified: 2026-11-19
 Source of truth: `docker-compose.yml`, `infra/compose/docker-compose.prod.yml`
 
 # Fresh installation on the shared Red Hat server
@@ -94,7 +94,17 @@ PostgreSQL credentials/ports and the legacy database must not be reused here.
 
 ## 4. Build, start dependencies and migrate
 
-Run the following from `/opt/lab-assistant` in Bash. The explicit project name keeps
+The updater does all of this, in order, and refuses on anything it cannot verify:
+
+```bash
+cd /opt/lab-assistant
+sudo bash scripts/deploy/update.sh --check
+sudo bash scripts/deploy/update.sh --first-install
+```
+
+`--first-install` lets it start the database and scanner the first time; afterwards
+it refuses to run if the database is not already up. The manual equivalent follows,
+for diagnosis. Run it from `/opt/lab-assistant` in Bash. The explicit project name keeps
 containers and volumes separate from the old `rlalab` stack.
 
 ```bash
@@ -196,7 +206,16 @@ network sandbox is not implemented, as recorded in
 ## 8. Update from Git
 
 Back up the database and objects volume together first; see
-[backup and restore](operations/backup-and-restore.md). Then, in Bash:
+[backup and restore](operations/backup-and-restore.md). Then:
+
+```bash
+cd /opt/lab-assistant
+sudo bash scripts/deploy/update.sh
+```
+
+It pulls fast-forward as `labassistant`, builds while the old version serves,
+migrates, and checks `/health`, `/ready` and the login page. It never rolls back: on
+failure, fix the cause and rerun. The manual sequence it replaces, in Bash:
 
 ```bash
 cd /opt/lab-assistant

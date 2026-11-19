@@ -1,6 +1,6 @@
 Status: active
 Owner: operator
-Last verified: 2026-08-12
+Last verified: 2026-11-19
 Source of truth: `scripts/`, `infra/compose/docker-compose.prod.yml`
 
 # Deployment
@@ -48,18 +48,27 @@ lab db create-admin --email <you@example.ac.uk> --workspace <slug>
 
 ## Routine deploys
 
+Take a backup of PostgreSQL and the objects volume first, then, as root, from the
+checkout:
+
 ```bash
-./scripts/deploy.sh --dry-run
+sudo bash scripts/deploy/update.sh --check
 ```
 
 ```bash
-./scripts/deploy.sh
+sudo bash scripts/deploy/update.sh
 ```
 
-`deploy.sh` fast-forwards from GitHub, maps changed paths to services and rebuilds only
-those, applies migrations, waits on `/health` and `/ready`, and **rolls back to the
-previous image and commit if either fails**. It never pushes, never commits, and never
-prints a secret.
+The updater refuses a dirty checkout, a detached HEAD and a concurrent run, pulls
+fast-forward only, builds every image while the old version serves, stops the
+application, applies pending migrations, starts the stack and waits for `/health`,
+`/ready` and the login page over loopback. **It never rolls back.** After a migration,
+the previous code on the new schema is worse than a stopped service (audit F14), so a
+failure leaves the stack for diagnosis and the fix is to correct it and rerun. The
+database container is started if stopped and never recreated; nginx, SELinux, the
+firewall and the server's other applications are never touched. The first deployment
+of a checkout adds `--first-install`. `scripts/deploy.sh` remains as an entry point
+that hands to it.
 
 The readiness gate reads the HTTP status rather than matching a string in the body —
 200 proceeds, 503 rolls back — and prints the check that failed, so a rolled-back
@@ -142,7 +151,9 @@ but it means the first deploy after a disk restore is not the moment to be in a 
 
 ## Rolling back
 
-Application: `./scripts/deploy.sh --ref <previous-tag>`.
+Application: there is no automatic rollback. Restore the backup taken before the
+deploy (database and objects together) and check out the matching commit — an older
+image must never run against a schema a newer one migrated.
 Corpus: repoint the alias — see [runbooks](runbooks/README.md). They are independent,
 and conflating them is a common way to make an incident worse.
 
