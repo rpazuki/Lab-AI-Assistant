@@ -28,6 +28,20 @@ describe("LoginForm", () => {
     await waitFor(() => expect(push).toHaveBeenCalledWith("/ask"));
   });
 
+  it("returns to the page the visitor was sent away from", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ workspaces: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<LoginForm next="/releases" />);
+    await userEvent.type(screen.getByLabelText(/email/i), "s@lab.invalid");
+    await userEvent.type(screen.getByLabelText(/password/i), "a-long-passphrase");
+    await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/releases"));
+  });
+
   it("shows the failure without revealing which half was wrong", async () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(

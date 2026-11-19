@@ -1,7 +1,14 @@
 import { LoginForm } from "@/components/LoginForm";
+import { safeNext } from "@/lib/navigation";
 
 /** Tabler's sign-in: one narrow card centred on the page background. */
-export default function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string | string[] }>;
+}) {
+  // `next` is where the visitor was going when they were sent here to sign in.
+  const { next } = await searchParams;
   return (
     <div className="mx-auto max-w-sm py-10">
       <div className="rounded-card border border-border bg-surface p-8 shadow-card">
@@ -10,7 +17,7 @@ export default function LoginPage() {
           Accounts are provisioned by an administrator. There is no public access and no
           self-registration.
         </p>
-        <LoginForm />
+        <LoginForm next={safeNext(Array.isArray(next) ? next[0] : next)} />
       </div>
     </div>
   );
