@@ -204,3 +204,91 @@ export interface EvaluationRun {
   completed_at: string | null;
   per_case?: Record<string, unknown>[];
 }
+
+/** A workspace membership with its account. */
+export interface Member {
+  user_id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+  status: "active" | "suspended" | "invited" | "expired";
+  extra_capabilities: string[];
+  capabilities: string[];
+  accepted_at: string | null;
+  last_login_at: string | null;
+  account_active: boolean;
+}
+
+export interface Invitation {
+  id: string;
+  email: string;
+  role: string;
+  state: "open" | "accepted" | "revoked" | "expired";
+  created_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+  invited_by: string;
+}
+
+/** What an invitation offers, shown before it is accepted. */
+export interface InvitationPreview {
+  email: string;
+  role: string;
+  workspace: { slug: string; name: string };
+  expires_at: string;
+  has_account: boolean;
+}
+
+export interface TaskSnapshot {
+  counts: Record<string, number>;
+  oldest_pending_by_stage: Record<string, string>;
+  awaiting_user: { task_id: string; stage: string; action: string | null }[];
+  dead_letters: { task_id: string; stage: string; error: string | null }[];
+}
+
+export interface AuditEvent {
+  id: string;
+  occurred_at: string;
+  actor_type: string;
+  action: string;
+  subject_type: string;
+  subject_id: string | null;
+  reason_code: string | null;
+  metadata: Record<string, unknown>;
+  integrity_hash: string;
+}
+
+/** One immutable version of a collection scope. */
+export interface ScopeVersion {
+  id: string;
+  scope_id: string;
+  version: number;
+  name: string;
+  approval_state: string;
+  connectors: string[];
+}
+
+export interface ScopeGateReport {
+  passed: boolean;
+  blockers: string[];
+  compiled_connectors: string[];
+  gold_seed_recall: number | null;
+  estimated_requests: number | null;
+}
+
+export interface DiscoveryRun {
+  id: string;
+  status: string;
+  started_at: string | null;
+  frozen_at: string | null;
+  degraded_reason: string | null;
+  connectors: {
+    connector_id: string;
+    required: boolean;
+    outcome: string | null;
+    records_seen: number;
+    declared_total: number | null;
+    accepted_degraded: boolean;
+  }[];
+  metrics: Record<string, unknown>;
+}

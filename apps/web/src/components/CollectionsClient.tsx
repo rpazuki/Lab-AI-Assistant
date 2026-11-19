@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { CollectionSetup } from "@/components/CollectionSetup";
 import {
   Alert,
   Button,
@@ -24,7 +25,8 @@ import {
 import type { AcquisitionPlan, Candidate } from "@/types";
 
 /**
- * Collections: candidate decisions, identity conflicts, and the acquisition queue.
+ * Collections: scope and discovery, candidate decisions, identity conflicts, and the
+ * acquisition queue, in the order a collection is built.
  *
  * One candidate row shows every source assertion behind its canonical fields, so a
  * steward can see *why* a title says what it says before deciding anything. The
@@ -69,6 +71,8 @@ export function CollectionsClient() {
           {error}
         </Alert>
       ) : null}
+
+      <CollectionSetup onChanged={() => void refresh()} />
 
       <Panel title="Identity conflicts and duplicate proposals">
         {conflicts.length === 0 && proposals.length === 0 ? (

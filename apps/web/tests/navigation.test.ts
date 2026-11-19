@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 
 import { sessionCookie } from "@/lib/config";
-import { safeNext } from "@/lib/navigation";
+import { NAV, safeNext, visibleGroups } from "@/lib/navigation";
 import { config, middleware } from "@/middleware";
 
 function page(path: string, cookie?: string): NextRequest {
@@ -17,7 +17,7 @@ describe("safeNext", () => {
     expect(safeNext("/review?claim=1")).toBe("/review?claim=1");
   });
 
-  it.each([undefined, "", "review", "//evil.example", "/\\evil.example", "https://evil.example", "/login", "/login?next=/ask"])(
+  it.each([undefined, "", "review", "//evil.example", "/\\evil.example", "https://evil.example", "/login", "/login?next=/ask", "/invite"])(
     "sends %j home instead",
     (next) => {
       expect(safeNext(next)).toBe("/ask");
@@ -41,6 +41,10 @@ describe("middleware", () => {
     expect(middleware(page("/assist/login")).headers.get("location")).toBeNull();
   });
 
+  it("lets the invitation page through, since its visitor has no account yet", () => {
+    expect(middleware(page("/assist/invite")).headers.get("location")).toBeNull();
+  });
+
   it("lets a member with a session through", () => {
     const response = middleware(page("/assist/review", `${sessionCookie}=token`));
     expect(response.headers.get("location")).toBeNull();
@@ -54,5 +58,17 @@ describe("middleware", () => {
     expect(matches("/api/backend/auth/me")).toBe(false);
     expect(matches("/_next/static/chunk.js")).toBe(false);
     expect(matches("/favicon.ico")).toBe(false);
+  });
+});
+
+describe("visibleGroups", () => {
+  it("drops a group with nothing the member may open", () => {
+    const groups = visibleGroups(["ask", "view_operations"]);
+    expect(groups.map((group) => group.id)).toEqual(["research", "administration"]);
+    expect(groups[1]?.items.map((item) => item.label)).toEqual(["Operations"]);
+  });
+
+  it("names every section with a distinct path", () => {
+    expect(new Set(NAV.map((item) => item.href)).size).toBe(NAV.length);
   });
 });

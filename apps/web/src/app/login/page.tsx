@@ -14,8 +14,8 @@ export default async function LoginPage({
       <div className="rounded-card border border-border bg-surface p-8 shadow-card">
         <h1 className="mb-1 text-center text-page-title font-semibold text-heading">Sign in</h1>
         <p className="mb-6 text-center text-sm text-muted">
-          Accounts are provisioned by an administrator. There is no public access and no
-          self-registration.
+          Accounts come from an administrator&apos;s invitation. There is no public access
+          and no self-registration.
         </p>
         <LoginForm next={safeNext(Array.isArray(next) ? next[0] : next)} />
       </div>

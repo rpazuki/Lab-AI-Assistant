@@ -309,6 +309,13 @@ async def get_actor(
     )
     if actor.membership is None:
         raise PolicyDenied("this account is not a member of that workspace")
+    if not actor.membership.is_current(container.context.now()):
+        # A suspended member holds no capability anyway; refusing here says so
+        # once, instead of as a missing capability on every page they open.
+        raise PolicyDenied(
+            "your access to this workspace is suspended",
+            context={"reason": "membership_suspended"},
+        )
     return actor
 
 

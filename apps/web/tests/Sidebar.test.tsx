@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { NavBar } from "@/components/NavBar";
+import { CLOSED_GROUPS_KEY, COLLAPSED_KEY, Sidebar } from "@/components/Sidebar";
 import { ApiError } from "@/lib/api";
 import type { Me } from "@/types";
 
@@ -34,11 +35,19 @@ const ALL = [
 ];
 
 const sections = () =>
-  screen.queryAllByRole("link").map((link) => link.textContent).filter((t) => t !== "Lab AI Assistant");
+  within(screen.getByRole("navigation", { name: "Main" }))
+    .queryAllByRole("link")
+    .map((link) => link.textContent);
 
-describe("NavBar", () => {
+const groupHeaders = () =>
+  within(screen.getByRole("navigation", { name: "Main" }))
+    .queryAllByRole("button")
+    .map((button) => button.textContent);
+
+describe("Sidebar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     pathname = "/ask";
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -54,7 +63,7 @@ describe("NavBar", () => {
         error_class: "authentication_required",
       }),
     );
-    render(<NavBar />);
+    render(<Sidebar />);
     expect(await screen.findByRole("link", { name: "Sign in" })).toHaveAttribute("aria-current", "page");
     expect(sections()).toEqual(["Sign in"]);
     expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
@@ -62,7 +71,7 @@ describe("NavBar", () => {
 
   it("shows no section while it is still asking who is signed in", () => {
     vi.mocked(api.getMe).mockReturnValue(new Promise(() => undefined));
-    render(<NavBar />);
+    render(<Sidebar />);
     expect(sections()).toEqual([]);
   });
 
@@ -70,33 +79,77 @@ describe("NavBar", () => {
     vi.mocked(api.getMe).mockResolvedValue(
       member("researcher", ["ask", "search", "upload_asset", "view_analytics"]),
     );
-    render(<NavBar />);
+    render(<Sidebar />);
     expect(await screen.findByRole("button", { name: "Sign out" })).toBeInTheDocument();
     expect(sections()).toEqual(["Ask", "Analytics"]);
+    expect(groupHeaders()).toEqual(["Research"]);
   });
 
   it("gives a reviewer the review queue but not releases", async () => {
     vi.mocked(api.getMe).mockResolvedValue(
       member("reviewer", ["ask", "search", "upload_asset", "view_analytics", "decide_identity", "review_parse", "review_claims"]),
     );
-    render(<NavBar />);
+    render(<Sidebar />);
     await screen.findByRole("button", { name: "Sign out" });
-    expect(sections()).toEqual(["Ask", "Collections", "Review", "Analytics"]);
+    expect(sections()).toEqual(["Ask", "Analytics", "Collections", "Review"]);
   });
 
-  it("gives an admin every section", async () => {
+  it("gives an admin every section, grouped", async () => {
     vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
-    render(<NavBar />);
+    render(<Sidebar />);
     await screen.findByRole("button", { name: "Sign out" });
-    expect(sections()).toEqual(["Ask", "Collections", "Review", "Releases", "Evaluation", "Analytics"]);
+    expect(sections()).toEqual([
+      "Ask", "Analytics", "Collections", "Review", "Releases", "Evaluation", "Members", "Operations",
+    ]);
+    expect(groupHeaders()).toEqual(["Research", "Curation", "Publishing", "Administration"]);
     expect(screen.getByRole("link", { name: "Ask" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("closes and reopens a group, and remembers it", async () => {
+    vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
+    render(<Sidebar />);
+    const header = await screen.findByRole("button", { name: "Publishing" });
+    expect(header).toHaveAttribute("aria-expanded", "true");
+
+    await userEvent.click(header);
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("link", { name: "Releases" })).not.toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(CLOSED_GROUPS_KEY) ?? "[]")).toEqual(["publishing"]);
+
+    await userEvent.click(header);
+    expect(screen.getByRole("link", { name: "Releases" })).toBeInTheDocument();
+  });
+
+  it("hides down to a rail of icons that keep their names", async () => {
+    vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
+    render(<Sidebar />);
+    await screen.findByRole("button", { name: "Sign out" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Hide navigation" }));
+    const show = screen.getByRole("button", { name: "Show navigation" });
+    expect(show).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(COLLAPSED_KEY)).toBe("1");
+    // No group headers in the rail, but every section is still a named link.
+    expect(groupHeaders()).toEqual([]);
+    expect(screen.getByRole("link", { name: "Members" })).toHaveAttribute("title", "Members");
+    expect(screen.queryByText("Lab AI Assistant")).not.toBeInTheDocument();
+
+    await userEvent.click(show);
+    expect(screen.getByRole("button", { name: "Hide navigation" })).toBeInTheDocument();
+  });
+
+  it("opens hidden when it was hidden last time", async () => {
+    window.localStorage.setItem(COLLAPSED_KEY, "1");
+    vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
+    render(<Sidebar />);
+    expect(await screen.findByRole("button", { name: "Show navigation" })).toBeInTheDocument();
   });
 
   it("signs out and reloads on the sign-in page", async () => {
     const assign = vi.fn();
     vi.stubGlobal("location", { ...window.location, assign });
     vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
-    render(<NavBar />);
+    render(<Sidebar />);
     (await screen.findByRole("button", { name: "Sign out" })).click();
     await waitFor(() => expect(assign).toHaveBeenCalledWith(expect.stringMatching(/\/login$/)));
     expect(api.logout).toHaveBeenCalledOnce();

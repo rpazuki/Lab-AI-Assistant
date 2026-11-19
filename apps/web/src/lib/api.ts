@@ -12,16 +12,24 @@
 import type {
   AcquisitionPlan,
   AskEvent,
+  AuditEvent,
+  Benchmark,
   Candidate,
   ChatMessage,
-  Benchmark,
   ChatSession,
   CorpusStats,
+  DiscoveryRun,
   EvaluationRun,
+  Invitation,
+  InvitationPreview,
   Me,
+  Member,
   ProblemDetails,
   Release,
   ReviewItem,
+  ScopeGateReport,
+  ScopeVersion,
+  TaskSnapshot,
 } from "@/types";
 import { appPath } from "@/lib/config";
 
@@ -224,6 +232,46 @@ export const search = (query: string, topK?: number) =>
   }>("/search", { method: "POST", body: JSON.stringify({ query, top_k: topK }) });
 
 // ── collections ───────────────────────────────────────────────────────────
+export const listScopes = () =>
+  request<{ items: ScopeVersion[] }>("/scopes").then((body) => body.items);
+
+export const createScope = (payload: {
+  name: string;
+  scientific_objective: string;
+  inclusion_criteria?: string[];
+  exclusion_criteria?: string[];
+  connectors: { connector_id: string; query: string; required?: boolean }[];
+  scope_id?: string;
+}) =>
+  request<{ id: string; version: number; checksum: string }>("/scopes", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const checkScopeGate = (scopeVersionId: string) =>
+  request<ScopeGateReport>(`/scopes/${scopeVersionId}/gate`, { method: "POST" });
+
+export const approveScope = (scopeVersionId: string) =>
+  request<{ id: string; approval_state: string }>(`/scopes/${scopeVersionId}/approve`, {
+    method: "POST",
+  });
+
+export const listDiscoveryRuns = () =>
+  request<{ items: DiscoveryRun[] }>("/discovery-runs").then((body) => body.items);
+
+export const startDiscovery = (scopeVersionId: string) =>
+  request<{ run_id: string; status: string }>("/discovery-runs", {
+    method: "POST",
+    body: JSON.stringify({ scope_version_id: scopeVersionId }),
+  });
+
+/** Freeze a run. A degraded run freezes only when the steward accepts the gap. */
+export const freezeDiscovery = (runId: string, acceptDegraded = false) =>
+  request<{ run_id: string; status: string }>(
+    `/discovery-runs/${runId}/freeze${acceptDegraded ? "?accept_degraded=true" : ""}`,
+    { method: "POST" },
+  );
+
 export const listCandidates = () =>
   request<{ items: Candidate[] }>("/candidates").then((body) => body.items);
 
@@ -393,13 +441,77 @@ export const sourceContribution = () =>
     "/analytics/sources",
   ).then((b) => b.items);
 
-export const taskSnapshot = () =>
-  request<{
-    counts: Record<string, number>;
-    oldest_pending_by_stage: Record<string, string>;
-    awaiting_user: { task_id: string; stage: string; action: string | null }[];
-    dead_letters: { task_id: string; stage: string; error: string | null }[];
-  }>("/operations/tasks");
+export const taskSnapshot = () => request<TaskSnapshot>("/operations/tasks");
+
+/** Put a dead-lettered task back in the queue. */
+export const retryTask = (taskId: string) =>
+  request<{ task_id: string; state: string }>(`/operations/tasks/${taskId}/retry`, {
+    method: "POST",
+  });
+
+export const listAuditEvents = (limit = 100) =>
+  request<{ items: AuditEvent[] }>(`/audit-events?limit=${limit}`).then((body) => body.items);
+
+// ── members and invitations ───────────────────────────────────────────────
+export const listMembers = () =>
+  request<{ items: Member[] }>("/members").then((body) => body.items);
+
+export const updateMember = (userId: string, change: { role?: string; status?: string }) =>
+  request<Member>(`/members/${userId}`, { method: "PATCH", body: JSON.stringify(change) });
+
+/** Sign a member out everywhere without changing their access. */
+export const revokeMemberSessions = (userId: string) =>
+  request<{ user_id: string }>(`/members/${userId}/revoke-sessions`, { method: "POST" });
+
+export const listInvitations = () =>
+  request<{ items: Invitation[] }>("/invitations").then((body) => body.items);
+
+/** Create an invitation. The token in the answer is shown once and never again. */
+export const createInvitation = (payload: { email: string; role: string; ttl_hours?: number }) =>
+  request<{ id: string; email: string; role: string; expires_at: string; token: string }>(
+    "/invitations",
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+
+export const revokeInvitation = (invitationId: string) =>
+  request<{ id: string; state: string }>(`/invitations/${invitationId}/revoke`, {
+    method: "POST",
+  });
+
+/** The token travels in a POST body, never in a URL an access log would keep. */
+export const previewInvitation = (token: string) =>
+  request<InvitationPreview>("/invitations/preview", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+
+/** Redeem an invitation. The route handler sets the session cookie, as sign-in does. */
+export async function acceptInvitation(payload: {
+  token: string;
+  password: string;
+  full_name?: string;
+}): Promise<void> {
+  const response = await fetch(appPath("/api/auth/accept-invitation"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const problem = (await response.json().catch(() => ({}))) as Partial<ProblemDetails>;
+    throw new ApiError({
+      type: "about:blank",
+      title: "invitation not accepted",
+      status: response.status,
+      detail: problem.detail ?? "the invitation could not be accepted",
+      error_class: problem.error_class ?? "internal",
+    });
+  }
+}
+
+/** A link to accept an invitation. The token is a fragment: browsers never send it. */
+export function invitationLink(token: string, origin = window.location.origin): string {
+  return `${origin}${appPath("/invite")}#token=${encodeURIComponent(token)}`;
+}
 
 // ── evaluation ────────────────────────────────────────────────────────────
 export const listBenchmarks = () =>

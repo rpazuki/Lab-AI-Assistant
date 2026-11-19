@@ -7,7 +7,7 @@ export default function CollectionsPage() {
       <PageHeader
         pretitle="Curation"
         title="Collections"
-        description="Candidate decisions, identity conflicts, and the acquisition queue."
+        description="Scopes and discovery runs, then candidate decisions, identity conflicts, and the acquisition queue."
       />
       <CollectionsClient />
     </>

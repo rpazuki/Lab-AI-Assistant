@@ -12,7 +12,7 @@ import {
   row,
   rowList,
 } from "@/components/ui/primitives";
-import { decideReview, listReviewQueue } from "@/lib/api";
+import { correctionRate, decideReview, listReviewQueue } from "@/lib/api";
 import type { ReviewItem } from "@/types";
 
 /**
@@ -30,10 +30,17 @@ export function ReviewClient() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [corrections, setCorrections] = useState<Record<string, string>>({});
+  const [rates, setRates] = useState<Record<string, number> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      setItems(await listReviewQueue(includeInvalid));
+      const [queue, measured] = await Promise.all([
+        listReviewQueue(includeInvalid),
+        // The rate is a secondary measure: the queue still loads without it.
+        correctionRate().catch(() => null),
+      ]);
+      setItems(queue);
+      setRates(measured);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "the review queue could not be loaded");
@@ -193,6 +200,45 @@ export function ReviewClient() {
           ))}
         </ul>
       </Panel>
+
+      <CorrectionRates rates={rates} />
     </div>
+  );
+}
+
+/**
+ * How often reviewers change what the extractor proposed, per predicate.
+ *
+ * It is the measured input to double review: a predicate whose correction rate
+ * is high is the one worth a second reviewer, so the number is shown where the
+ * reviewing happens.
+ */
+export function CorrectionRates({ rates }: { rates: Record<string, number> | null }) {
+  const entries = Object.entries(rates ?? {}).sort(([, a], [, b]) => b - a);
+  return (
+    <Panel title="Correction rate by predicate" flush>
+      {entries.length === 0 ? (
+        <div className="px-5 py-3">
+          <Empty>No reviewed claims yet, so there is nothing to measure.</Empty>
+        </div>
+      ) : (
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Predicate</th>
+              <th className="numeric">Corrected</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map(([predicate, rate]) => (
+              <tr key={predicate}>
+                <td className="font-mono text-xs">{predicate}</td>
+                <td className="numeric">{(rate * 100).toFixed(1)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Panel>
   );
 }

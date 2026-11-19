@@ -13,7 +13,8 @@ issued token for a user at once, which is what a credential incident needs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
+from enum import StrEnum
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
@@ -25,6 +26,7 @@ from lab_assistant.contracts.errors import (
     LabAssistantError,
     NotFound,
     PolicyDenied,
+    StateTransitionError,
     ValidationFailure,
 )
 from lab_assistant.contracts.events import ActorType, AuditAction
@@ -50,10 +52,42 @@ from lab_assistant.domain.workspace import (
 __all__ = [
     "AccountService",
     "AuthenticationFailed",
+    "InvitationState",
     "LoginRateLimited",
+    "MemberView",
     "PasswordHasher",
     "PasswordVerification",
+    "invitation_state",
 ]
+
+#: Roles a person may hold. A service account is provisioned, never invited or
+#: assigned to a person: its capabilities are for unattended workers.
+_PERSON_ROLES = frozenset(role for role in Role if role is not Role.SERVICE_ACCOUNT)
+
+
+class InvitationState(StrEnum):
+    OPEN = "open"
+    ACCEPTED = "accepted"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
+def invitation_state(invitation: Invitation, now: datetime) -> InvitationState:
+    if invitation.accepted_at is not None:
+        return InvitationState.ACCEPTED
+    if invitation.revoked_at is not None:
+        return InvitationState.REVOKED
+    if now >= invitation.expires_at:
+        return InvitationState.EXPIRED
+    return InvitationState.OPEN
+
+
+@dataclass(frozen=True, slots=True)
+class MemberView:
+    """A membership with the account it belongs to, for the members page."""
+
+    membership: Membership
+    user: User
 
 
 class AuthenticationFailed(LabAssistantError):
@@ -424,23 +458,50 @@ class AccountService:
     async def invite(
         self, actor: ActorContext, *, email: str, role: Role, ttl_hours: int = 168
     ) -> tuple[Invitation, str]:
-        """Create an invitation. The token is returned once and never stored."""
+        """Create an invitation. The token is returned once and never stored.
+
+        An earlier open invitation for the same address is revoked, so a lost link
+        is replaced rather than left valid beside its successor. An address that is
+        already an active member is refused: changing their role is a membership
+        change, not a second invitation.
+        """
         actor.require(Capability.MANAGE_MEMBERS)
+        self._require_assignable(actor, role)
+        if not 1 <= ttl_hours <= 24 * 30:
+            raise ValidationFailure("an invitation lasts between 1 hour and 30 days")
         import secrets
 
         context = self._context
+        normalised = normalise_email(email)
         token = secrets.token_urlsafe(32)
+        now = context.now()
         invitation = Invitation(
             id=context.new_id(),
             workspace_id=actor.workspace_id,
-            email_normalized=normalise_email(email),
+            email_normalized=normalised,
             role=role,
             token_digest=sha256_text(token),
             invited_by=actor.user_id,
-            created_at=context.now(),
-            expires_at=context.now() + timedelta(hours=ttl_hours),
+            created_at=now,
+            expires_at=now + timedelta(hours=ttl_hours),
         )
         async with context.uow_factory() as uow:
+            existing_user = await uow.users.get_by_email(normalised)
+            if existing_user is not None:
+                membership = await uow.workspaces.get_membership(
+                    actor.workspace_id, existing_user.id
+                )
+                if membership is not None and membership.status is MembershipStatus.ACTIVE:
+                    raise ValidationFailure(
+                        "this address is already an active member; change their role instead"
+                    )
+            superseded = 0
+            for earlier in await uow.workspaces.list_invitations(actor.workspace_id):
+                if earlier.email_normalized == normalised and earlier.is_open(now):
+                    await uow.workspaces.update_invitation(
+                        earlier.model_copy(update={"revoked_at": now})
+                    )
+                    superseded += 1
             await uow.workspaces.add_invitation(invitation)
             await uow.audit.append(
                 context.audit.build(
@@ -454,11 +515,69 @@ class AccountService:
                     metadata={
                         "email_digest": sha256_text(invitation.email_normalized)[:16],
                         "role": role.value,
+                        "superseded": superseded,
                     },
                 )
             )
             await uow.commit()
         return invitation, token
+
+    async def list_invitations(self, actor: ActorContext) -> list[Invitation]:
+        """Every invitation of the workspace, newest first."""
+        actor.require(Capability.MANAGE_MEMBERS)
+        async with self._context.uow_factory() as uow:
+            invitations = await uow.workspaces.list_invitations(actor.workspace_id)
+        return sorted(invitations, key=lambda item: item.created_at, reverse=True)
+
+    async def revoke_invitation(self, actor: ActorContext, *, invitation_id: UUID) -> Invitation:
+        actor.require(Capability.MANAGE_MEMBERS)
+        context = self._context
+        async with context.uow_factory() as uow:
+            invitation = next(
+                (
+                    item
+                    for item in await uow.workspaces.list_invitations(actor.workspace_id)
+                    if item.id == invitation_id
+                ),
+                None,
+            )
+            if invitation is None:
+                raise NotFound(f"invitation {invitation_id} not found")
+            if not invitation.is_open(context.now()):
+                raise StateTransitionError(
+                    "only an open invitation can be revoked",
+                    context={"state": invitation_state(invitation, context.now()).value},
+                )
+            revoked = invitation.model_copy(update={"revoked_at": context.now()})
+            await uow.workspaces.update_invitation(revoked)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=actor.workspace_id,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.ADMIN_ACTION,
+                    subject_type="invitation",
+                    subject_id=invitation.id,
+                    previous_hash=await uow.audit.latest_hash(actor.workspace_id),
+                    reason_code="invitation_revoked",
+                )
+            )
+            await uow.commit()
+        return revoked
+
+    async def preview_invitation(self, *, token: str) -> tuple[Invitation, Workspace]:
+        """What an open invitation offers, for the page that accepts it.
+
+        Answers only for an open invitation, and says the same thing for a token
+        that never existed as for one that expired or was revoked.
+        """
+        context = self._context
+        async with context.uow_factory() as uow:
+            invitation = await uow.workspaces.get_invitation_by_digest(sha256_text(token))
+            workspace = await uow.workspaces.get(invitation.workspace_id) if invitation else None
+        if invitation is None or workspace is None or not invitation.is_open(context.now()):
+            raise PolicyDenied("this invitation is not valid")
+        return invitation, workspace
 
     async def accept_invitation(
         self,
@@ -472,6 +591,10 @@ class AccountService:
 
         Throttled per origin like login: this is the other unauthenticated endpoint,
         and a token guess costs the server an argon2 hash whether or not it is right.
+
+        Someone who already has an account proves it with their existing password:
+        the token says the invitation reached their inbox, not that whoever holds
+        it may set a new password on an account that already exists.
         """
         context = self._context
         await self._throttle_login(
@@ -487,17 +610,32 @@ class AccountService:
             user = await self.create_user(
                 email=invitation.email_normalized, password=password, full_name=full_name
             )
-        async with context.uow_factory() as uow:
-            membership = Membership(
-                id=context.new_id(),
-                workspace_id=invitation.workspace_id,
-                user_id=user.id,
-                role=invitation.role,
-                status=MembershipStatus.ACTIVE,
-                invited_by=invitation.invited_by,
-                accepted_at=context.now(),
+        elif not self._hasher.verify(password, user.hashed_password).ok or not user.is_active:
+            raise AuthenticationFailed(
+                "this address already has an account; enter its existing password"
             )
-            await uow.workspaces.add_membership(membership)
+        async with context.uow_factory() as uow:
+            existing = await uow.workspaces.get_membership(invitation.workspace_id, user.id)
+            if existing is not None:
+                membership = existing.model_copy(
+                    update={
+                        "role": invitation.role,
+                        "status": MembershipStatus.ACTIVE,
+                        "accepted_at": context.now(),
+                    }
+                )
+                await uow.workspaces.update_membership(membership)
+            else:
+                membership = Membership(
+                    id=context.new_id(),
+                    workspace_id=invitation.workspace_id,
+                    user_id=user.id,
+                    role=invitation.role,
+                    status=MembershipStatus.ACTIVE,
+                    invited_by=invitation.invited_by,
+                    accepted_at=context.now(),
+                )
+                await uow.workspaces.add_membership(membership)
             accepted = invitation.model_copy(update={"accepted_at": context.now()})
             await uow.workspaces.update_invitation(accepted)
             await uow.audit.append(
@@ -513,6 +651,107 @@ class AccountService:
             )
             await uow.commit()
         return user, membership
+
+    # ── members ─────────────────────────────────────────────────────────────
+    async def list_members(self, actor: ActorContext) -> list[MemberView]:
+        """Every membership of the workspace with its account, by email."""
+        actor.require(Capability.MANAGE_MEMBERS)
+        async with self._context.uow_factory() as uow:
+            memberships = await uow.workspaces.list_memberships(actor.workspace_id)
+            views: list[MemberView] = []
+            for membership in memberships:
+                user = await uow.users.get(membership.user_id)
+                if user is not None:
+                    views.append(MemberView(membership=membership, user=user))
+        return sorted(views, key=lambda view: view.user.email_normalized)
+
+    async def current_workspaces(self, user_id: UUID) -> list[Workspace]:
+        """The workspaces where this user's membership is current, for sign-in."""
+        context = self._context
+        async with context.uow_factory() as uow:
+            current: list[Workspace] = []
+            for workspace in await uow.workspaces.list_for_user(user_id):
+                membership = await uow.workspaces.get_membership(workspace.id, user_id)
+                if membership is not None and membership.is_current(context.now()):
+                    current.append(workspace)
+        return current
+
+    async def update_member(
+        self,
+        actor: ActorContext,
+        *,
+        user_id: UUID,
+        role: Role | None = None,
+        status: MembershipStatus | None = None,
+    ) -> MemberView:
+        """Change a member's role, or suspend or reinstate them.
+
+        Suspending also ends every session the person holds, so it takes effect
+        on their next request rather than when their token expires. Two guards:
+        nobody changes their own membership, and only an admin grants or takes
+        away admin. Together they keep the workspace from losing its last admin,
+        since whoever makes a change is an admin who stays one.
+        """
+        actor.require(Capability.MANAGE_MEMBERS)
+        if status is not None and status not in (
+            MembershipStatus.ACTIVE,
+            MembershipStatus.SUSPENDED,
+        ):
+            raise ValidationFailure("a membership is either active or suspended")
+        if role is not None:
+            self._require_assignable(actor, role)
+        if user_id == actor.user_id:
+            raise PolicyDenied("you cannot change your own membership; ask another admin")
+        context = self._context
+        async with context.uow_factory() as uow:
+            membership = await uow.workspaces.get_membership(actor.workspace_id, user_id)
+            user = await uow.users.get(user_id)
+            if membership is None or user is None:
+                raise NotFound(f"member {user_id} not found")
+            if membership.role is Role.ADMIN:
+                self._require_assignable(actor, Role.ADMIN)
+            new_role = role or membership.role
+            new_status = status or membership.status
+            updated = membership.model_copy(update={"role": new_role, "status": new_status})
+            await uow.workspaces.update_membership(updated)
+            suspended = (
+                new_status is MembershipStatus.SUSPENDED
+                and membership.status is not MembershipStatus.SUSPENDED
+            )
+            if suspended:
+                user.auth_epoch += 1
+                user.updated_at = context.now()
+                await uow.users.update(user)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=actor.workspace_id,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.MEMBERSHIP_CHANGED,
+                    subject_type="membership",
+                    subject_id=membership.id,
+                    previous_hash=await uow.audit.latest_hash(actor.workspace_id),
+                    metadata={
+                        "user_id": str(user_id),
+                        "role": new_role.value,
+                        "previous_role": membership.role.value,
+                        "status": new_status.value,
+                        "previous_status": membership.status.value,
+                        "sessions_revoked": suspended,
+                    },
+                )
+            )
+            await uow.commit()
+        return MemberView(membership=updated, user=user)
+
+    @staticmethod
+    def _require_assignable(actor: ActorContext, role: Role) -> None:
+        if role not in _PERSON_ROLES:
+            raise ValidationFailure(f"{role.value} is not a role a person can hold")
+        if role is Role.ADMIN and (
+            actor.membership is None or actor.membership.role is not Role.ADMIN
+        ):
+            raise PolicyDenied("only an admin can grant or change the admin role")
 
     # ── groups and grants ───────────────────────────────────────────────────
     async def create_group(

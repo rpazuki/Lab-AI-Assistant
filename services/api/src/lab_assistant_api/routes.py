@@ -21,6 +21,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, Query, Request, Respon
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from lab_assistant.application.accounts import MemberView, invitation_state
 from lab_assistant.application.acquisition import AcquisitionService
 from lab_assistant.application.analytics import AnalyticsService
 from lab_assistant.application.chat import ChatService
@@ -32,12 +33,12 @@ from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseServi
 from lab_assistant.application.retrieval import RetrievalService
 from lab_assistant.application.review import ReviewService
 from lab_assistant.application.scopes import ScopeService
-from lab_assistant.contracts.errors import NotFound
+from lab_assistant.contracts.errors import NotFound, PolicyDenied
 from lab_assistant.domain.claims import ReviewDecision
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.scope import ConnectorPlanEntry
 from lab_assistant.domain.states import RelevanceState
-from lab_assistant.domain.workspace import Capability
+from lab_assistant.domain.workspace import Capability, MembershipStatus, Role
 from lab_assistant.evaluation.service import EvaluationService, benchmark_json, run_json
 from lab_assistant_api.deps import (
     ApiContainer,
@@ -84,6 +85,27 @@ class LoginResponse(BaseModel):
     expires_in: int
     user_id: UUID
     workspaces: list[dict[str, str]]
+
+
+class InvitationRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: Role = Role.RESEARCHER
+    ttl_hours: int = Field(default=168, ge=1, le=720)
+
+
+class InvitationTokenRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=200)
+
+
+class AcceptInvitationRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=200)
+    password: str = Field(min_length=1, max_length=1000)
+    full_name: str | None = Field(default=None, max_length=200)
+
+
+class MemberUpdateRequest(BaseModel):
+    role: Role | None = None
+    status: MembershipStatus | None = None
 
 
 class AskRequest(BaseModel):
@@ -178,8 +200,17 @@ async def login(
         # where.
         client_signal=_client_signal(request),
     )
-    async with container.context.uow_factory() as uow:
-        workspaces = await uow.workspaces.list_for_user(user.id)
+    workspaces = await container.accounts.current_workspaces(user.id)
+    if not workspaces:
+        async with container.context.uow_factory() as uow:
+            memberships = await uow.workspaces.list_for_user(user.id)
+        if memberships:
+            # The password was right, so saying why is no oracle; it saves the
+            # person from retrying a password that was never the problem.
+            raise PolicyDenied(
+                "your access to this workspace is suspended; ask an admin to reinstate it",
+                context={"reason": "membership_suspended"},
+            )
     selected = None
     if payload.workspace:
         selected = next((w.id for w in workspaces if w.slug == payload.workspace.lower()), None)
@@ -236,6 +267,156 @@ async def me(actor: CurrentActor, container: Container) -> dict[str, Any]:
             c.value for c in (actor.membership.capabilities() if actor.membership else set())
         ),
     }
+
+
+# ── members and invitations ─────────────────────────────────────────────────
+# Accounts are interaction, not curation: a reader installation has members of its
+# own to manage, so the writes declare RECORD_INTERACTION, which every role holds.
+@router.get("/members")
+async def list_members(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    members = await container.accounts.list_members(actor)
+    return {"items": [_member_json(view) for view in members]}
+
+
+@router.patch(
+    "/members/{user_id}",
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def update_member(
+    user_id: UUID,
+    actor: CurrentActor,
+    container: Container,
+    payload: MemberUpdateRequest = Body(...),
+) -> dict[str, Any]:
+    view = await container.accounts.update_member(
+        actor, user_id=user_id, role=payload.role, status=payload.status
+    )
+    return _member_json(view)
+
+
+@router.post(
+    "/members/{user_id}/revoke-sessions",
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def revoke_member_sessions(
+    user_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Sign a member out everywhere, without changing their access."""
+    actor.require(Capability.MANAGE_MEMBERS)
+    async with container.context.uow_factory() as uow:
+        membership = await uow.workspaces.get_membership(actor.workspace_id, user_id)
+    if membership is None:
+        raise NotFound(f"member {user_id} not found")
+    user = await container.accounts.revoke_sessions(user_id=user_id, actor_id=actor.user_id)
+    return {"user_id": str(user.id), "auth_epoch": user.auth_epoch}
+
+
+@router.get("/invitations")
+async def list_invitations(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    invitations = await container.accounts.list_invitations(actor)
+    now = container.context.now()
+    return {
+        "items": [
+            {
+                "id": str(item.id),
+                "email": item.email_normalized,
+                "role": item.role.value,
+                "state": invitation_state(item, now).value,
+                "created_at": item.created_at.isoformat(),
+                "expires_at": item.expires_at.isoformat(),
+                "accepted_at": item.accepted_at.isoformat() if item.accepted_at else None,
+                "invited_by": str(item.invited_by),
+            }
+            for item in invitations
+        ]
+    }
+
+
+@router.post(
+    "/invitations",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def create_invitation(
+    actor: CurrentActor, container: Container, payload: InvitationRequest = Body(...)
+) -> dict[str, Any]:
+    """Create an invitation and return its token, once.
+
+    There is no mailer: the admin sends the link themselves. The token is never
+    stored, so a lost link is replaced by inviting the address again.
+    """
+    invitation, token = await container.accounts.invite(
+        actor, email=payload.email, role=payload.role, ttl_hours=payload.ttl_hours
+    )
+    return {
+        "id": str(invitation.id),
+        "email": invitation.email_normalized,
+        "role": invitation.role.value,
+        "expires_at": invitation.expires_at.isoformat(),
+        "token": token,
+    }
+
+
+@router.post(
+    "/invitations/{invitation_id}/revoke",
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def revoke_invitation(
+    invitation_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    invitation = await container.accounts.revoke_invitation(actor, invitation_id=invitation_id)
+    return {"id": str(invitation.id), "state": "revoked"}
+
+
+@router.post(
+    "/invitations/preview",
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def preview_invitation(
+    container: Container, payload: InvitationTokenRequest = Body(...)
+) -> dict[str, Any]:
+    """What an invitation offers. A POST so the token never lands in an access log."""
+    invitation, workspace = await container.accounts.preview_invitation(token=payload.token)
+    async with container.context.uow_factory() as uow:
+        has_account = await uow.users.get_by_email(invitation.email_normalized) is not None
+    return {
+        "email": invitation.email_normalized,
+        "role": invitation.role.value,
+        "workspace": {"slug": workspace.slug, "name": workspace.display_name},
+        "expires_at": invitation.expires_at.isoformat(),
+        "has_account": has_account,
+    }
+
+
+@router.post(
+    "/invitations/accept",
+    response_model=LoginResponse,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def accept_invitation(
+    request: Request, container: Container, payload: AcceptInvitationRequest = Body(...)
+) -> LoginResponse:
+    """Redeem an invitation and sign in, in one step."""
+    user, membership = await container.accounts.accept_invitation(
+        token=payload.token,
+        password=payload.password,
+        full_name=payload.full_name,
+        client_signal=_client_signal(request),
+    )
+    workspaces = await container.accounts.current_workspaces(user.id)
+    token, _minted = mint_token(
+        secret=container.settings.secret_key,
+        user_id=user.id,
+        auth_epoch=user.auth_epoch,
+        ttl_minutes=container.settings.access_token_ttl_minutes,
+        workspace_id=membership.workspace_id,
+    )
+    return LoginResponse(
+        access_token=token,
+        expires_in=container.settings.access_token_ttl_minutes * 60,
+        user_id=user.id,
+        workspaces=[{"id": str(w.id), "slug": w.slug, "name": w.display_name} for w in workspaces],
+    )
 
 
 # ── ask ─────────────────────────────────────────────────────────────────────
@@ -1217,6 +1398,22 @@ async def record_retraction(
 def _sse(event: str, data: Any) -> str:
     payload = data if isinstance(data, str) else json.dumps(data, default=str)
     return f"event: {event}\ndata: {payload}\n\n"
+
+
+def _member_json(view: MemberView) -> dict[str, Any]:
+    membership, user = view.membership, view.user
+    return {
+        "user_id": str(user.id),
+        "email": user.email_display,
+        "full_name": user.full_name,
+        "role": membership.role.value,
+        "status": membership.status.value,
+        "extra_capabilities": sorted(c.value for c in membership.extra_capabilities),
+        "capabilities": sorted(c.value for c in membership.capabilities()),
+        "accepted_at": membership.accepted_at.isoformat() if membership.accepted_at else None,
+        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        "account_active": user.is_active,
+    }
 
 
 def _session_json(session) -> dict[str, Any]:

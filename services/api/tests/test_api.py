@@ -322,6 +322,197 @@ class TestAuth:
         api["client"].cookies.clear()
 
 
+class TestMembers:
+    async def test_an_admin_lists_members_and_a_researcher_cannot(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        listed = await client.get("/api/v1/members", headers=_auth(admin))
+        assert listed.status_code == 200
+        rows = {row["email"]: row for row in listed.json()["items"]}
+        assert rows["steward@lab.invalid"]["role"] == "admin"
+        assert rows["researcher@lab.invalid"]["status"] == "active"
+        assert "hashed_password" not in rows["researcher@lab.invalid"]
+
+        researcher = await _login(client, "researcher@lab.invalid")
+        refused = await client.get("/api/v1/members", headers=_auth(researcher))
+        assert refused.status_code == 403
+        assert (
+            await client.get("/api/v1/invitations", headers=_auth(researcher))
+        ).status_code == 403
+
+    async def test_an_invitation_is_previewed_accepted_once_and_signs_in(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        created = await client.post(
+            "/api/v1/invitations",
+            json={"email": "New.Person@Lab.invalid", "role": "reviewer"},
+            headers=_auth(admin),
+        )
+        assert created.status_code == 201, created.text
+        token = created.json()["token"]
+
+        preview = await client.post("/api/v1/invitations/preview", json={"token": token})
+        assert preview.status_code == 200
+        assert preview.json()["email"] == "new.person@lab.invalid"
+        assert preview.json()["workspace"]["name"] == "RLA Lab"
+        assert preview.json()["has_account"] is False
+
+        accepted = await client.post(
+            "/api/v1/invitations/accept",
+            json={"token": token, "password": PASSWORD, "full_name": "New Person"},
+        )
+        assert accepted.status_code == 200, accepted.text
+        me = await client.get("/api/v1/auth/me", headers=_auth(accepted.json()["access_token"]))
+        assert me.json()["role"] == "reviewer"
+
+        again = await client.post(
+            "/api/v1/invitations/accept", json={"token": token, "password": PASSWORD}
+        )
+        assert again.status_code == 403
+        states = [
+            row["state"]
+            for row in (await client.get("/api/v1/invitations", headers=_auth(admin))).json()[
+                "items"
+            ]
+        ]
+        assert states == ["accepted"]
+
+    async def test_inviting_again_replaces_the_earlier_link(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        first = (
+            await client.post(
+                "/api/v1/invitations", json={"email": "late@lab.invalid"}, headers=_auth(admin)
+            )
+        ).json()
+        await client.post(
+            "/api/v1/invitations", json={"email": "late@lab.invalid"}, headers=_auth(admin)
+        )
+        stale = await client.post("/api/v1/invitations/preview", json={"token": first["token"]})
+        assert stale.status_code == 403
+        states = sorted(
+            row["state"]
+            for row in (await client.get("/api/v1/invitations", headers=_auth(admin))).json()[
+                "items"
+            ]
+        )
+        assert states == ["open", "revoked"]
+
+    async def test_an_open_invitation_can_be_revoked(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        created = (
+            await client.post(
+                "/api/v1/invitations", json={"email": "gone@lab.invalid"}, headers=_auth(admin)
+            )
+        ).json()
+        revoked = await client.post(
+            f"/api/v1/invitations/{created['id']}/revoke", headers=_auth(admin)
+        )
+        assert revoked.status_code == 200
+        twice = await client.post(
+            f"/api/v1/invitations/{created['id']}/revoke", headers=_auth(admin)
+        )
+        assert twice.status_code == 409
+        preview = await client.post("/api/v1/invitations/preview", json={"token": created["token"]})
+        assert preview.status_code == 403
+
+    async def test_an_active_member_is_not_invited_twice(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        response = await client.post(
+            "/api/v1/invitations", json={"email": "researcher@lab.invalid"}, headers=_auth(admin)
+        )
+        assert response.status_code == 422
+
+    async def test_a_service_account_role_is_not_offered_to_a_person(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        response = await client.post(
+            "/api/v1/invitations",
+            json={"email": "bot@lab.invalid", "role": "service_account"},
+            headers=_auth(admin),
+        )
+        assert response.status_code == 422
+
+    async def test_an_existing_account_accepts_with_its_own_password(self, api) -> None:
+        client = api["client"]
+        await api["harness"].accounts.create_user(email="elsewhere@lab.invalid", password=PASSWORD)
+        admin = await _login(client, "steward@lab.invalid")
+        token = (
+            await client.post(
+                "/api/v1/invitations", json={"email": "elsewhere@lab.invalid"}, headers=_auth(admin)
+            )
+        ).json()["token"]
+        preview = await client.post("/api/v1/invitations/preview", json={"token": token})
+        assert preview.json()["has_account"] is True
+
+        wrong = await client.post(
+            "/api/v1/invitations/accept",
+            json={"token": token, "password": "not-the-password-at-all"},
+        )
+        assert wrong.status_code == 401
+        right = await client.post(
+            "/api/v1/invitations/accept", json={"token": token, "password": PASSWORD}
+        )
+        assert right.status_code == 200
+
+    async def test_a_role_change_takes_effect_on_the_next_request(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        researcher = await _login(client, "researcher@lab.invalid")
+        changed = await client.patch(
+            f"/api/v1/members/{api['researcher'].id}",
+            json={"role": "reviewer"},
+            headers=_auth(admin),
+        )
+        assert changed.status_code == 200
+        assert "review_claims" in changed.json()["capabilities"]
+        me = await client.get("/api/v1/auth/me", headers=_auth(researcher))
+        assert me.json()["role"] == "reviewer"
+
+    async def test_suspending_ends_sessions_and_refuses_sign_in(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        researcher = await _login(client, "researcher@lab.invalid")
+        member = f"/api/v1/members/{api['researcher'].id}"
+
+        suspended = await client.patch(member, json={"status": "suspended"}, headers=_auth(admin))
+        assert suspended.status_code == 200
+        assert suspended.json()["capabilities"] == []
+        assert (await client.get("/api/v1/auth/me", headers=_auth(researcher))).status_code == 401
+
+        login = await client.post(
+            "/api/v1/auth/login", json={"email": "researcher@lab.invalid", "password": PASSWORD}
+        )
+        assert login.status_code == 403
+        assert login.json()["context"]["reason"] == "membership_suspended"
+
+        await client.patch(member, json={"status": "active"}, headers=_auth(admin))
+        assert await _login(client, "researcher@lab.invalid")
+
+    async def test_an_admin_cannot_change_their_own_membership(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        response = await client.patch(
+            f"/api/v1/members/{api['steward'].id}",
+            json={"role": "researcher"},
+            headers=_auth(admin),
+        )
+        assert response.status_code == 403
+
+    async def test_signing_a_member_out_everywhere(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        researcher = await _login(client, "researcher@lab.invalid")
+        response = await client.post(
+            f"/api/v1/members/{api['researcher'].id}/revoke-sessions", headers=_auth(admin)
+        )
+        assert response.status_code == 200
+        assert (await client.get("/api/v1/auth/me", headers=_auth(researcher))).status_code == 401
+        assert await _login(client, "researcher@lab.invalid")
+
+
 class TestSessionsAndAsk:
     async def test_session_lifecycle(self, api) -> None:
         token = await _login(api["client"], "researcher@lab.invalid")

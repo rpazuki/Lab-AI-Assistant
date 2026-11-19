@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -9,6 +9,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...actual,
     listReviewQueue: vi.fn(),
+    correctionRate: vi.fn(async () => ({ organism: 0.25, titre_g_per_l: 0.6 })),
     decideReview: vi.fn(async () => ({
       revision_id: "rev1",
       revision_number: 2,
@@ -109,5 +110,15 @@ describe("ReviewClient", () => {
     render(<ReviewClient />);
     await userEvent.click(await screen.findByRole("button", { name: /accept/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/changed since it was read/);
+  });
+});
+
+describe("CorrectionRates", () => {
+  it("lists predicates, most corrected first", async () => {
+    vi.mocked(api.listReviewQueue).mockResolvedValue([]);
+    render(<ReviewClient />);
+    const table = await screen.findByRole("table");
+    const cells = within(table).getAllByRole("cell").map((cell) => cell.textContent);
+    expect(cells).toEqual(["titre_g_per_l", "60.0%", "organism", "25.0%"]);
   });
 });

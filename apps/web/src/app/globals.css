@@ -65,7 +65,13 @@
   --color-muted: #5d6b79; /* 5.46:1 on white, 5.00:1 on page */
   --color-link: #117a65; /* Flatly's green, darkened: 5.26:1 on white */
   --color-on-primary: #ffffff;
-  --color-nav-idle: #c9d3dc; /* 7.24:1 on primary */
+  --color-nav-idle: #c9d3dc; /* 7.24:1 on primary, 6.12:1 on nav-hover */
+
+  /* Sidebar surfaces, both from Flatly's blue-greys. White text on nav-active is
+     15.56:1; nav-hover is Flatly's "wet asphalt", a hover tint only. */
+  --color-nav-active: #1a252f;
+  --color-nav-hover: #34495e;
+  --color-nav-rule: #3d566e; /* decorative divider */
 
   /* Surfaces and lines (Tabler). Borders are decorative, not text. */
   --color-page: #f3f5f7;
