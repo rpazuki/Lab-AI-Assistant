@@ -2,7 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { Button, Empty, Input, Panel, StateChip } from "@/components/ui/primitives";
+import {
+  Alert,
+  Button,
+  Empty,
+  Input,
+  Panel,
+  StateChip,
+  row,
+  rowList,
+} from "@/components/ui/primitives";
 import { decideReview, listReviewQueue } from "@/lib/api";
 import type { ReviewItem } from "@/types";
 
@@ -69,8 +78,9 @@ export function ReviewClient() {
     <div className="space-y-4">
       <Panel
         title="Claim review"
+        flush
         aside={
-          <label className="flex items-center gap-2 text-xs">
+          <label className="flex items-center gap-2 text-xs text-muted">
             <input
               type="checkbox"
               checked={includeInvalid}
@@ -81,27 +91,33 @@ export function ReviewClient() {
         }
       >
         {error ? (
-          <p role="alert" className="mb-3 text-sm text-red-700">
-            {error}
-          </p>
+          <div className="px-5 pt-4">
+            <Alert tone="danger" role="alert">
+              {error}
+            </Alert>
+          </div>
         ) : null}
-        {items.length === 0 ? <Empty>Nothing is waiting for review.</Empty> : null}
-        <ul className="space-y-4">
+        {items.length === 0 ? (
+          <div className="px-5 py-3">
+            <Empty>Nothing is waiting for review.</Empty>
+          </div>
+        ) : null}
+        <ul className={rowList}>
           {items.map((item) => (
-            <li key={item.revision_id} className="rounded border border-neutral-200 p-3">
-              <div className="flex flex-wrap items-baseline gap-2">
-                <span className="font-mono text-xs text-neutral-500">{item.predicate}</span>
-                <strong className="text-sm">{String(item.value.verbatim ?? "—")}</strong>
+            <li key={item.revision_id} className={row}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs text-muted">{item.predicate}</span>
+                <strong className="text-sm text-heading">{String(item.value.verbatim ?? "—")}</strong>
                 <StateChip state={item.validation_status} />
                 <StateChip state={item.abstention_reason} />
                 <StateChip state={item.proposal_source} />
-                <span className="ml-auto font-mono text-xs text-neutral-400">
+                <span className="ml-auto font-mono text-xs text-muted">
                   rev {item.revision_number}
                 </span>
               </div>
 
               {item.validation_issues.length > 0 ? (
-                <ul className="mt-2 list-disc pl-5 text-xs text-red-700">
+                <ul className="mt-2 list-disc rounded-control bg-danger-lt py-2 pl-8 pr-3 text-xs text-danger-strong">
                   {item.validation_issues.map((issue) => (
                     <li key={issue}>{issue}</li>
                   ))}
@@ -111,9 +127,12 @@ export function ReviewClient() {
               {item.evidence.length > 0 ? (
                 <ul className="mt-2 space-y-1 text-xs">
                   {item.evidence.map((span) => (
-                    <li key={span.span_id} className="rounded bg-neutral-50 p-2">
-                      <p className="italic">“{span.quote_preview}”</p>
-                      <p className="mt-1 font-mono text-neutral-500">
+                    <li
+                      key={span.span_id}
+                      className="rounded-control border-l-2 border-accent bg-surface-subtle px-3 py-2"
+                    >
+                      <p className="italic text-ink">“{span.quote_preview}”</p>
+                      <p className="mt-1 font-mono text-muted">
                         {span.node_id} · normalisation v{span.normalisation_version} ·{" "}
                         {Object.entries(span.locator)
                           .filter(([key]) => key !== "node_id")
@@ -124,9 +143,9 @@ export function ReviewClient() {
                   ))}
                 </ul>
               ) : (
-                <p className="mt-2 text-xs text-amber-800">
+                <Alert tone="warning" className="mt-2 text-xs">
                   No verified evidence span is attached to this proposal.
-                </p>
+                </Alert>
               )}
 
               <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -139,7 +158,7 @@ export function ReviewClient() {
                 <Input
                   aria-label={`Corrected value for ${item.predicate}`}
                   placeholder="corrected value"
-                  className="max-w-[12rem]"
+                  className="max-w-[14rem]"
                   value={corrections[item.revision_id] ?? ""}
                   onChange={(event) =>
                     setCorrections((current) => ({

@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { login } from "@/lib/api";
-import { Button, Input } from "@/components/ui/primitives";
+import { Alert, Button, Field, Input } from "@/components/ui/primitives";
 
 export function LoginForm() {
   const router = useRouter();
@@ -29,9 +29,8 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-3">
-      <label className="block text-sm">
-        Email
+    <form onSubmit={onSubmit} className="space-y-4">
+      <Field label="Email">
         <Input
           type="email"
           name="email"
@@ -40,9 +39,8 @@ export function LoginForm() {
           value={email}
           onChange={(event) => setEmail(event.target.value)}
         />
-      </label>
-      <label className="block text-sm">
-        Password
+      </Field>
+      <Field label="Password">
         <Input
           type="password"
           name="password"
@@ -51,13 +49,13 @@ export function LoginForm() {
           value={password}
           onChange={(event) => setPassword(event.target.value)}
         />
-      </label>
+      </Field>
       {error ? (
-        <p role="alert" className="text-sm text-red-700">
+        <Alert tone="danger" role="alert">
           {error}
-        </p>
+        </Alert>
       ) : null}
-      <Button type="submit" disabled={busy}>
+      <Button type="submit" disabled={busy} className="w-full">
         {busy ? "Signing in…" : "Sign in"}
       </Button>
     </form>

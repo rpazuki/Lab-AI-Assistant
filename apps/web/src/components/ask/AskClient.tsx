@@ -2,7 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Button, Empty, Input, Panel, StateChip } from "@/components/ui/primitives";
+import {
+  Alert,
+  Button,
+  Empty,
+  Input,
+  Panel,
+  StateChip,
+  row,
+  rowList,
+} from "@/components/ui/primitives";
 import {
   ask,
   createSession,
@@ -161,12 +170,14 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[16rem_1fr_18rem]">
+    <div className="grid items-start gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_20rem]">
       <Panel
         title="Sessions"
+        flush
         aside={
           <Button
             variant="ghost"
+            size="sm"
             onClick={async () => {
               const session = await createSession();
               setSessionId(session.id);
@@ -179,14 +190,18 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
         }
       >
         {sessions.length === 0 ? (
-          <Empty>No sessions yet.</Empty>
+          <div className="px-5 py-3">
+            <Empty>No sessions yet.</Empty>
+          </div>
         ) : (
-          <ul className="space-y-1 text-sm">
+          <ul className="space-y-0.5 p-2 text-sm">
             {sessions.map((session) => (
-              <li key={session.id} className="flex items-center gap-1">
+              <li key={session.id} className="group flex items-center gap-1">
                 <button
-                  className={`flex-1 truncate rounded px-2 py-1 text-left hover:bg-neutral-100 ${
-                    session.id === sessionId ? "bg-neutral-100 font-medium" : ""
+                  className={`flex-1 truncate rounded-control border-l-2 px-3 py-1.5 text-left transition-colors ${
+                    session.id === sessionId
+                      ? "border-accent bg-success-lt font-medium text-heading"
+                      : "border-transparent text-ink hover:bg-surface-subtle"
                   }`}
                   onClick={() => setSessionId(session.id)}
                 >
@@ -194,7 +209,7 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
                 </button>
                 <button
                   aria-label={`Rename ${session.title ?? "session"}`}
-                  className="px-1 text-xs text-neutral-500 hover:text-neutral-900"
+                  className="rounded-badge px-1 text-xs text-muted hover:text-heading"
                   onClick={async () => {
                     const title = window.prompt("Session title", session.title ?? "");
                     if (title) {
@@ -207,7 +222,7 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
                 </button>
                 <button
                   aria-label={`Delete ${session.title ?? "session"}`}
-                  className="px-1 text-xs text-red-600 hover:text-red-800"
+                  className="rounded-badge px-1 text-xs text-danger-strong hover:underline"
                   onClick={async () => {
                     await deleteSession(session.id);
                     if (session.id === sessionId) {
@@ -236,62 +251,77 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
         ) : null}
 
         {turns.map((turn, index) => (
-          <article key={index} className="space-y-3">
-            <p className="font-medium">{turn.question}</p>
-            {turn.error ? (
-              <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-                {turn.error}
-              </p>
-            ) : null}
-            <div className="whitespace-pre-wrap rounded-lg border border-neutral-200 bg-white p-4 text-sm leading-relaxed">
-              {turn.answer || (streaming ? "…" : "No answer was produced.")}
+          <article
+            key={index}
+            className="overflow-hidden rounded-card border border-border bg-surface shadow-card"
+          >
+            <header className="border-b border-border bg-surface-subtle px-5 py-3">
+              <p className="font-semibold text-heading">{turn.question}</p>
+            </header>
+            <div className="space-y-3 px-5 py-4">
+              {turn.error ? (
+                <Alert tone="danger" role="alert">
+                  {turn.error}
+                </Alert>
+              ) : null}
+              <div className="whitespace-pre-wrap text-sm leading-relaxed text-ink">
+                {turn.answer || (streaming ? "…" : "No answer was produced.")}
+              </div>
+              {turn.unsupported.length > 0 ? (
+                <Alert tone="warning" role="status">
+                  This answer cited {turn.unsupported.length} handle
+                  {turn.unsupported.length === 1 ? "" : "s"} that the server did not supply. Those
+                  citations are flagged and should not be trusted.
+                </Alert>
+              ) : null}
+              {turn.citations.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {turn.citations.map((citation) => (
+                    <button
+                      key={citation.handle}
+                      onClick={() => onOpenCitation(turn.messageId, citation.handle)}
+                      className={`rounded-badge border px-2 py-1 font-mono text-xs transition-colors ${
+                        citation.status === "valid"
+                          ? "border-border-strong bg-surface text-link hover:bg-success-lt"
+                          : "border-warning-strong/25 bg-warning-lt text-warning-strong"
+                      }`}
+                    >
+                      {citation.handle}
+                      {citation.status !== "valid" ? ` · ${citation.status}` : ""}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
-            {turn.unsupported.length > 0 ? (
-              <p
-                role="status"
-                className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
-              >
-                This answer cited {turn.unsupported.length} handle
-                {turn.unsupported.length === 1 ? "" : "s"} that the server did not supply. Those
-                citations are flagged and should not be trusted.
-              </p>
-            ) : null}
-            {turn.citations.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {turn.citations.map((citation) => (
-                  <button
-                    key={citation.handle}
-                    onClick={() => onOpenCitation(turn.messageId, citation.handle)}
-                    className="rounded border border-neutral-300 px-2 py-1 font-mono text-xs hover:bg-neutral-100"
-                  >
-                    {citation.handle}
-                    {citation.status !== "valid" ? ` · ${citation.status}` : ""}
-                  </button>
-                ))}
-              </div>
-            ) : null}
             {turn.messageId ? (
-              <div className="flex items-center gap-3 text-xs text-neutral-500">
-                {turn.releaseId ? <span>release {turn.releaseId.slice(0, 8)}</span> : null}
+              <footer className="flex flex-wrap items-center gap-3 border-t border-border px-5 py-2.5 text-xs text-muted">
+                {turn.releaseId ? (
+                  <span className="font-mono">release {turn.releaseId.slice(0, 8)}</span>
+                ) : null}
                 {turn.latencyMs !== null ? <span>{turn.latencyMs} ms</span> : null}
-                <button
-                  className="underline hover:no-underline"
-                  onClick={() => void sendFeedback(turn.messageId!, 5)}
-                >
-                  useful
-                </button>
-                <button
-                  className="underline hover:no-underline"
-                  onClick={() => void sendFeedback(turn.messageId!, 1, "not useful")}
-                >
-                  not useful
-                </button>
-              </div>
+                <span className="ml-auto flex gap-3">
+                  <button
+                    className="text-link underline hover:no-underline"
+                    onClick={() => void sendFeedback(turn.messageId!, 5)}
+                  >
+                    useful
+                  </button>
+                  <button
+                    className="text-link underline hover:no-underline"
+                    onClick={() => void sendFeedback(turn.messageId!, 1, "not useful")}
+                  >
+                    not useful
+                  </button>
+                </span>
+              </footer>
             ) : null}
           </article>
         ))}
 
-        <form onSubmit={onAsk} className="flex gap-2">
+        <form
+          onSubmit={onAsk}
+          className="flex gap-2 rounded-card border border-border bg-surface p-3 shadow-card"
+        >
           <Input
             aria-label="Question"
             placeholder="What lipid yield was reported for the engineered strain?"
@@ -304,17 +334,17 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
         </form>
       </div>
 
-      <Panel title="Sources">
+      <Panel title="Sources" flush>
         {turns.at(-1)?.sources.length ? (
-          <ul className="space-y-3 text-sm">
+          <ul className={`${rowList} text-sm`}>
             {turns.at(-1)!.sources.map((source) => (
-              <li key={source.handle} className="space-y-1">
-                <p className="font-mono text-xs text-neutral-500">{source.handle}</p>
-                <p className="font-medium">{source.title ?? "Untitled"}</p>
-                <p className="text-xs text-neutral-500">
+              <li key={source.handle} className={`${row} space-y-1`}>
+                <p className="font-mono text-xs text-muted">{source.handle}</p>
+                <p className="font-semibold text-heading">{source.title ?? "Untitled"}</p>
+                <p className="text-xs text-muted">
                   {[source.source_label, source.year, source.locator].filter(Boolean).join(" · ")}
                 </p>
-                <p className="text-xs text-neutral-700">{source.snippet}</p>
+                <p className="border-l-2 border-accent pl-2 text-xs text-ink">{source.snippet}</p>
                 {source.display_restricted ? (
                   <StateChip state="excerpt_only" />
                 ) : null}
@@ -322,12 +352,14 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
             ))}
           </ul>
         ) : (
-          <Empty>Sources appear here as soon as retrieval finishes.</Empty>
+          <div className="px-5 py-3">
+            <Empty>Sources appear here as soon as retrieval finishes.</Empty>
+          </div>
         )}
         {evidence ? (
-          <div className="mt-4 rounded border border-neutral-200 bg-neutral-50 p-3 text-xs">
-            <p className="mb-1 font-semibold">Evidence in context</p>
-            <pre className="whitespace-pre-wrap break-words">
+          <div className="border-t border-border bg-surface-subtle px-5 py-4 text-xs">
+            <p className="mb-2 font-semibold text-heading">Evidence in context</p>
+            <pre className="whitespace-pre-wrap break-words rounded-control border border-border bg-surface p-3 font-mono text-ink">
               {JSON.stringify(evidence, null, 2)}
             </pre>
           </div>

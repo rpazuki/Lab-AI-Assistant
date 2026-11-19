@@ -2,7 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { Button, Empty, Input, Panel, StateChip } from "@/components/ui/primitives";
+import {
+  Alert,
+  Button,
+  Empty,
+  Field,
+  Input,
+  Panel,
+  StateChip,
+  row,
+  rowList,
+} from "@/components/ui/primitives";
 import {
   assistedUpload,
   listCandidates,
@@ -55,9 +65,9 @@ export function CollectionsClient() {
   return (
     <div className="space-y-4">
       {error ? (
-        <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+        <Alert tone="danger" role="alert">
           {error}
-        </p>
+        </Alert>
       ) : null}
 
       <Panel title="Identity conflicts and duplicate proposals">
@@ -65,26 +75,28 @@ export function CollectionsClient() {
           <Empty>No identity decisions are waiting.</Empty>
         ) : null}
         {conflicts.length > 0 ? (
-          <p className="mb-2 text-sm">
+          <Alert tone="danger" className="mb-3">
             {conflicts.length} work{conflicts.length === 1 ? "" : "s"} hold contradictory strong
             identifiers and cannot enter a release until resolved.
-          </p>
+          </Alert>
         ) : null}
         <ul className="space-y-2 text-sm">
           {proposals.map((proposal) => (
             <li
               key={`${proposal.left_work_id}:${proposal.right_work_id}`}
-              className="flex flex-wrap items-center gap-2 rounded border border-neutral-200 p-2"
+              className="flex flex-wrap items-center gap-2 rounded-control border border-border bg-surface-subtle px-3 py-2"
             >
               <span className="font-mono text-xs">
                 {proposal.left_work_id.slice(0, 8)} ↔ {proposal.right_work_id.slice(0, 8)}
               </span>
               <StateChip state={proposal.reason_code} />
-              <span className="text-xs text-neutral-500">
+              <span className="text-xs text-muted">
                 similarity {proposal.similarity.toFixed(2)} — title similarity alone never merges
               </span>
               <Button
                 variant="ghost"
+                size="sm"
+                className="ml-auto"
                 onClick={async () => {
                   await mergeWorks(
                     proposal.left_work_id,
@@ -101,32 +113,36 @@ export function CollectionsClient() {
         </ul>
       </Panel>
 
-      <Panel title="Candidates">
-        {candidates.length === 0 ? <Empty>No candidates yet. Run discovery first.</Empty> : null}
-        <ul className="space-y-3 text-sm">
+      <Panel title="Candidates" flush>
+        {candidates.length === 0 ? (
+          <div className="px-5 py-3">
+            <Empty>No candidates yet. Run discovery first.</Empty>
+          </div>
+        ) : null}
+        <ul className={`${rowList} text-sm`}>
           {candidates.map((candidate) => (
-            <li key={candidate.work_id} className="rounded border border-neutral-200 p-3">
-              <div className="flex flex-wrap items-baseline gap-2">
-                <strong>{candidate.title ?? "Untitled"}</strong>
+            <li key={candidate.work_id} className={row}>
+              <div className="flex flex-wrap items-center gap-2">
+                <strong className="text-heading">{candidate.title ?? "Untitled"}</strong>
                 <StateChip state={candidate.relevance} />
                 <StateChip state={candidate.identity_status} />
                 {candidate.retraction_status !== "none" ? (
                   <StateChip state={candidate.retraction_status} />
                 ) : null}
               </div>
-              <p className="mt-1 text-xs text-neutral-500">
+              <p className="mt-1 text-xs text-muted">
                 {[candidate.journal, candidate.year, candidate.work_kind]
                   .filter(Boolean)
                   .join(" · ")}
               </p>
-              <p className="mt-1 font-mono text-xs text-neutral-600">
+              <p className="mt-1 font-mono text-xs text-neutral-strong">
                 {candidate.identifiers.map((id) => `${id.scheme}:${id.value}`).join("  ")}
               </p>
               <details className="mt-2 text-xs">
-                <summary className="cursor-pointer text-neutral-500">
+                <summary className="cursor-pointer text-link hover:underline">
                   which sources asserted these fields
                 </summary>
-                <ul className="mt-1 space-y-0.5">
+                <ul className="mt-2 space-y-0.5 rounded-control bg-surface-subtle px-3 py-2">
                   {Object.entries(candidate.provenance).map(([field, assertionIds]) => (
                     <li key={field}>
                       <span className="font-mono">{field}</span>: {assertionIds.length} assertion
@@ -135,9 +151,10 @@ export function CollectionsClient() {
                   ))}
                 </ul>
               </details>
-              <div className="mt-2 flex gap-2">
+              <div className="mt-3 flex gap-2">
                 <Button
                   variant="ghost"
+                  size="sm"
                   onClick={async () => {
                     await setRelevance(candidate.work_id, "included", "steward_included");
                     void refresh();
@@ -147,6 +164,7 @@ export function CollectionsClient() {
                 </Button>
                 <Button
                   variant="ghost"
+                  size="sm"
                   onClick={async () => {
                     await setRelevance(candidate.work_id, "excluded", "out_of_scope");
                     void refresh();
@@ -160,25 +178,29 @@ export function CollectionsClient() {
         </ul>
       </Panel>
 
-      <Panel title="Acquisition queue">
-        {plans.length === 0 ? <Empty>No acquisition plans yet.</Empty> : null}
-        <ul className="space-y-2 text-sm">
+      <Panel title="Acquisition queue" flush>
+        {plans.length === 0 ? (
+          <div className="px-5 py-3">
+            <Empty>No acquisition plans yet.</Empty>
+          </div>
+        ) : null}
+        <ul className={`${rowList} text-sm`}>
           {plans.map((plan) => (
-            <li key={plan.plan_id} className="rounded border border-neutral-200 p-3">
+            <li key={plan.plan_id} className={row}>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs">{plan.work_id.slice(0, 8)}</span>
                 <StateChip state={plan.status} />
-                <span className="text-xs text-neutral-500">
+                <span className="text-xs text-muted">
                   routes: {plan.routes.join(" → ")}
                 </span>
                 {plan.status === "assisted" || plan.status === "failed" ? (
-                  <Button variant="ghost" onClick={() => setUploadFor(plan)}>
+                  <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setUploadFor(plan)}>
                     Upload an authorised copy
                   </Button>
                 ) : null}
               </div>
               {plan.attempts.length > 0 ? (
-                <ul className="mt-2 space-y-0.5 text-xs text-neutral-600">
+                <ul className="mt-2 space-y-0.5 text-xs text-muted">
                   {plan.attempts.map((attempt, index) => (
                     <li key={index}>
                       <span className="font-mono">{attempt.route}</span> via {attempt.connector_id}{" "}
@@ -215,13 +237,13 @@ function AssistedUploadForm({ plan, onDone }: { plan: AcquisitionPlan; onDone: (
 
   return (
     <Panel title={`Assisted acquisition — plan ${plan.plan_id.slice(0, 8)}`}>
-      <p className="mb-3 text-sm text-neutral-600">
+      <Alert tone="info" className="mb-4">
         Automation stopped because no permitted route returned this content. Uploading an
         authorised copy runs the same integrity, malware, identity, and rights checks as an
         automatic fetch, and the queued work resumes.
-      </p>
+      </Alert>
       <form
-        className="space-y-3"
+        className="max-w-xl space-y-4"
         onSubmit={async (event) => {
           event.preventDefault();
           if (!file || !attestation) return;
@@ -242,29 +264,27 @@ function AssistedUploadForm({ plan, onDone }: { plan: AcquisitionPlan; onDone: (
           }
         }}
       >
-        <label className="block text-sm">
-          Access basis
+        <Field label="Access basis">
           <Input value={accessBasis} onChange={(event) => setAccessBasis(event.target.value)} />
-        </label>
-        <label className="block text-sm">
-          Attestation
+        </Field>
+        <Field label="Attestation">
           <Input
             placeholder="How was this copy obtained?"
             value={attestation}
             onChange={(event) => setAttestation(event.target.value)}
             required
           />
-        </label>
+        </Field>
         <input
           aria-label="File"
           type="file"
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-          className="block text-sm"
+          className="block text-sm text-muted file:mr-3 file:rounded-control file:border file:border-border-strong file:bg-surface file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-ink hover:file:bg-surface-subtle"
         />
         <Button type="submit" disabled={!file || !attestation}>
           Upload
         </Button>
-        {result ? <p className="text-sm">{result}</p> : null}
+        {result ? <p className="text-sm text-ink">{result}</p> : null}
       </form>
     </Panel>
   );

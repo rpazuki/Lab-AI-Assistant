@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { Button, Empty, Panel, StateChip } from "@/components/ui/primitives";
+import { Alert, Button, Empty, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
   approveRelease,
   buildExport,
@@ -59,16 +59,24 @@ export function ReleasesClient() {
   return (
     <div className="space-y-4">
       {error ? (
-        <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+        <Alert tone="danger" role="alert">
           {error}
-        </p>
+        </Alert>
       ) : null}
-      {status ? <p className="text-xs text-neutral-600">{status}</p> : null}
+      {status ? (
+        <Alert tone="info" className="break-all font-mono text-xs">
+          {status}
+        </Alert>
+      ) : null}
 
       <Panel
         title="Serving aliases"
         aside={
-          <Button variant="ghost" onClick={() => run("rollback", () => rollbackRelease("current"))}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => run("rollback", () => rollbackRelease("current"))}
+          >
             Roll back
           </Button>
         }
@@ -76,11 +84,14 @@ export function ReleasesClient() {
         {aliases.length === 0 ? (
           <Empty>Nothing is published yet.</Empty>
         ) : (
-          <ul className="space-y-1 text-sm">
+          <ul className="space-y-1.5 text-sm">
             {aliases.map((alias) => (
-              <li key={alias.alias} className="font-mono text-xs">
-                {alias.alias} → {alias.release_id ?? "unset"}
-                {alias.previous_release_id ? ` (previous ${alias.previous_release_id})` : ""}
+              <li key={alias.alias} className="font-mono text-xs text-ink">
+                <span className="font-semibold text-heading">{alias.alias}</span> →{" "}
+                {alias.release_id ?? "unset"}
+                {alias.previous_release_id ? (
+                  <span className="text-muted"> (previous {alias.previous_release_id})</span>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -89,9 +100,11 @@ export function ReleasesClient() {
 
       <Panel
         title="Releases"
+        flush
         aside={
           <Button
             variant="ghost"
+            size="sm"
             onClick={() =>
               run("draft", () =>
                 draftRelease({
@@ -105,18 +118,22 @@ export function ReleasesClient() {
           </Button>
         }
       >
-        {releases.length === 0 ? <Empty>No releases yet.</Empty> : null}
-        <ul className="space-y-3 text-sm">
+        {releases.length === 0 ? (
+          <div className="px-5 py-3">
+            <Empty>No releases yet.</Empty>
+          </div>
+        ) : null}
+        <ul className={`${rowList} text-sm`}>
           {releases.map((release) => {
             const failed = Object.entries(release.gate_results).filter(([, ok]) => !ok);
             return (
-              <li key={release.id} className="rounded border border-neutral-200 p-3">
+              <li key={release.id} className={row}>
                 <div className="flex flex-wrap items-center gap-2">
-                  <strong>
+                  <strong className="text-heading">
                     {release.name}@{release.semantic_version}
                   </strong>
                   <StateChip state={release.status} />
-                  <span className="ml-auto font-mono text-xs text-neutral-500">
+                  <span className="ml-auto font-mono text-xs text-muted">
                     manifest {release.manifest_sha256?.slice(0, 12) ?? "—"}
                   </span>
                 </div>
@@ -129,18 +146,24 @@ export function ReleasesClient() {
                     ))}
                   </ul>
                 ) : null}
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Button variant="ghost" onClick={() => run("validate", () => validateRelease(release.id))}>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => run("validate", () => validateRelease(release.id))}
+                  >
                     Validate
                   </Button>
                   <Button
                     variant="ghost"
+                    size="sm"
                     disabled={release.status !== "approved"}
                     onClick={() => run("approve", () => approveRelease(release.id))}
                   >
                     Approve and index
                   </Button>
                   <Button
+                    size="sm"
                     disabled={
                       release.status !== "approved" ||
                       failed.length > 0 ||
@@ -150,7 +173,11 @@ export function ReleasesClient() {
                   >
                     Publish
                   </Button>
-                  <Button variant="ghost" onClick={() => run("export", () => buildExport(release.id))}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => run("export", () => buildExport(release.id))}
+                  >
                     Build export
                   </Button>
                 </div>
