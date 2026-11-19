@@ -179,6 +179,14 @@ def citation_validity(*, cited: Sequence[str], supplied: Iterable[str]) -> float
     return sum(1 for handle in cited if handle in supplied_set) / len(cited)
 
 
+def unsupported_numbers(*, answer: str, evidence_texts: Sequence[str]) -> list[str]:
+    """The numbers in ``answer`` that appear in none of ``evidence_texts``."""
+    import re
+
+    haystack = " ".join(evidence_texts)
+    return [number for number in re.findall(r"\d+(?:\.\d+)?", answer) if number not in haystack]
+
+
 def faithfulness_proxy(*, answer: str, evidence_texts: Sequence[str]) -> float:
     """Mechanical faithfulness proxy: are the answer's numbers in the evidence?
 
@@ -191,6 +199,5 @@ def faithfulness_proxy(*, answer: str, evidence_texts: Sequence[str]) -> float:
     numbers = re.findall(r"\d+(?:\.\d+)?", answer)
     if not numbers:
         return 1.0
-    haystack = " ".join(evidence_texts)
-    supported = sum(1 for number in numbers if number in haystack)
-    return supported / len(numbers)
+    missing = unsupported_numbers(answer=answer, evidence_texts=evidence_texts)
+    return (len(numbers) - len(missing)) / len(numbers)

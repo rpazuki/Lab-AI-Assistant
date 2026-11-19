@@ -12,7 +12,7 @@ never supplied produces a *flagged* answer, not a 500.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
@@ -65,6 +65,14 @@ class AnswerOutcome:
     unsupported_handles: tuple[str, ...]
     evidence_count: int
     denied_count: int
+    #: Every handle the model was given, in retrieval order.
+    supplied_handles: tuple[str, ...] = ()
+    #: Every handle the answer cited, supplied or not, in citation order.
+    cited_handles: tuple[str, ...] = ()
+    #: The text behind each supplied handle: an evidence block's text, or a
+    #: structured claim's subject and value. What evaluation checks an answer
+    #: against; never shown to a member, who opens citations through policy.
+    evidence_by_handle: dict[str, str] = field(default_factory=dict)
 
 
 class ChatService:
@@ -476,6 +484,9 @@ class ChatService:
             unsupported_handles=unsupported,
             evidence_count=len(retrieval.evidence),
             denied_count=retrieval.denied_count,
+            supplied_handles=tuple(retrieval.handle_index),
+            cited_handles=cited,
+            evidence_by_handle=_evidence_by_handle(retrieval),
         )
 
     async def _resolve_node_citation(
@@ -648,6 +659,21 @@ class ChatService:
                 "work_id": str(work_id) if work_id else None,
                 "release_id": str(citation.release_id) if citation.release_id else None,
             }
+
+
+def _evidence_by_handle(retrieval) -> dict[str, str]:
+    """The text each supplied handle stands for, as the model was shown it."""
+    texts = {block.handle: block.text for block in retrieval.evidence}
+    for claim in retrieval.claims:
+        handle = claim.get("handle")
+        if not handle:
+            continue
+        value = claim.get("value") or {}
+        parts = [str(claim.get("subject") or ""), str(claim.get("predicate") or "")]
+        if isinstance(value, dict):
+            parts.extend(str(item) for item in value.values())
+        texts[handle] = " ".join(part for part in parts if part)
+    return texts
 
 
 def _extract_handles(text: str) -> tuple[str, ...]:

@@ -85,17 +85,21 @@ API under `/api/v1/evaluation/`. Source: `evaluation/service.py`.
   on the installation; a probe whose subject does not exist fails, because it would
   otherwise prove nothing.
 
-Two limits to know when reading the numbers:
+What a generation run's two scores mean:
 
-1. **A run does not gate publication yet.** Indexing happens after approval, so a
-   run can only exist between approval and publish; requiring a passing run there is a
-   release-policy decision that has not been made. Today the result informs the
-   approver, who decides.
-2. **The generation suite's two scores are not yet measurements.** The runner passes
-   the answer as its own evidence and the cited handles as their own supply, so
-   `faithfulness_proxy` and `citation_validity` read 1.0 unless an answer cites a
-   handle it was not given. Treat a generation run as a check for unsupported
-   citations until the runner is given the retrieved evidence.
+- **`citation_validity`** is the share of the handles an answer cited that were among
+  the handles it was given. An invented handle lowers it in proportion; the
+  `generation:no_unsupported_citations` gate fails on any.
+- **`faithfulness_proxy`** is the share of the numbers in the answer that appear in
+  the evidence the answer *cited*. A figure stated without a citation is checked
+  against nothing and counts as unsupported. Handle digits are not numbers. Each case
+  lists its `unsupported_numbers`, so a failure points at the figure. It is a cheap
+  mechanical check, not a judge of meaning: a sentence with no numbers scores 1.0.
+
+One limit to know when reading the numbers: **a run does not gate publication yet.**
+Indexing happens after approval, so a run can only exist between approval and publish;
+requiring a passing run there is a release-policy decision that has not been made.
+Today the result informs the approver, who decides.
 
 ## Interpretation
 

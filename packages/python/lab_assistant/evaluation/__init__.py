@@ -16,6 +16,7 @@ from lab_assistant.evaluation.metrics import (
     recall_at_k,
     retrieval_scores,
     unique_contribution,
+    unsupported_numbers,
 )
 from lab_assistant.evaluation.runner import EvaluationRun, EvaluationRunner
 
@@ -35,4 +36,5 @@ __all__ = [
     "recall_at_k",
     "retrieval_scores",
     "unique_contribution",
+    "unsupported_numbers",
 ]

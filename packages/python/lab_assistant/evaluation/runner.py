@@ -7,6 +7,7 @@ benchmark checksum so a moved goalpost is visible.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
@@ -18,9 +19,13 @@ from lab_assistant.evaluation.metrics import (
     citation_validity,
     faithfulness_proxy,
     retrieval_scores,
+    unsupported_numbers,
 )
 
 __all__ = ["EvaluationRun", "EvaluationRunner"]
+
+#: A citation handle as the answer writes it. Same shape the chat service extracts.
+_HANDLE = re.compile(r"\[E[0-9a-f]{10}\]")
 
 
 @dataclass(slots=True)
@@ -157,20 +162,32 @@ class EvaluationRunner:
             if not case.question:
                 continue
             outcome = await chat.ask(actor, session_id=session_id, question=case.question)
-            supplied = [citation.handle for citation in outcome.message.citations]
-            validity = citation_validity(
-                cited=supplied, supplied=[c.handle for c in outcome.message.citations]
-            )
-            unsupported_penalty = 0.0 if not outcome.unsupported_handles else 1.0
-            validities.append(validity - unsupported_penalty if unsupported_penalty else validity)
-            faithfulness.append(
-                faithfulness_proxy(answer=outcome.text, evidence_texts=[outcome.text])
-            )
+            cited = list(outcome.cited_handles)
+            # Against what the model was given, not against itself: a handle the
+            # answer invented lowers validity in proportion to how much it cited.
+            validity = citation_validity(cited=cited, supplied=outcome.supplied_handles)
+            # A number must be backed by the evidence the answer points to. Citing
+            # nothing while stating a figure is unsupported, not exempt; and the
+            # handles themselves are stripped first, or their digits would count.
+            grounding = [
+                outcome.evidence_by_handle[handle]
+                for handle in cited
+                if handle in outcome.evidence_by_handle
+            ]
+            prose = _HANDLE.sub("", outcome.text)
+            faithful = faithfulness_proxy(answer=prose, evidence_texts=grounding)
+            validities.append(validity)
+            faithfulness.append(faithful)
             run.per_case.append(
                 {
                     "case_id": case.case_id,
-                    "citations": len(supplied),
+                    "citations": len(cited),
+                    "citation_validity": round(validity, 4),
+                    "faithfulness_proxy": round(faithful, 4),
                     "unsupported": list(outcome.unsupported_handles),
+                    "unsupported_numbers": unsupported_numbers(
+                        answer=prose, evidence_texts=grounding
+                    ),
                     "evidence_blocks": outcome.evidence_count,
                 }
             )

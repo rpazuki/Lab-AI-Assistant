@@ -11,12 +11,15 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
+from lab_assistant.adapters.models.fake import FakeLLMProvider
+from lab_assistant.application.chat import ChatService
 from lab_assistant.contracts.connector import IdentifierScheme
 from lab_assistant.contracts.errors import (
     ConcurrencyConflict,
@@ -28,6 +31,8 @@ from lab_assistant.domain.identity import WorkIdentifier
 from lab_assistant.domain.installation import InstallationRole
 from lab_assistant.domain.states import ReleaseState
 from lab_assistant.domain.workspace import Role
+from lab_assistant.evaluation.benchmarks import Benchmark
+from lab_assistant.evaluation.runner import EvaluationRunner
 from lab_assistant.evaluation.service import EvaluationService, run_json
 from lab_assistant.testing import build_harness, make_actor
 
@@ -242,3 +247,81 @@ class TestRuns:
         steward = stack["steward"]
         run = await _run(stack, _retrieval_benchmark([str(stack["yeast_id"])]))
         assert run["requested_by"] == str(steward.user_id)
+
+
+class _AddsAFigure(FakeLLMProvider):
+    """Answers from the evidence, then states a titre no source reports."""
+
+    def __init__(self, *, cite: bool) -> None:
+        super().__init__()
+        self.cite = cite
+
+    def _compose(self, request):  # type: ignore[no-untyped-def]
+        answer = super()._compose(request)
+        handle = f" [{request.evidence[0].handle}]" if self.cite and request.evidence else ""
+        return f"{answer} The titre reached 9.75 g/L{handle}."
+
+
+class TestGenerationMetrics:
+    """The scores measure the answer against what the model was given.
+
+    They used to compare the answer with itself, so they read 1.0 whatever the
+    model said. Each test here is a way an answer can be wrong that the old
+    scores could not see.
+    """
+
+    QUESTION: ClassVar[dict[str, Any]] = {
+        "benchmark_id": "gen",
+        "version": "1.0.0",
+        "kind": "generation",
+        "description": "one question",
+        "origin": "test",
+        "licence": "internal",
+        "permitted_use": "testing",
+        "cases": [{"case_id": "yield", "question": "What lipid yield was reported?"}],
+    }
+
+    async def _run_with(self, stack, provider) -> dict[str, Any]:
+        context = replace(stack["harness"].context, llm_provider=provider)
+        runner = EvaluationRunner(context)
+        steward = stack["steward"]
+        session = await ChatService(context).create_session(
+            steward, pinned_release_id=stack["release_id"]
+        )
+        run = await runner.run_generation(
+            steward,
+            benchmark=Benchmark.model_validate(self.QUESTION),
+            release_id=stack["release_id"],
+            session_id=session.id,
+        )
+        return {"metrics": run.metrics, "case": run.per_case[0], "gates": run.gates}
+
+    async def test_a_grounded_answer_scores_full_marks(self, stack) -> None:
+        result = await self._run_with(stack, FakeLLMProvider())
+        # The answer repeats figures such as 0.21 and 30 from its evidence, and its
+        # handles hold digits too: none of those may count against it.
+        assert result["metrics"]["faithfulness_proxy"] == 1.0
+        assert result["metrics"]["citation_validity"] == 1.0
+        assert result["case"]["unsupported_numbers"] == []
+
+    async def test_an_invented_citation_lowers_validity(self, stack) -> None:
+        result = await self._run_with(stack, FakeLLMProvider(invent_handle="Edeadbeef00"))
+        case = result["case"]
+        assert case["unsupported"] == ["Edeadbeef00"]
+        # Two real citations and one invented: two thirds valid, not zero, not one.
+        assert case["citation_validity"] == pytest.approx(2 / 3, abs=1e-3)
+        assert result["gates"]["generation:no_unsupported_citations"] is False
+
+    async def test_a_figure_the_cited_evidence_lacks_is_unfaithful(self, stack) -> None:
+        result = await self._run_with(stack, _AddsAFigure(cite=True))
+        case = result["case"]
+        assert case["unsupported_numbers"] == ["9.75"]
+        assert 0 < case["faithfulness_proxy"] < 1
+        # The citation itself is real: this answer is unfaithful, not mis-cited.
+        assert case["citation_validity"] == 1.0
+
+    async def test_an_uncited_figure_is_still_checked(self, stack) -> None:
+        cited = await self._run_with(stack, _AddsAFigure(cite=True))
+        uncited = await self._run_with(stack, _AddsAFigure(cite=False))
+        assert uncited["case"]["unsupported_numbers"] == ["9.75"]
+        assert uncited["case"]["faithfulness_proxy"] == cited["case"]["faithfulness_proxy"]
