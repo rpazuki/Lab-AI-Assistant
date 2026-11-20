@@ -5,6 +5,7 @@ export default function AnswerReviewsPage() {
   return (
     <>
       <PageHeader
+        help="/help/answer-reviews"
         pretitle="Quality"
         title="Answer reviews"
         description="Answers from evaluation runs, assigned to you to grade. Your grades sit beside the automatic metrics."

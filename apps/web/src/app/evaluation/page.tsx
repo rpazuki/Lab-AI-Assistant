@@ -5,6 +5,7 @@ export default function EvaluationPage() {
   return (
     <>
       <PageHeader
+        help="/help/evaluation"
         pretitle="Quality"
         title="Evaluation"
         description="Measure a release against a benchmark: retrieval recall, answer citations, and access-policy leaks."

@@ -18,12 +18,14 @@ export type NavIcon =
   | "datasheets"
   | "answer-reviews"
   | "members"
-  | "operations";
+  | "operations"
+  | "help";
 
 export interface NavItem {
   href: string;
   label: string;
   icon: NavIcon;
+  /** Capabilities that open the item; empty means every signed-in member. */
   anyOf: readonly string[];
 }
 
@@ -89,13 +91,18 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { href: "/operations", label: "Operations", icon: "operations", anyOf: ["view_operations"] },
     ],
   },
+  {
+    id: "help",
+    label: "Help",
+    items: [{ href: "/help", label: "How-to guides", icon: "help", anyOf: [] }],
+  },
 ];
 
 /** Every item, in sidebar order. */
 export const NAV: readonly NavItem[] = NAV_GROUPS.flatMap((group) => group.items);
 
 function holds(item: NavItem, held: ReadonlySet<string>): boolean {
-  return item.anyOf.some((capability) => held.has(capability));
+  return item.anyOf.length === 0 || item.anyOf.some((capability) => held.has(capability));
 }
 
 export function visibleNav(capabilities: readonly string[]): NavItem[] {

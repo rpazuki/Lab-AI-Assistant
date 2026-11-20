@@ -5,6 +5,7 @@ export default function CollectionsPage() {
   return (
     <>
       <PageHeader
+        help="/help/collections"
         pretitle="Curation"
         title="Collections"
         description="Scopes and discovery runs, then candidate decisions, identity conflicts, and the acquisition queue."

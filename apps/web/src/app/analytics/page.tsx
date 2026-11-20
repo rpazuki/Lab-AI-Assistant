@@ -5,6 +5,7 @@ export default function AnalyticsPage() {
   return (
     <>
       <PageHeader
+        help="/help/analytics"
         pretitle="Published corpus"
         title="Analytics"
         description="Counts anchored to a release, filtered by the same access policy as retrieval."

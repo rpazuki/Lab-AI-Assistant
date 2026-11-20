@@ -1,6 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
+
+import { Icon } from "@/components/ui/icons";
 
 /*
  * The component layer over the design tokens in `app/globals.css`.
@@ -105,21 +108,37 @@ export function Panel({
 export const rowList = "divide-y divide-border";
 export const row = "px-5 py-4";
 
-/** Tabler's page header: an uppercase pretitle over a semibold title. */
+/**
+ * Tabler's page header: an uppercase pretitle over a semibold title. `help` is the
+ * page's how-to guide, linked at the right so it is one click from the work.
+ */
 export function PageHeader({
   pretitle,
   title,
   description,
+  help,
 }: {
   pretitle: string;
   title: string;
   description?: string;
+  help?: string;
 }) {
   return (
-    <div className="mb-6">
-      <p className="text-pretitle font-semibold uppercase tracking-wider text-muted">{pretitle}</p>
-      <h1 className="text-page-title font-semibold text-heading">{title}</h1>
-      {description ? <p className="mt-1 max-w-3xl text-sm text-muted">{description}</p> : null}
+    <div className="mb-6 flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
+      <div>
+        <p className="text-pretitle font-semibold uppercase tracking-wider text-muted">{pretitle}</p>
+        <h1 className="text-page-title font-semibold text-heading">{title}</h1>
+        {description ? <p className="mt-1 max-w-3xl text-sm text-muted">{description}</p> : null}
+      </div>
+      {help ? (
+        <Link
+          href={help}
+          className="inline-flex items-center gap-1.5 rounded-control border border-border-strong bg-surface px-2.5 py-1 text-xs font-medium text-ink shadow-control hover:bg-surface-subtle"
+        >
+          <Icon name="help" className="h-3.5 w-3.5" />
+          How-to guide
+        </Link>
+      ) : null}
     </div>
   );
 }

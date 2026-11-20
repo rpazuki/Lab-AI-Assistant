@@ -82,7 +82,7 @@ describe("Sidebar", () => {
     render(<Sidebar />);
     expect(await screen.findByRole("button", { name: "Sign out" })).toBeInTheDocument();
     expect(sections()).toEqual(["Ask", "Analytics"]);
-    expect(groupHeaders()).toEqual(["Research"]);
+    expect(groupHeaders()).toEqual(["Research", "Help"]);
   });
 
   it("gives a reviewer the review queue but not releases", async () => {
@@ -98,7 +98,7 @@ describe("Sidebar", () => {
   it("gives an admin every section, grouped", async () => {
     window.localStorage.setItem(
       OPEN_GROUPS_KEY,
-      JSON.stringify(["research", "curation", "publishing", "administration"]),
+      JSON.stringify(["research", "curation", "publishing", "administration", "help"]),
     );
     vi.mocked(api.getMe).mockResolvedValue(member("admin", ALL));
     render(<Sidebar />);
@@ -106,9 +106,9 @@ describe("Sidebar", () => {
     expect(sections()).toEqual([
       "Ask", "Analytics", "Collections", "Review", "Datasheets", "Answer reviews", "Releases",
       "Evaluation",
-      "Members", "Operations",
+      "Members", "Operations", "How-to guides",
     ]);
-    expect(groupHeaders()).toEqual(["Research", "Curation", "Publishing", "Administration"]);
+    expect(groupHeaders()).toEqual(["Research", "Curation", "Publishing", "Administration", "Help"]);
     expect(screen.getByRole("link", { name: "Ask" })).toHaveAttribute("aria-current", "page");
   });
 
@@ -120,11 +120,9 @@ describe("Sidebar", () => {
     const expanded = (name: string) =>
       screen.getByRole("button", { name }).getAttribute("aria-expanded");
     expect(expanded("Publishing")).toBe("true");
-    expect([expanded("Research"), expanded("Curation"), expanded("Administration")]).toEqual([
-      "false",
-      "false",
-      "false",
-    ]);
+    expect(
+      [expanded("Research"), expanded("Curation"), expanded("Administration"), expanded("Help")],
+    ).toEqual(["false", "false", "false", "false"]);
     expect(sections()).toEqual(["Releases", "Evaluation"]);
   });
 

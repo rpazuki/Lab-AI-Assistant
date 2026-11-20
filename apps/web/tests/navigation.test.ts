@@ -64,7 +64,8 @@ describe("middleware", () => {
 describe("visibleGroups", () => {
   it("drops a group with nothing the member may open", () => {
     const groups = visibleGroups(["ask", "view_operations"]);
-    expect(groups.map((group) => group.id)).toEqual(["research", "administration"]);
+    // Help is for everyone, so it is always there.
+    expect(groups.map((group) => group.id)).toEqual(["research", "administration", "help"]);
     expect(groups[1]?.items.map((item) => item.label)).toEqual(["Operations"]);
   });
 
