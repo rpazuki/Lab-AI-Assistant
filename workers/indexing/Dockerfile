@@ -10,7 +10,10 @@ WORKDIR /app
 COPY packages/python /app/packages/python
 COPY services/api /app/services/api
 COPY workers/indexing /app/workers/indexing
-RUN pip install -e /app/packages/python -e /app/services/api
+# `objectstore` (boto3) and `gcs` (google-cloud-storage) are the S3 and Google
+# Cloud Storage SDKs. Every image carries both, so moving between the filesystem,
+# S3 and GCS is a change to LAB_OBJECT_STORE_KIND, not a rebuild.
+RUN pip install -e "/app/packages/python[objectstore,gcs]" -e /app/services/api
 
 # Non-root: a parser runs untrusted documents.
 RUN useradd --create-home --uid 10001 worker

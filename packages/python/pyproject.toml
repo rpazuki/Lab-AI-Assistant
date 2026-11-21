@@ -54,6 +54,9 @@ embeddings = ["sentence-transformers>=2.7"]
 # The S3 adapter uses the maintained AWS SDK for its credential chain,
 # conditional writes and error codes (ADR-0023 supersedes ADR-0017).
 objectstore = ["boto3>=1.35"]
+# The GCS adapter's SDK (ADR-0024). Every image installs both storage extras, so
+# switching LAB_OBJECT_STORE_KIND is configuration, not a rebuild.
+gcs = ["google-cloud-storage>=2.18"]
 anthropic = ["anthropic>=0.40"]
 export = ["pyarrow>=16.0"]
 

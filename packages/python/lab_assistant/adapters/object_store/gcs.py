@@ -148,8 +148,13 @@ class GcsStoreConfig:
         is a startup failure rather than a runtime one — except against a local
         emulator, which authenticates nobody and must not be made to.
         """
-        from google.auth.credentials import AnonymousCredentials
-        from google.cloud import storage
+        try:
+            from google.auth.credentials import AnonymousCredentials
+            from google.cloud import storage
+        except ModuleNotFoundError as exc:
+            from lab_assistant.adapters.object_store.s3 import _sdk_missing
+
+            raise _sdk_missing("gcs", "google-cloud-storage", "gcs") from exc
 
         if self.endpoint:
             # An emulator. Anonymous on purpose: resolving the ambient

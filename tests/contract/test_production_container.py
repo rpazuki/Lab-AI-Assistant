@@ -9,6 +9,8 @@ an adapter is not the same as calling out to it.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from lab_assistant.adapters.connectors.registry import (
@@ -100,6 +102,39 @@ class TestObjectStoreWiring:
             build_container(_settings(object_store_kind="s3"))
         assert "LAB_OBJECT_STORE_BUCKET" in str(raised.value.context["missing"])
 
+    def test_a_missing_s3_sdk_names_the_extra_at_startup(self, monkeypatch) -> None:
+        """An image without boto3 used to fail with a bare import error, late."""
+        monkeypatch.setitem(sys.modules, "boto3", None)
+        with pytest.raises(LabAssistantError) as raised:
+            build_container(
+                _settings(
+                    object_store_kind="s3",
+                    object_store_bucket="lab-objects",
+                    object_store_region="eu-west-2",
+                    object_store_access_key="AKIAEXAMPLE",
+                    object_store_secret_key="secret",
+                )
+            )
+        assert "`objectstore` extra" in str(raised.value)
+        assert raised.value.context["package"] == "boto3"
+
+    def test_a_missing_gcs_sdk_names_the_extra_at_startup(self, monkeypatch) -> None:
+        # Absent as an installed package and as an attribute: once another test has
+        # imported it, `from google.cloud import storage` reads the attribute.
+        import google.cloud
+
+        monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+        monkeypatch.delattr(google.cloud, "storage", raising=False)
+        with pytest.raises(LabAssistantError) as raised:
+            build_container(
+                _settings(
+                    object_store_kind="gcs",
+                    object_store_bucket="lab-objects",
+                    object_store_project="lab-project",
+                )
+            )
+        assert "`gcs` extra" in str(raised.value)
+
     def test_an_unknown_kind_is_an_error_not_a_silent_default(self) -> None:
         with pytest.raises(ValueError, match="unknown LAB_OBJECT_STORE_KIND"):
             build_container(_settings(object_store_kind="gluster"))
@@ -148,3 +183,38 @@ def test_server_rejects_missing_or_unknown_provider(provider, key):
 def test_effective_config_does_not_disclose_database_password():
     settings = _settings(database_url="postgresql+asyncpg://lab:private-password@db/lab")
     assert "private-password" not in repr(settings.redacted())
+
+
+def test_every_image_carries_both_storage_sdks() -> None:
+    """Moving to S3 or GCS is configuration; it must never need a rebuild.
+
+    Both SDKs are optional extras so a development install stays lean, which made
+    it easy to build images that could not use either bucket. Every Dockerfile
+    that installs the package must name both extras, and they must exist.
+    """
+    import re
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    extras = tomllib.loads((root / "packages/python/pyproject.toml").read_text())["project"][
+        "optional-dependencies"
+    ]
+    assert "boto3" in " ".join(extras["objectstore"])
+    assert "google-cloud-storage" in " ".join(extras["gcs"])
+
+    dockerfiles = [
+        root / "services/api/Dockerfile",
+        *sorted((root / "workers").glob("*/Dockerfile")),
+    ]
+    lacking = []
+    for dockerfile in dockerfiles:
+        installs = re.findall(
+            r"pip install[^\n]*?/app/packages/python(\[[^\]]*\])?", dockerfile.read_text()
+        )
+        if not installs:
+            continue
+        chosen = set((installs[0] or "[]").strip("[]").split(","))
+        if not {"objectstore", "gcs"} <= chosen:
+            lacking.append(dockerfile.relative_to(root).as_posix())
+    assert lacking == [], f"images without both storage SDKs: {lacking}"

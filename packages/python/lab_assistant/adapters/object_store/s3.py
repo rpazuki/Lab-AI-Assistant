@@ -234,8 +234,11 @@ class S3StoreConfig:
 
     def build_client(self) -> Any:
         """Construct the SDK client, refusing when no credential resolves."""
-        import boto3
-        from botocore.config import Config
+        try:
+            import boto3
+            from botocore.config import Config
+        except ModuleNotFoundError as exc:
+            raise _sdk_missing("s3", "boto3", "objectstore") from exc
 
         session = boto3.session.Session(
             aws_access_key_id=self.access_key,
@@ -820,3 +823,17 @@ def _record_from_json(payload: bytes) -> StoredObjectRecord:
         key=row["key"],
         tombstoned=row.get("tombstoned", False),
     )
+
+
+def _sdk_missing(kind: str, package: str, extra: str) -> LabAssistantError:
+    """A configured provider whose SDK is not installed: say so at startup.
+
+    The SDKs are optional extras, imported only by their adapter. An image built
+    without one used to fail with a bare ModuleNotFoundError on the first object
+    the application touched.
+    """
+    return LabAssistantError(
+        f"LAB_OBJECT_STORE_KIND={kind} needs the {package} package, which this "
+        f"installation does not have: install lab-assistant with the `{extra}` extra",
+        context={"object_store_kind": kind, "package": package, "extra": extra},
+    ).with_class(ErrorClass.INTERNAL)

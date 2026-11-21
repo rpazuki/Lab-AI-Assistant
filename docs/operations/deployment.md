@@ -86,6 +86,11 @@ Three backends, and only tested ones are supported: `filesystem` for a single VM
 unknown `LAB_OBJECT_STORE_KIND` is refused at startup rather than read as a
 filesystem path.
 
+Every image installs both cloud SDKs (the `objectstore` and `gcs` extras), so moving
+an installation between the filesystem, S3 and GCS is a change of settings and
+credentials, never a rebuild. A build that somehow lacks the SDK for the configured
+kind refuses at startup and names the missing extra.
+
 GCS is native rather than through S3 interoperability, because that endpoint has
 neither generation preconditions nor resumable uploads — so the conditional
 writes this application depends on would quietly become check-then-put. Two

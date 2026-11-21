@@ -69,6 +69,11 @@ else is refused at construction rather than quietly read as a filesystem path.
 inside the adapter, so a deployment on filesystem or S3 neither installs nor
 loads it. The same is already true of `boto3`.
 
+*Amended 2026-11-21.* Optional in the package, not in the images: no image installed
+either SDK, so no deployment could actually switch to S3 or GCS. The package now has a
+`gcs` extra beside `objectstore`, every image installs both, and a missing SDK is a
+startup error naming the extra. The adapters still import the SDK only when used.
+
 The emulator proves the semantics this adapter depends on — generation
 preconditions, missing-versus-denied, resumable upload, digest round trip. It
 does not prove IAM behaviour, signed-URL acceptance by Google, or how a real
