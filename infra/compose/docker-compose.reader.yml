@@ -1,0 +1,31 @@
+# Reader overlay: a mirror that serves an imported corpus and changes none of it.
+#
+#   docker compose -f docker-compose.yml -f infra/compose/docker-compose.prod.yml \
+#     -f infra/compose/docker-compose.reader.yml up -d
+#
+# `scripts/deploy/update.sh` and `scripts/lib/common.sh` add it on their own when
+# LAB_INSTALLATION_ROLE=reader, so nobody has to remember the third -f.
+#
+# A reader runs no workers: they refuse to start (exit 2) because the queue is
+# the publisher's, and under `restart: unless-stopped` a refusing container is a
+# restart loop that fails every `up --wait`. It needs no scanner either: it
+# accepts no uploads and acquires nothing, so the API builds none
+# (`lab_assistant_api.deps`), and ClamAV's resident signatures cost more memory
+# than the API and web together. Both are behind a profile instead of removed,
+# so `--profile publisher` can still reach a container left over from when this
+# host was something else.
+services:
+  api:
+    # The production overlay makes the API wait for a healthy scanner. Replaced,
+    # not reset: the database dependency from the base file must stay.
+    depends_on: !override
+      db: { condition: service_healthy }
+
+  worker-network:
+    profiles: ["publisher"]
+
+  worker-compute:
+    profiles: ["publisher"]
+
+  scanner:
+    profiles: ["publisher"]

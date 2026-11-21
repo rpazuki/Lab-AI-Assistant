@@ -1,6 +1,9 @@
 # Secrets. `.env` holds secrets and behaviour only — never addresses (ADR-0012).
 .env
 .env.local
+# A host's own addresses and role (see .env.site.example). Not a secret, but
+# per host: committing one would hand every other host its addresses.
+.env.site
 *.pem
 *.key
 # A runtime credential file is exactly what the predecessor's incident was about.

@@ -37,15 +37,16 @@ and never a secret value.
 
 from __future__ import annotations
 
+import json
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar
 from uuid import UUID
 
 import yaml
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from lab_assistant.contracts.canonical import sha256_text
 from lab_assistant.domain.installation import InstallationRole
@@ -155,7 +156,11 @@ class Settings(BaseSettings):
     #: beside the manifest is a key the manifest's author chose. Rotation means
     #: an operator adds the new id here, which is an authenticated transition
     #: because changing configuration is one.
-    archive_trusted_keys: dict[str, str] = Field(default_factory=dict)
+    #:
+    #: `NoDecode` because the value has two spellings, and the settings library
+    #: would otherwise JSON-decode the environment variable before the validator
+    #: below sees it, refusing `id=base64` outright. The validator owns parsing.
+    archive_trusted_keys: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
     #: Refuse a snapshot that is unsigned or signed by an unknown key. Off by
     #: default so signing can be adopted without making everything published
     #: before it unreadable; a bad signature always blocks regardless.
@@ -225,6 +230,33 @@ class Settings(BaseSettings):
     #: default and the spool threshold, so a payload small enough to send in one
     #: request is also small enough never to touch disk.
     object_store_multipart_threshold_bytes: int = 8 * 1024 * 1024
+
+    # ── shared archive store ────────────────────────────────────────────────
+    # Where `lab archive` publishes snapshots and a reader fetches them, when
+    # that is not this installation's own object store. Unset, the archive
+    # lives in the object store above, as it always has. Set, the two are
+    # apart: a publisher keeps its evidence on its own disk and publishes to a
+    # bucket, and a reader holds a GET-only credential for the bucket while
+    # storing what it imports locally — which it could not do if one setting
+    # had to serve both. Only the archive commands read these; no long-running
+    # service touches the archive.
+    archive_store_kind: str | None = None  # filesystem | s3 | gcs
+    archive_store_bucket: str | None = None
+    #: Prepended to every archive key, exactly as `object_store_prefix` is.
+    #: Publisher and readers must agree on it.
+    archive_store_prefix: str = ""
+    #: GCS only: the bucket's project, and a service-account file where the
+    #: application-default chain (an attached service account) is unavailable.
+    archive_store_project: str | None = None
+    archive_store_credentials_path: str | None = None
+    #: S3 only. Static keys are deliberately absent: the private store's keys
+    #: are never reused for the archive, so an S3 archive takes its credential
+    #: from the SDK chain or a named profile.
+    archive_store_endpoint: str | None = None
+    archive_store_region: str | None = None
+    archive_store_profile: str | None = None
+    #: Filesystem only, for tests and single-host rehearsals.
+    archive_store_root: Path | None = None
 
     # ── auth ────────────────────────────────────────────────────────────────
     secret_key: str = "development-only-not-for-production"
@@ -304,13 +336,71 @@ class Settings(BaseSettings):
     #: Keys whose values must never be printed or logged.
     secret_field_names: ClassVar[frozenset[str]] = _SECRET_KEYS
 
+    @field_validator("archive_store_kind", mode="before")
+    @classmethod
+    def _archive_store_kind(cls, value: Any) -> Any:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        kind = str(value).strip().lower()
+        if kind not in {"filesystem", "s3", "gcs"}:
+            raise ValueError("LAB_ARCHIVE_STORE_KIND is one of: filesystem, s3, gcs")
+        return kind
+
+    def archive_store_settings(self) -> Settings:
+        """These settings as the archive store sees them.
+
+        The store adapters read `object_store_*`, so the archive's own location
+        is expressed by copying it onto those fields. When no archive store is
+        configured the archive is the object store, and this is `self`.
+        """
+        if not self.archive_store_kind:
+            return self
+        return self.model_copy(
+            update={
+                "object_store_kind": self.archive_store_kind,
+                "object_store_bucket": self.archive_store_bucket,
+                "object_store_prefix": self.archive_store_prefix,
+                "object_store_project": self.archive_store_project,
+                "object_store_credentials_path": self.archive_store_credentials_path,
+                "object_store_endpoint": self.archive_store_endpoint,
+                "object_store_region": self.archive_store_region,
+                "object_store_profile": self.archive_store_profile,
+                "object_store_access_key": None,
+                "object_store_secret_key": None,
+                "object_store_session_token": None,
+                "object_store_root": self.archive_store_root or self.object_store_root,
+            }
+        )
+
     @field_validator("archive_trusted_keys", mode="before")
     @classmethod
     def _split_trusted_keys(cls, value: Any) -> Any:
         """Accept `id=base64,id2=base64` so a deployment can pin keys in one
-        environment entry without a config file."""
+        environment entry without a config file, or the same as a JSON object.
+
+        Both spellings arrive here as the raw string, whichever path read them:
+        `load_settings` passes the environment value through unparsed, and the
+        field is `NoDecode` so the settings library does not decode it first.
+        Splitting a JSON object on `=` is how `{"id":"key="}` once became a key
+        named `{"id":"key` — so JSON is recognised before anything is split.
+        """
         if not isinstance(value, str):
             return value
+        text = value.strip()
+        if text.startswith("{"):
+            try:
+                decoded = json.loads(text)
+            except ValueError as exc:
+                raise ValueError(
+                    "LAB_ARCHIVE_TRUSTED_KEYS looks like JSON and does not parse"
+                ) from exc
+            if not isinstance(decoded, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in decoded.items()
+            ):
+                raise ValueError(
+                    "LAB_ARCHIVE_TRUSTED_KEYS as JSON must be an object of id to base64 key"
+                )
+            return {k.strip(): v.strip() for k, v in decoded.items()}
         pairs: dict[str, str] = {}
         for entry in value.split(","):
             entry = entry.strip()

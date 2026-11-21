@@ -1,6 +1,6 @@
 Status: active
 Owner: operator
-Last verified: 2026-11-19
+Last verified: 2026-11-21
 Source of truth: `scripts/`, `infra/compose/docker-compose.prod.yml`
 
 # Deployment
@@ -111,6 +111,18 @@ S3 remains optional: set `LAB_OBJECT_STORE_KIND=s3`, bucket, endpoint and region
 in `.env.server`, and credentials in `.env`. Selecting S3 refuses construction
 when these are missing. Changing the adapter does not migrate existing files.
 See [ADR-0022](../architecture/adr/0022-single-vm-filesystem-storage.md).
+
+The shared archive that readers import from is configured separately
+(`LAB_ARCHIVE_STORE_*`), so a publisher can keep its evidence on this volume and still
+publish to a bucket. See [A reader mirror on another host](reader-mirror.md).
+
+## Another host's addresses and role
+
+`.env.server` is committed and carries this VM's addresses. A different host puts its
+own in an uncommitted `.env.site`, which Compose reads last
+([`.env.site.example`](../../.env.site.example)). The scripts read
+`LAB_INSTALLATION_ROLE` from the same three files. A reader is deployed with
+`infra/compose/docker-compose.reader.yml`, without workers or the scanner.
 
 ## Malware scanning
 

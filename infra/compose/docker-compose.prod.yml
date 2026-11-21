@@ -4,7 +4,7 @@
 #
 # Differences from development: no published database port, restart policies,
 # resource limits, read-only root filesystems where possible, and addresses from
-# .env.server.
+# .env.server — overridden per host by an optional, uncommitted .env.site.
 x-logging: &logging
   driver: json-file
   options: { max-size: "20m", max-file: "5" }
@@ -28,7 +28,12 @@ services:
       - clamav-signatures:/var/lib/clamav:ro
     depends_on:
       scanner: { condition: service_healthy }
-    env_file: [.env, .env.server]
+    env_file: &server-env
+      - .env
+      - .env.server
+      # This host's own addresses, read last so they win over the committed
+      # .env.server. Optional: the Imperial VM has none (see .env.site.example).
+      - { path: .env.site, required: false }
     restart: unless-stopped
     read_only: true
     tmpfs: ["/tmp"]
@@ -39,7 +44,7 @@ services:
     logging: *logging
 
   worker-network:
-    env_file: [.env, .env.server]
+    env_file: *server-env
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     deploy:
@@ -48,7 +53,7 @@ services:
     logging: *logging
 
   worker-compute:
-    env_file: [.env, .env.server]
+    env_file: *server-env
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     # The queue coordinator needs PostgreSQL, S3, and model-provider access.

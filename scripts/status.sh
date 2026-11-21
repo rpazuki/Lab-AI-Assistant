@@ -5,7 +5,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 printf 'commit:      %s\n' "$(deployed_commit)"
 printf 'branch:      %s\n' "$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
-printf 'environment: %s\n\n' "$(env_value LAB_ENV)"
+printf 'environment: %s\n' "$(site_value LAB_ENV)"
+printf 'role:        %s\n\n' "$INSTALLATION_ROLE"
 
 log "containers"
 compose ps
@@ -20,7 +21,7 @@ fi
 
 log "disk"
 # An unbounded log or object store fills the disk and takes PostgreSQL with it.
-df -h "$(dirname "$(env_value LAB_OBJECT_STORE_ROOT || echo /var/lib)")" 2>/dev/null || df -h /
+df -h "$(dirname "$(site_value LAB_OBJECT_STORE_ROOT || echo /var/lib)")" 2>/dev/null || df -h /
 docker system df 2>/dev/null || true
 
 log "queue"

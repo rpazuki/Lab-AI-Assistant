@@ -195,7 +195,7 @@ never expires into a failure.
 | Data steward — the person who curates a collection | [Collections and releases](product/collections-and-releases.md) · [Export guide](product/export-guide.md) · [User roles](product/user-roles.md) |
 | Developer | [System context](architecture/system-context.md) · [Code structure](architecture/modules-and-dependencies.md) · [Task orchestration](architecture/task-orchestration.md) · [Search and answering](architecture/search-and-rag.md) · [Provenance](architecture/provenance.md) |
 | Connector owner — someone adding a new literature source | [Connector guide](connectors/README.md) · [Source matrix](connectors/source-matrix.md) |
-| Operator — whoever runs the deployment | [Deployment](operations/deployment.md) · [Monitoring](operations/monitoring.md) · [Support bundles](operations/support-bundles.md) · [Backup and restore](operations/backup-and-restore.md) · [Runbooks](operations/runbooks/README.md) |
+| Operator — whoever runs the deployment | [Deployment](operations/deployment.md) · [Reader mirror](operations/reader-mirror.md) · [Monitoring](operations/monitoring.md) · [Support bundles](operations/support-bundles.md) · [Backup and restore](operations/backup-and-restore.md) · [Runbooks](operations/runbooks/README.md) |
 | Security or privacy reviewer | [Threat model](security/threat-model.md) · [Data inventory](security/data-inventory.md) · [Sending content to a model provider](security/model-transfer.md) |
 | Anyone joining mid-migration | [Migration overview](migration/README.md) · [API compatibility map](migration/api-compatibility.md) · [Audit findings and resolution](migration/remaining-implementation-tasks.md) · [Follow-up issues](migration/follow-up-implementation-issues.md) |
 

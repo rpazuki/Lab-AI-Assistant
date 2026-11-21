@@ -1226,8 +1226,11 @@ def _archive_control(settings: Settings):
     """The control store for the configured backend.
 
     The head needs compare-and-swap, which every backend offers and none offers
-    the same way — an ETag, a generation, a digest under a lock.
+    the same way — an ETag, a generation, a digest under a lock. It is built
+    from the archive store when one is configured, and from the object store
+    otherwise (`Settings.archive_store_settings`).
     """
+    settings = settings.archive_store_settings()
     if settings.object_store_kind == "s3":
         from lab_assistant.adapters.object_store.control import S3ControlStore
         from lab_assistant.adapters.object_store.s3 import S3StoreConfig

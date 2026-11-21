@@ -35,7 +35,7 @@ log "collecting into ${WORK}"
 } > "${WORK}/environment.txt"
 
 compose ps > "${WORK}/containers.txt" 2>&1 || true
-for service in api web worker-network worker-compute db; do
+for service in "${APP_SERVICES[@]}" db; do
   compose logs --since "$SINCE" --no-color "$service" 2>&1 | redact_stream > "${WORK}/${service}.log" || true
 done
 

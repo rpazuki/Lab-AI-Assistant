@@ -13,7 +13,7 @@ while [[ $# -gt 0 ]]; do
     *) SERVICES+=("$1"); shift ;;
   esac
 done
-[[ ${#SERVICES[@]} -gt 0 ]] || SERVICES=(api web worker-network worker-compute)
+[[ ${#SERVICES[@]} -gt 0 ]] || SERVICES=("${APP_SERVICES[@]}")
 
 if [[ "$RECREATE" == 1 ]]; then
   log "recreating ${SERVICES[*]}"

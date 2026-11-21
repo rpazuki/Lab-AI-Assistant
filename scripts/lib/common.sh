@@ -7,14 +7,42 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# One setting's effective value across .env, .env.server and .env.site, the last
+# file winning as it does for Compose. For role and addresses, which may live in
+# any of the three; `env_value` below reads .env alone, for secrets.
+site_value() {
+  local file found value=""
+  for file in "${REPO_ROOT}/.env" "${REPO_ROOT}/.env.server" "${REPO_ROOT}/.env.site"; do
+    [[ -f "$file" ]] || continue
+    found="$(sed -n "s/^$1=//p" "$file" | tail -n1)"
+    [[ -n "$found" ]] && value="$found"
+  done
+  value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
+  printf '%s' "$value"
+}
+
+# A reader runs no workers and no scanner (infra/compose/docker-compose.reader.yml),
+# so every script that names services takes them from APP_SERVICES.
+INSTALLATION_ROLE="$(site_value LAB_INSTALLATION_ROLE)"
+INSTALLATION_ROLE="${INSTALLATION_ROLE:-publisher}"
 COMPOSE_FILES=(-f "${REPO_ROOT}/docker-compose.yml" -f "${REPO_ROOT}/infra/compose/docker-compose.prod.yml")
+if [[ "$INSTALLATION_ROLE" == reader ]]; then
+  COMPOSE_FILES+=(-f "${REPO_ROOT}/infra/compose/docker-compose.reader.yml")
+  APP_SERVICES=(api web)
+else
+  APP_SERVICES=(api web worker-network worker-compute)
+fi
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# The project is named, as the deploy script names it. Left to Compose, it would
+# be the checkout's directory name, and a clone called anything but
+# `lab-assistant` would have every script here looking at an empty project.
 compose() {
-  docker compose "${COMPOSE_FILES[@]}" "$@"
+  docker compose -p "${COMPOSE_PROJECT_NAME:-lab-assistant}" "${COMPOSE_FILES[@]}" "$@"
 }
 
 # Read one key from .env without sourcing the file. The file holds no addresses,

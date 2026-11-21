@@ -16,6 +16,11 @@ one is safe to run twice.
 | `status.sh` | deployed commit, container states, health, queue depth, disk |
 | `logs.sh` | live unified log view, redacted |
 | `collect-logs.sh` | redacted support bundle, with a verification pass |
+| `archive.sh` | `publish` the library to the shared archive, or `sync` a reader from it ([reader mirror](../docs/operations/reader-mirror.md)) |
+
+Every script reads the installation role from `.env`, `.env.server` and `.env.site`
+(last wins, as Compose reads them). On a reader they add
+`infra/compose/docker-compose.reader.yml` and leave out the workers and the scanner.
 
 ## Recipes
 
@@ -27,6 +32,8 @@ sudo bash scripts/deploy/update.sh --first-install  # first deployment of a chec
 ./scripts/logs.sh api --since 30m --grep error
 ./scripts/restart.sh worker-compute --recreate
 ./scripts/collect-logs.sh --since 2h --out ~/reports
+sudo bash scripts/archive.sh publish                # publisher: policy, package, publish
+sudo bash scripts/archive.sh sync                   # reader: fetch and import
 ```
 
 ## Why the updater never rolls back

@@ -6,7 +6,9 @@ Source of truth: `packages/python/lab_assistant/application/archive_fetch.py`
 # Runbook: fetching and importing a snapshot onto a reader
 
 **When.** Setting up a reader installation, or refreshing one, from a library a
-publisher has published. Design:
+publisher has published. `scripts/archive.sh sync` runs both steps below, as the
+[reader mirror guide](../reader-mirror.md) sets it up; this page is what each step does
+and what its failures mean. Design:
 [ADR-0026](../../architecture/adr/0026-content-replication.md) (fetch) and
 [ADR-0029](../../architecture/adr/0029-reader-import.md) (import).
 
@@ -16,7 +18,8 @@ publisher has published. Design:
 lab archive fetch /srv/lab/snapshots/next --library-id <library-uuid>
 ```
 
-Needs the archive address and GET on the library's keys, and nothing else: no
+Needs the archive address (`LAB_ARCHIVE_STORE_*`, or the object store when those are
+unset) and GET on the library's keys, and nothing else: no
 database, no write permission, no permission to list the bucket. It reads the head,
 the manifest the head committed to, every shard and payload the manifest names, and
 the current policy checkpoint, verifying each against its declared digest before

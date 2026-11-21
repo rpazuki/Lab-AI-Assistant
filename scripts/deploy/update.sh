@@ -25,6 +25,13 @@ Usage: sudo bash scripts/deploy/update.sh [options]
   --base-path PATH   Web path prefix (default: /assist)
   --help
 
+The installation role is read from .env, .env.server and .env.site (last wins,
+as Compose reads them). A reader (LAB_INSTALLATION_ROLE=reader) is deployed
+without workers or the scanner (infra/compose/docker-compose.reader.yml), needs
+its own addresses in .env.site, and is accepted as deployed while the only thing
+it lacks is a corpus: the first import comes after the first install
+(scripts/archive.sh sync).
+
 Take a protected backup of PostgreSQL and the objects volume first (see
 docs/fresh_install_linux_redhat.md, "Local storage and backups").
 
@@ -42,9 +49,25 @@ fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 note() { printf '==> %s\n' "$*"; }
 need() { command -v "$1" >/dev/null || fail "Required command not found: $1"; }
 as_app() { sudo -u "$app_user" -- "$@"; }
+# Extra Compose files for this host's role; set once in main.
+overlay=()
 compose() {
     docker compose -p "$project" \
-        -f "$repo/docker-compose.yml" -f "$repo/infra/compose/docker-compose.prod.yml" "$@"
+        -f "$repo/docker-compose.yml" -f "$repo/infra/compose/docker-compose.prod.yml" \
+        "${overlay[@]}" "$@"
+}
+
+# One setting's effective value across .env, .env.server and .env.site, the
+# last file winning as it does for Compose. Prints nothing when it is unset.
+setting() {
+    local file found value=
+    for file in "$repo/.env" "$repo/.env.server" "$repo/.env.site"; do
+        [[ -f $file ]] || continue
+        found=$(sed -n "s/^$1=//p" "$file" | tail -n1)
+        [[ -n $found ]] && value=$found
+    done
+    value=${value%\"}; value=${value#\"}; value=${value%\'}; value=${value#\'}
+    printf '%s' "$value"
 }
 
 # Whether a key has a non-empty value in .env, without reading the value out.
@@ -68,9 +91,9 @@ http_status() {
 }
 
 wait_for() {
-    # wait_for URL EXPECTED_STATUS LABEL
+    # wait_for URL EXPECTED_STATUS LABEL [ATTEMPTS, 3 s apart; default 60]
     local attempt status
-    for (( attempt=1; attempt<=60; attempt++ )); do
+    for (( attempt=1; attempt<=${4:-60}; attempt++ )); do
         status=$(http_status "$1")
         [[ $status == "$2" ]] && { note "$3: $status"; return 0; }
         sleep 3
@@ -79,10 +102,38 @@ wait_for() {
     return 1
 }
 
+# A reader that has never imported a snapshot is not ready by design: it has
+# nothing to answer with (application/readiness.py). That is the expected state
+# straight after a first install, so it is accepted when `corpus` is the only
+# blocking failure, and any other failure still stops the deployment.
+reader_awaiting_import() {
+    compose exec -T api python - <<'PY'
+import json
+import urllib.error
+import urllib.request
+
+try:
+    urllib.request.urlopen("http://127.0.0.1:8000/ready", timeout=5)
+    raise SystemExit(0)
+except urllib.error.HTTPError as error:
+    try:
+        body = json.loads(error.read().decode() or "{}")
+    except ValueError:
+        raise SystemExit(1)
+failing = {
+    check.get("name")
+    for check in body.get("checks", [])
+    if not check.get("ok") and check.get("blocks_serving", True)
+}
+raise SystemExit(0 if failing == {"corpus"} else 1)
+PY
+}
+
 main() {
     local check_only=false first_install=false repo app_user=labassistant project=lab-assistant
     local api_port=8100 web_port=3300 base_path=/assist
-    local before after app_stopped=false db_running
+    local before after app_stopped=false db_running role
+    local -a app_services build_services
     repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
     while (( $# )); do
         case "$1" in
@@ -122,6 +173,24 @@ main() {
     grep -Eq '^LAB_ENV=server$' .env .env.server 2>/dev/null \
         || fail 'LAB_ENV=server is set in neither .env nor .env.server.'
 
+    role=$(setting LAB_INSTALLATION_ROLE)
+    role=${role:-publisher}
+    case $role in
+        publisher|maintenance)
+            app_services=(api web worker-network worker-compute)
+            build_services=(api web worker-network worker-compute scanner) ;;
+        reader)
+            # .env.server carries the Imperial VM's addresses; a reader on any
+            # other host would serve with them and every login would fail CORS.
+            [[ -f .env.site ]] \
+                || fail 'A reader needs .env.site with its own LAB_CORS_ORIGINS and LAB_APP_PUBLIC_URL (see .env.site.example).'
+            overlay=(-f "$repo/infra/compose/docker-compose.reader.yml")
+            app_services=(api web)
+            build_services=(api web) ;;
+        *) fail "LAB_INSTALLATION_ROLE=$role is not one of: publisher, reader, maintenance." ;;
+    esac
+    note "Installation role: $role."
+
     # One updater per checkout. The lock lives in the git directory, not the tree.
     local git_dir
     git_dir=$(as_app git rev-parse --absolute-git-dir)
@@ -159,17 +228,24 @@ main() {
     # Build while the old version keeps serving. Rebuilding at the same revision
     # is deliberate: it retries an interrupted deployment and picks up changes to
     # .env.server or the build configuration.
-    compose build api web worker-network worker-compute scanner
+    compose build "${build_services[@]}"
 
-    if [[ -n $(compose ps -q api web worker-network worker-compute) ]]; then
-        compose stop web api worker-network worker-compute
+    if [[ -n $(compose ps -q "${app_services[@]}") ]]; then
+        compose stop "${app_services[@]}"
+    fi
+    if [[ $role == reader ]]; then
+        # Containers left from when this host was a publisher keep restarting
+        # under their old policy unless stopped; the profile makes them nameable.
+        compose --profile publisher stop worker-network worker-compute scanner >/dev/null 2>&1 || true
     fi
     app_stopped=true
 
     # The database is started if it is not running and is never recreated: a
     # recreated database container is how a deploy loses a volume mount.
     compose up -d --no-recreate --wait --wait-timeout 900 db
-    compose up -d --wait --wait-timeout 900 scanner
+    if [[ $role != reader ]]; then
+        compose up -d --wait --wait-timeout 900 scanner
+    fi
     compose run --rm --no-deps --user 0 --entrypoint sh api \
         -c 'chown -R 10001:10001 /var/lib/lab-assistant/objects'
     note 'Applying pending migrations.'
@@ -179,14 +255,27 @@ main() {
 
     wait_for "http://127.0.0.1:${api_port}/health" 200 'API liveness'
     # 200 means fit to serve and 503 means not: readiness reports with the status code.
-    wait_for "http://127.0.0.1:${api_port}/ready" 200 'API readiness' \
-        || fail "Not ready. 'sudo ./scripts/status.sh' names the failing check; the stack is left running for diagnosis."
+    if [[ $role == reader ]]; then
+        if ! wait_for "http://127.0.0.1:${api_port}/ready" 200 'API readiness' 20; then
+            reader_awaiting_import \
+                || fail "Not ready. 'sudo ./scripts/status.sh' names the failing check; the stack is left running for diagnosis."
+            note 'API readiness: serving nothing yet, as a reader does before its first import.'
+        fi
+    else
+        wait_for "http://127.0.0.1:${api_port}/ready" 200 'API readiness' \
+            || fail "Not ready. 'sudo ./scripts/status.sh' names the failing check; the stack is left running for diagnosis."
+    fi
     wait_for "http://127.0.0.1:${web_port}${base_path}/login" 200 'Login page'
     COMPOSE_PROJECT_NAME="$project" bash "$repo/scripts/check-web.sh"
     app_stopped=false
 
     note "Deployment complete at ${after:0:12}."
-    if [[ $first_install == true ]]; then
+    if [[ $first_install == true && $role == reader ]]; then
+        note 'First installation of a reader: create the administrator, import the library, then put TLS in front of the web port:'
+        printf '  sudo docker compose -p %s -f docker-compose.yml -f infra/compose/docker-compose.prod.yml -f infra/compose/docker-compose.reader.yml exec api lab db create-admin --email YOU@example.org --workspace rlalab\n' "$project"
+        printf '  sudo bash scripts/archive.sh sync\n'
+        printf '  see docs/operations/reader-mirror.md\n'
+    elif [[ $first_install == true ]]; then
         note 'First installation: create the administrator, then configure nginx, SELinux and the firewall for 8445:'
         printf '  sudo docker compose -p %s -f docker-compose.yml -f infra/compose/docker-compose.prod.yml exec api lab db create-admin --email YOU@ic.ac.uk --workspace rlalab\n' "$project"
         printf '  see docs/fresh_install_linux_redhat.md, sections 5 and 6\n'

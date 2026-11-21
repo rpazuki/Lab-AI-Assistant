@@ -127,3 +127,73 @@ def test_operator_health_checks_use_own_container(tmp_path: Path) -> None:
     script = piped.read_text()
     assert "127.0.0.1:8000/ready" in script
     assert "code == 200" in script
+
+
+def _merged(tmp_path: Path, *overlays: str, site: str | None = None) -> dict:
+    """The merged production configuration, as Compose would run it."""
+    if not shutil.which("docker"):
+        pytest.skip("Docker Compose is required for the merged configuration check")
+    if subprocess.run(["docker", "compose", "version"], capture_output=True).returncode:
+        pytest.skip("Docker Compose plugin unavailable")
+    for name in (
+        "docker-compose.yml",
+        ".env.compose",
+        ".env.server",
+        "infra/compose/docker-compose.prod.yml",
+        "infra/compose/docker-compose.reader.yml",
+    ):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    (tmp_path / ".env").write_text("POSTGRES_PASSWORD=example-only\nLAB_SECRET_KEY=example-only\n")
+    if site is not None:
+        (tmp_path / ".env.site").write_text(site)
+    files = ["-f", "docker-compose.yml", "-f", "infra/compose/docker-compose.prod.yml"]
+    for overlay in overlays:
+        files += ["-f", overlay]
+    result = subprocess.run(
+        ["docker", "compose", *files, "config", "--format", "json"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout)["services"]
+
+
+def test_a_site_file_overrides_the_committed_server_addresses(tmp_path: Path) -> None:
+    # .env.server is committed with the Imperial VM's addresses and is read
+    # after .env, so only a file read after it can give another host its own.
+    services = _merged(
+        tmp_path,
+        site=(
+            'LAB_CORS_ORIGINS=["https://mirror.example.org"]\n'
+            "LAB_APP_PUBLIC_URL=https://mirror.example.org/assist\n"
+        ),
+    )
+    for name in ("api", "worker-network", "worker-compute"):
+        environment = services[name]["environment"]
+        assert environment["LAB_APP_PUBLIC_URL"] == "https://mirror.example.org/assist"
+        assert environment["LAB_CORS_ORIGINS"] == '["https://mirror.example.org"]'
+        # Everything the site file does not name still comes from .env.server.
+        assert environment["LAB_ENV"] == "server"
+        assert environment["LAB_OBJECT_STORE_KIND"] == "filesystem"
+
+
+def test_the_example_site_file_is_a_working_reader(tmp_path: Path) -> None:
+    services = _merged(
+        tmp_path,
+        "infra/compose/docker-compose.reader.yml",
+        site=(ROOT / ".env.site.example").read_text(),
+    )
+    # No workers: they refuse to start on a reader and would restart forever.
+    # No scanner: a reader builds none, and ClamAV is the largest container.
+    assert sorted(services) == ["api", "db", "web"]
+    api = services["api"]
+    assert api["environment"]["LAB_INSTALLATION_ROLE"] == "reader"
+    assert api["environment"]["LAB_ARCHIVE_STORE_KIND"] == "gcs"
+    # The private store stays local: only the archive commands use the bucket.
+    assert api["environment"]["LAB_OBJECT_STORE_KIND"] == "filesystem"
+    # The scanner dependency is gone and the database one is kept.
+    assert list(api["depends_on"]) == ["db"]
+    assert api["depends_on"]["db"]["condition"] == "service_healthy"
