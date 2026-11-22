@@ -1,0 +1,336 @@
+{
+  "approval": {
+    "title": "Scope and template approval",
+    "enum": "lab_assistant.domain.scope.ApprovalState",
+    "values": {
+      "draft": "Saved but not approved. It can still be edited or deleted, and nothing runs with it yet.",
+      "in_review": "Submitted for review and not yet approved. It can still be edited or deleted.",
+      "approved": "Approved and in use. It can no longer change: to change it, save a new version.",
+      "retired": "Replaced by a newer approved version. Kept as the record of what was used."
+    }
+  },
+  "discovery_run": {
+    "title": "Discovery runs",
+    "enum": "lab_assistant.domain.observation.DiscoveryRunStatus",
+    "values": {
+      "planned": "Created; its sources are queued to be searched.",
+      "running": "Its sources are being searched now.",
+      "degraded": "Every source has stopped, but at least one did not finish cleanly. It can be frozen only by accepting the gap.",
+      "frozen": "Closed. What it found has become candidates, and it can feed a release.",
+      "failed": "Stopped without results that can be used. Start a new run.",
+      "cancelled": "Stopped by a person before it finished."
+    }
+  },
+  "source_outcome": {
+    "title": "Source outcomes in a discovery run",
+    "enum": "lab_assistant.contracts.errors.SourceOutcome",
+    "ui_only": [
+      "pending"
+    ],
+    "values": {
+      "pending": "This source has not answered yet.",
+      "succeeded": "The source returned every result for the query.",
+      "succeeded_empty": "The source answered completely, and nothing matched the query.",
+      "degraded_partial": "The source returned some results, then stopped before the end.",
+      "rate_limited_retryable": "The source asked us to slow down. It is tried again after the wait it gave.",
+      "authentication_required": "The source refused the request without valid credentials. An admin must configure its key.",
+      "policy_blocked": "Our own policy forbids searching this source for this scope.",
+      "source_unavailable_retryable": "The source did not answer (down or unreachable). It is tried again automatically.",
+      "invalid_query": "The source rejected the query as written. Fix the query in a new scope version.",
+      "failed_permanent": "The source failed in a way retrying will not fix.",
+      "cancelled": "The search of this source was stopped before it finished."
+    }
+  },
+  "duplicate_reason": {
+    "title": "Why two records are proposed as one paper",
+    "values": {
+      "title_author_year_similarity": "Their titles, authors and years are very similar, but no shared DOI, PMID or PMCID proves it. A person decides."
+    }
+  },
+  "relevance": {
+    "title": "Candidate relevance",
+    "enum": "lab_assistant.domain.states.RelevanceState",
+    "values": {
+      "unreviewed": "Nobody has decided yet whether this paper belongs in the collection.",
+      "included": "In the collection. Its full text is planned for acquisition.",
+      "included_uncertain": "Included, but marked as uncertain for a second look.",
+      "excluded": "Recorded as out of scope. It will not enter a release."
+    }
+  },
+  "identity": {
+    "title": "Paper identity",
+    "enum": "lab_assistant.domain.states.IdentityState",
+    "values": {
+      "unresolved": "Not yet matched to the records other sources hold for the same paper.",
+      "resolved": "Matched: every source's record for this paper is joined into one work.",
+      "conflict": "Its identifiers contradict each other. It cannot enter a release until a person resolves it.",
+      "merged": "Merged into another work that represents the same paper.",
+      "split": "Separated from a work it had wrongly been joined to."
+    }
+  },
+  "retraction": {
+    "title": "Retraction",
+    "values": {
+      "none": "No retraction or correction is recorded.",
+      "retracted": "The paper has been retracted. It is excluded from new releases, and answers that cited it are flagged.",
+      "correction_issued": "A correction has been published for this paper."
+    }
+  },
+  "acquisition": {
+    "title": "Acquisition plans",
+    "enum": "lab_assistant.domain.states.AcquisitionState",
+    "values": {
+      "unplanned": "Included, but no plan to fetch its full text has been made yet.",
+      "planned": "Routes to fetch the full text are planned and being tried.",
+      "acquired": "The full text was fetched and passed its checks.",
+      "assisted": "No permitted route returned it. A person can upload a copy the lab is entitled to.",
+      "unavailable": "No legal copy is available; only the metadata is kept.",
+      "failed": "Every route failed. A person can still upload a copy."
+    }
+  },
+  "acquisition_outcome": {
+    "title": "Acquisition attempt outcomes",
+    "enum": "lab_assistant.contracts.errors.AcquisitionOutcome",
+    "ui_only": [
+      "pending"
+    ],
+    "values": {
+      "pending": "This route has not answered yet.",
+      "acquired": "This route returned the full text.",
+      "already_available": "A copy was already stored, so nothing was fetched again.",
+      "not_found": "This route has no copy of the paper.",
+      "metadata_only": "This route describes the paper but offers no full text.",
+      "rate_limited_retryable": "The source asked us to slow down. It is tried again after the wait it gave.",
+      "source_unavailable_retryable": "The source did not answer. It is tried again automatically.",
+      "authentication_required": "The source needs credentials we do not have configured. An admin must add them.",
+      "entitlement_required": "The paper needs a subscription or licence this route does not have. Upload an authorised copy.",
+      "robots_or_policy_blocked": "The site's robots rules or our policy forbid fetching from it.",
+      "licence_not_permitted": "The paper's licence does not allow us to store this copy.",
+      "identity_mismatch": "The file returned is a different paper from the one requested.",
+      "invalid_content": "The file returned is not a usable document (for example an error page).",
+      "malware_quarantined": "The file failed the malware scan and was quarantined.",
+      "too_large": "The file is larger than the configured limit.",
+      "assisted_required": "No permitted automatic route remains. A person must upload a copy.",
+      "failed_permanent": "This route failed in a way retrying will not fix.",
+      "cancelled": "The attempt was stopped before it finished."
+    }
+  },
+  "bulk_import": {
+    "title": "Files in a bulk PDF import",
+    "enum": "lab_assistant.application.bulk_import.FileOutcome",
+    "values": {
+      "matched": "Would be imported: it matches the paper waiting for it. Shown only by Check matches; nothing is stored yet.",
+      "imported": "Matched and stored; the paper continues to parsing.",
+      "unmatched": "No waiting paper matches it. Assign it by hand.",
+      "ambiguous": "It could belong to more than one waiting paper. Assign it by hand.",
+      "blocked": "Stored, but it did not pass the malware scan. A steward must resolve it before it is used.",
+      "rejected": "Matched, but refused by a check: rights, integrity, identity, size or file type."
+    }
+  },
+  "claim_validation": {
+    "title": "Validation of an extracted value",
+    "values": {
+      "pending": "Automatic validation has not run yet.",
+      "valid": "Passed automatic validation: unit, type and evidence check out. It can be accepted.",
+      "invalid": "Failed automatic validation. It cannot be accepted; correct it or reject it."
+    }
+  },
+  "abstention": {
+    "title": "Why a value was or was not reported",
+    "enum": "lab_assistant.contracts.errors.AbstentionReason",
+    "values": {
+      "reported": "The paper reports this value, and the evidence passage shows it.",
+      "not_reported_after_complete_search": "The whole paper was searched and does not report this value.",
+      "not_searched_budget": "Not searched: the extraction budget ran out first.",
+      "not_searched_policy": "Not searched: policy does not allow this content to be processed.",
+      "source_unavailable": "Not searched: the full text was not available.",
+      "parse_quality_insufficient": "Not searched: the parsed text was too poor to read reliably.",
+      "ambiguous_multiple_values": "The paper gives several candidate values and it is not clear which applies.",
+      "conflicting_values": "The paper gives values that contradict each other.",
+      "extractor_abstained": "The extractor declined to give a value.",
+      "not_applicable": "This value does not apply to this paper or experiment.",
+      "policy_redacted": "A value exists but is withheld by policy."
+    }
+  },
+  "proposal_source": {
+    "title": "Where a proposed value came from",
+    "enum": "lab_assistant.contracts.extraction.ProposalSource",
+    "values": {
+      "deterministic_parser": "Read by a fixed rule from structured data, such as a table or metadata.",
+      "model": "Proposed by a language model from the paper's text.",
+      "imported_dataset": "Taken from an imported dataset.",
+      "human": "Entered by a person.",
+      "legacy_import": "Carried over from the previous system."
+    }
+  },
+  "release": {
+    "title": "Releases",
+    "enum": "lab_assistant.domain.states.ReleaseState",
+    "values": {
+      "draft": "Assembled from approved material and not yet validated.",
+      "validating": "Its gates are being checked.",
+      "rejected": "Validation found blockers. Fix them and draft again.",
+      "approved": "Its gates passed. It is indexed for search, then can be published.",
+      "publishing": "Being made the release that Ask and Analytics serve.",
+      "published": "The release being served now. It never changes.",
+      "superseded": "Was published; a newer release has replaced it. Still available for rollback.",
+      "withdrawn": "Taken out of service and will not be served again."
+    }
+  },
+  "extraction_run": {
+    "title": "Extraction runs",
+    "values": {
+      "running": "Papers are being extracted on the worker.",
+      "finished": "Every paper in the run has been extracted, or skipped because nothing changed."
+    }
+  },
+  "evaluation_run": {
+    "title": "Evaluation runs",
+    "ui_only": [
+      "passed",
+      "failed gates"
+    ],
+    "values": {
+      "queued": "Waiting for a worker.",
+      "running": "Being measured now.",
+      "succeeded": "Finished; its metrics are available.",
+      "failed": "Stopped with an error before its metrics were complete.",
+      "cancelled": "Stopped by a person before it finished.",
+      "passed": "Finished, and every threshold the benchmark sets was met.",
+      "failed gates": "Finished, but at least one threshold the benchmark sets was not met."
+    }
+  },
+  "benchmark_kind": {
+    "title": "Benchmark kinds",
+    "values": {
+      "discovery": "Measures whether the scope's searches find the papers they should.",
+      "identity": "Measures whether records of the same paper are joined correctly.",
+      "parsing": "Measures the quality of the text read from documents.",
+      "extraction": "Measures the accuracy of extracted values.",
+      "retrieval": "Measures whether search returns the right papers for a question.",
+      "generation": "Measures the answers Ask writes, for people to grade.",
+      "policy": "Checks that restricted material is never shown to those who may not see it."
+    }
+  },
+  "benchmark_sensitivity": {
+    "title": "Benchmark sensitivity",
+    "values": {
+      "public": "May be shared outside the lab.",
+      "internal": "For the lab only.",
+      "restricted": "Contains restricted material; only those who may see it can open it."
+    }
+  },
+  "answer_review": {
+    "title": "Answer reviews",
+    "values": {
+      "assigned": "Waiting for your grade.",
+      "submitted": "Graded. You can still update it."
+    }
+  },
+  "membership": {
+    "title": "Members",
+    "enum": "lab_assistant.domain.workspace.MembershipStatus",
+    "values": {
+      "invited": "Invited but has not accepted yet.",
+      "active": "Can sign in and use the pages their role allows.",
+      "suspended": "Cannot sign in until an admin restores access.",
+      "expired": "Their access ended on its expiry date."
+    }
+  },
+  "invitation": {
+    "title": "Invitations",
+    "enum": "lab_assistant.application.accounts.InvitationState",
+    "values": {
+      "open": "Sent and not used yet; the link still works.",
+      "accepted": "Used: the person has joined.",
+      "revoked": "Cancelled by an admin; the link no longer works.",
+      "expired": "Not used in time; the link no longer works."
+    }
+  },
+  "task": {
+    "title": "Background tasks",
+    "enum": "lab_assistant.domain.states.TaskState",
+    "values": {
+      "pending": "Waiting for the tasks it depends on.",
+      "ready": "Ready to run; waiting for a free worker.",
+      "leased": "Being worked on by a worker now.",
+      "blocked": "Cannot run until something outside it changes.",
+      "awaiting_user": "Waiting for a person, for example an upload or a decision. Not a failure.",
+      "degraded": "Finished with part of its work missing.",
+      "quarantined": "Set aside because its input failed a safety or integrity check.",
+      "succeeded": "Finished.",
+      "failed": "Failed this attempt; it is retried by its retry policy.",
+      "dead_letter": "Failed every retry. It waits for an operator to retry it.",
+      "cancelled": "Stopped before it finished."
+    }
+  },
+  "flag": {
+    "title": "Markers",
+    "values": {
+      "active": "The template extraction uses now.",
+      "blinded": "Its expected answers are hidden from those running and grading it.",
+      "required_for_publishing": "A release must pass this benchmark before it can be published.",
+      "restricted": "Withheld: your role may not see this figure.",
+      "excerpt_only": "Only an excerpt of this source may be shown, not its full text."
+    }
+  },
+  "audit_action": {
+    "title": "Audit log actions",
+    "enum": "lab_assistant.contracts.events.AuditAction",
+    "values": {
+      "login_succeeded": "A member signed in.",
+      "login_failed": "A sign-in attempt failed.",
+      "logout": "A member signed out.",
+      "session_revoked": "A sign-in session was ended by an admin or a security rule.",
+      "invitation_created": "An admin invited someone.",
+      "invitation_accepted": "Someone accepted an invitation and joined.",
+      "membership_changed": "A member's role or status changed.",
+      "grant_changed": "Access to a resource was granted or removed.",
+      "member_chat_read": "An admin opened a member's conversation. Recorded on every read.",
+      "scope_approved": "A scope version was approved for discovery.",
+      "scope_draft_deleted": "An unapproved scope version was deleted.",
+      "discovery_run_started": "A discovery run started searching its sources.",
+      "discovery_run_frozen": "A discovery run was frozen and its results became candidates.",
+      "degraded_source_accepted": "A run was frozen although a source fell short, and the gap was accepted.",
+      "identity_decided": "A person decided whether records are the same paper.",
+      "relevance_decided": "A candidate was included or excluded.",
+      "rights_decided": "What may be done with a paper's content was decided.",
+      "acquisition_attempted": "A route was tried to fetch a paper's full text.",
+      "asset_registered": "A full-text file was stored.",
+      "asset_quarantined": "A file failed a safety check and was quarantined.",
+      "assisted_upload_accepted": "A file a person uploaded was accepted.",
+      "parse_completed": "A document's text was read.",
+      "rendition_accepted_degraded": "A poorly read text was accepted for use anyway.",
+      "extraction_completed": "Values were extracted from a paper.",
+      "proposal_rejected": "An extracted value was rejected before review.",
+      "claim_reviewed": "A reviewer accepted, corrected or rejected a value.",
+      "release_drafted": "A release was drafted.",
+      "release_validated": "A release's gates were checked.",
+      "release_approved": "A release was approved and indexing started.",
+      "release_published": "A release became the one being served.",
+      "release_rolled_back": "Serving went back to the previous release.",
+      "release_withdrawn": "A release was taken out of service.",
+      "benchmark_registered": "A benchmark was added.",
+      "evaluation_requested": "An evaluation run was started.",
+      "evaluation_completed": "An evaluation run finished.",
+      "evaluation_cancelled": "An evaluation run was stopped.",
+      "evaluation_review_assigned": "Answers were assigned to a reviewer to grade.",
+      "evaluation_review_submitted": "A reviewer graded an answer.",
+      "release_gate_changed": "The benchmarks required for publishing changed.",
+      "release_gate_overridden": "A release was published although a required benchmark had not passed.",
+      "answer_generated": "Ask wrote an answer.",
+      "citation_validation_failed": "An answer cited something it was not allowed to, and the citation was removed.",
+      "export_created": "An export package was built.",
+      "export_downloaded": "An export package was downloaded.",
+      "asset_downloaded": "A stored full-text file was downloaded.",
+      "policy_denied": "An action was refused by policy.",
+      "task_dead_lettered": "A background task failed every retry.",
+      "object_integrity_failed": "A stored file no longer matched its recorded checksum.",
+      "admin_action": "An admin performed a maintenance action.",
+      "installation_drained": "This installation stopped publishing for a handover.",
+      "installation_promoted": "This installation took over publishing the shared archive.",
+      "archive_purged": "Archive files were deleted under a reviewed retention plan.",
+      "legacy_import_run": "Data from the previous system was imported."
+    }
+  }
+}

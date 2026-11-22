@@ -264,7 +264,7 @@ export function MembersClient() {
                         </select>
                       </td>
                       <td>
-                        <StateChip state={member.status} />
+                        <StateChip state={member.status} kind="membership" />
                       </td>
                       <td className="min-w-56">
                         {editingLimit === member.user_id ? (
@@ -387,7 +387,7 @@ export function MembersClient() {
                     <td>{item.email}</td>
                     <td>{roleLabel(item.role)}</td>
                     <td>
-                      <StateChip state={item.state} />
+                      <StateChip state={item.state} kind="invitation" />
                     </td>
                     <td className="text-xs text-muted">
                       {item.state === "accepted" ? `accepted ${when(item.accepted_at)}` : when(item.expires_at)}

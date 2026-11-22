@@ -22,7 +22,8 @@ export type IconName =
   | "expand"
   | "sign-in"
   | "sign-out"
-  | "account";
+  | "account"
+  | "info";
 
 const PATHS: Record<IconName, ReactNode> = {
   ask: (
@@ -121,6 +122,12 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="12" cy="12" r="9" />
       <circle cx="12" cy="10" r="3" />
       <path d="M6.2 18.4A4 4 0 0 1 10 16h4a4 4 0 0 1 3.8 2.4" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5M12 8h.01" />
     </>
   ),
 };

@@ -11,6 +11,7 @@
  */
 
 import type { NavIcon } from "@/lib/navigation";
+import { describeStatus, statusGroup, type StatusKind } from "@/lib/statuses";
 
 export interface HowTo {
   /** "How to …", one goal. */
@@ -28,6 +29,11 @@ export interface HelpSection {
   /** What the section is for: one or two paragraphs. */
   about: string[];
   howTos: HowTo[];
+  /**
+   * Status groups shown in this section, each rendered as a table of what every
+   * value means. Read from the same glossary as the info button beside a chip.
+   */
+  statuses?: StatusKind[];
 }
 
 export interface HelpTopic {
@@ -141,6 +147,25 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
           {
             title: "How to update a list now",
             steps: ["Select **Refresh** next to the indicator in the list's header."],
+          },
+        ],
+      },
+      {
+        id: "statuses",
+        title: "What a status means",
+        statuses: ["flag"],
+        about: [
+          "Statuses appear as small coloured labels, such as **running**, **degraded_partial** or **awaiting_user**. The label is the status's exact name, so it matches what the server records. Colour gives the gist: green is done, amber needs attention or is in progress, red has failed.",
+          "Beside each status is an **ⓘ** button. Select it to see a short description of what that status means there; the same word can mean different things in different places. Each page's guide also has a table of every status it can show, under **Statuses**.",
+        ],
+        howTos: [
+          {
+            title: "How to find out what a status means",
+            steps: [
+              "Select the **ⓘ** button beside the status.",
+              "Read the description. Select the button again, press Escape or click elsewhere to close it.",
+            ],
+            note: "To see every status a page can show, open its guide and scroll to **Statuses**.",
           },
         ],
       },
@@ -299,6 +324,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     sections: [
       {
         id: "scopes",
+        statuses: ["approval"],
         title: "Scopes",
         about: [
           "A scope says what a collection is for and where to search: a scientific objective, inclusion and exclusion criteria, and a query for each source (PubMed, Europe PMC, Crossref, OpenAlex, DataCite) in that source's own syntax.",
@@ -369,6 +395,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "discovery",
+        statuses: ["discovery_run", "source_outcome"],
         title: "Discovery runs",
         about: [
           "A discovery run searches every source of an approved scope and records what each one returned. While it runs, each source shows its outcome and how many records it has seen.",
@@ -396,6 +423,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "identity",
+        statuses: ["duplicate_reason", "identity"],
         title: "Identity conflicts and duplicate proposals",
         about: [
           "Different sources often describe the same paper. They are merged automatically only on strong identifiers (DOI, PMID, PMCID). When two records look like the same paper by title alone, they are proposed here for a person to decide, because titles alone are not reliable.",
@@ -414,6 +442,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "candidates",
+        statuses: ["relevance", "retraction"],
         title: "Candidates",
         about: [
           "Candidates are the papers discovery found, each with the fields the sources agreed on. Including a candidate puts it in the collection and plans the acquisition of its full text; excluding it records that it is out of scope.",
@@ -431,6 +460,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "acquisition",
+        statuses: ["acquisition", "acquisition_outcome"],
         title: "Acquisition queue",
         about: [
           "Every included paper gets an acquisition plan: the routes tried to fetch its full text, open repositories first. When no permitted route returns it, the plan waits for a person, who can upload a copy the lab is entitled to.",
@@ -451,6 +481,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "bulk-import",
+        statuses: ["bulk_import"],
         title: "Importing many PDFs",
         about: [
           "When you have many papers as PDFs, drop them together. Each file is matched to the acquisition waiting for it by a DOI, PMID or PMCID in its file name or on its first page — never by title — and imported through the same checks as a single upload.",
@@ -484,6 +515,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     sections: [
       {
         id: "claim-review",
+        statuses: ["claim_validation", "abstention", "proposal_source"],
         title: "Reviewing extracted claims",
         about: [
           "Extraction proposes values — a lipid yield, a temperature — each with the exact passage it came from and any issues automatic validation found. Nothing proposed is a finding until a person reviews it: only reviewed claims enter a release.",
@@ -529,6 +561,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     sections: [
       {
         id: "templates",
+        statuses: ["approval"],
         title: "Templates",
         about: [
           "A template says what to extract from each paper: its targets (for example strain and lipid yield), what kind of value each is, its unit, and where it usually appears. Nothing is extracted until a template is approved.",
@@ -549,6 +582,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "extract",
+        statuses: ["extraction_run"],
         title: "Extracting, and what it will cost",
         about: [
           "Extraction runs by itself after each paper is parsed. **Run** covers the papers parsed before the template was approved; **Re-run all** extracts every paper again, for example after a model change. Unchanged inputs reuse their earlier result at no cost.",
@@ -598,6 +632,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     sections: [
       {
         id: "grading",
+        statuses: ["answer_review"],
         title: "Grading assigned answers",
         about: [
           "Automatic metrics measure whether citations are valid and numbers are backed; they cannot judge whether an answer is right. When an evaluator assigns you answers from an evaluation run, they appear here with the question, the answer and what was measured.",
@@ -630,6 +665,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     sections: [
       {
         id: "making",
+        statuses: ["release"],
         title: "Drafting, validating and approving",
         about: [
           "A release is a frozen, citable snapshot of the collection: its papers, their parsed texts and the reviewed claims. Ask answers only from the release being served, so nothing changes under a reader's feet.",
@@ -701,6 +737,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     sections: [
       {
         id: "benchmarks",
+        statuses: ["benchmark_kind", "benchmark_sensitivity"],
         title: "Benchmarks",
         about: [
           "A benchmark is a set of questions with what a good result looks like: for retrieval, the papers that should be found; for generation, questions whose answers are checked; for policy, probes that must not see restricted material.",
@@ -731,6 +768,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "runs",
+        statuses: ["evaluation_run"],
         title: "Running and comparing",
         about: [
           "A run measures one release with one benchmark, on the evaluation worker and with your access. Its verdict is passed or failed gates, with every metric and, under **Details**, each question's result.",
@@ -804,6 +842,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     sections: [
       {
         id: "inviting",
+        statuses: ["invitation"],
         title: "Inviting people",
         about: [
           "People join by invitation only. Creating an invitation gives you a link to send them yourself — the app does not send email. The link is shown once; if it is lost, invite the address again, which also cancels the earlier link.",
@@ -823,6 +862,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "managing",
+        statuses: ["membership"],
         title: "Roles, suspension and signing out",
         about: [
           "Each member's role is chosen from the list in their row and takes effect on their next action. Suspending someone signs them out everywhere at once and stops them signing in until reinstated; **Sign out everywhere** ends their sessions without changing their access.",
@@ -893,6 +933,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     sections: [
       {
         id: "queue",
+        statuses: ["task"],
         title: "The task queue",
         about: [
           "Discovery, acquisition, parsing, extraction, indexing and evaluation all run as tasks on background workers. The tiles count tasks by state, **Waiting longest, by stage** shows where work is backing up, and **Waiting for a person** lists tasks that need a decision. The page refreshes itself.",
@@ -912,6 +953,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "audit",
+        statuses: ["audit_action"],
         title: "The audit log",
         about: [
           "Every decision that matters — sign-ins, membership changes, reviews, releases, overrides, reads of members' chats — is written to a tamper-evident audit log. The latest 100 events are shown here with what was done and to what.",
@@ -963,7 +1005,14 @@ export function searchHelp(query: string): HelpMatch[] {
         const inTitle = words.filter((word) => has(howTo.title, word)).length;
         scored.push({ match: { topic, section, howTo }, score: 10 + inTitle * 3, order: scored.length });
       }
-      if (!found && matches([topic.title, section.title, ...section.about].join(" "))) {
+      const statusText = (section.statuses ?? []).flatMap((kind) => {
+        const group = statusGroup(kind);
+        return [
+          group.title,
+          ...Object.keys(group.values).map((value) => `${value} ${describeStatus(kind, value) ?? ""}`),
+        ];
+      });
+      if (!found && matches([topic.title, section.title, ...section.about, ...statusText].join(" "))) {
         const inTitle = words.filter((word) => has(section.title, word)).length;
         scored.push({ match: { topic, section }, score: inTitle * 3, order: scored.length });
       }

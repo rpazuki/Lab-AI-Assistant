@@ -388,7 +388,7 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
                 </p>
                 <p className="border-l-2 border-accent pl-2 text-xs text-ink">{source.snippet}</p>
                 {source.display_restricted ? (
-                  <StateChip state="excerpt_only" />
+                  <StateChip state="excerpt_only" kind="flag" />
                 ) : null}
               </li>
             ))}

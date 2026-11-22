@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { Icon } from "@/components/ui/icons";
-import { Input } from "@/components/ui/primitives";
+import { Input, StateChip } from "@/components/ui/primitives";
 import { getMe } from "@/lib/api";
 import { HELP_TOPICS, searchHelp, type HelpTopic, type HowTo } from "@/lib/help";
+import { statusGroup, type StatusKind } from "@/lib/statuses";
 
 /**
  * Inline emphasis in help text: `**bold**` for the names on screen, `*italic*` for
@@ -132,6 +133,32 @@ export function HelpIndex() {
   );
 }
 
+/** Every value of one status group and what it means, from the shared glossary. */
+function StatusTable({ kind }: { kind: StatusKind }) {
+  const group = statusGroup(kind);
+  return (
+    <table className="data-table rounded-card border border-border bg-surface">
+      <caption className="pb-1.5 text-left text-sm font-semibold text-heading">{group.title}</caption>
+      <thead>
+        <tr>
+          <th scope="col">Status</th>
+          <th scope="col">What it means</th>
+        </tr>
+      </thead>
+      <tbody>
+        {Object.entries(group.values).map(([value, meaning]) => (
+          <tr key={value}>
+            <td className="whitespace-nowrap align-top">
+              <StateChip state={value} />
+            </td>
+            <td className="text-sm text-ink">{meaning}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function Guide({ howTo }: { howTo: HowTo }) {
   return (
     <article
@@ -251,6 +278,14 @@ export function HelpArticle({ topic }: { topic: HelpTopic }) {
                 <Guide key={howTo.title} howTo={howTo} />
               ))}
             </div>
+            {section.statuses?.length ? (
+              <div className="max-w-3xl space-y-3">
+                <h3 className="text-pretitle font-semibold uppercase tracking-wider text-muted">Statuses</h3>
+                {section.statuses.map((kind) => (
+                  <StatusTable key={kind} kind={kind} />
+                ))}
+              </div>
+            ) : null}
           </section>
         ))}
       </div>

@@ -122,7 +122,7 @@ function ReviewCard({
   return (
     <Panel
       title={`Case ${item.case_id}`}
-      aside={<StateChip state={item.status} />}
+      aside={<StateChip state={item.status} kind="answer_review" />}
     >
       <form onSubmit={save} className="space-y-4">
         <div className="space-y-2 text-sm">

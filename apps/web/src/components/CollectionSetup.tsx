@@ -191,7 +191,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                   <div className="flex flex-wrap items-center gap-2">
                     <strong className="text-sm text-heading">{scope.name}</strong>
                     <span className="font-mono text-xs text-muted">v{scope.version}</span>
-                    <StateChip state={scope.approval_state} />
+                    <StateChip state={scope.approval_state} kind="approval" />
                     <span className="text-xs text-muted">{scope.connectors.join(", ")}</span>
                     <div className="ml-auto flex gap-2">
                       {editable ? (
@@ -276,7 +276,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
               <li key={run.id} className={row}>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-xs">{run.id.slice(0, 8)}</span>
-                  <StateChip state={run.status} />
+                  <StateChip state={run.status} kind="discovery_run" />
                   <span className="text-xs text-muted">
                     {run.started_at ? `started ${new Date(run.started_at).toLocaleString()}` : "not started"}
                     {run.frozen_at ? ` · frozen ${new Date(run.frozen_at).toLocaleString()}` : ""}
@@ -331,7 +331,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                             {state.required ? "" : " (optional)"}
                           </td>
                           <td>
-                            <StateChip state={state.outcome ?? "pending"} />
+                            <StateChip state={state.outcome ?? "pending"} kind="source_outcome" />
                           </td>
                           <td className="numeric">{state.records_seen}</td>
                           <td className="numeric">{state.declared_total ?? "—"}</td>

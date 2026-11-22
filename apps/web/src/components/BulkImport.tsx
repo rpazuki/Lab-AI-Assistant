@@ -184,7 +184,7 @@ export function BulkImport({
                     <tr key={item.filename}>
                       <td className="max-w-xs break-words text-xs">{item.filename}</td>
                       <td>
-                        <StateChip state={item.outcome} />
+                        <StateChip state={item.outcome} kind="bulk_import" />
                       </td>
                       <td className="font-mono text-xs">{item.identifiers.join(" ") || "—"}</td>
                       <td className="text-xs text-muted">

@@ -4,6 +4,8 @@ import Link from "next/link";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
 
 import { Icon } from "@/components/ui/icons";
+import { InfoTip } from "@/components/ui/InfoTip";
+import { describeStatus, type StatusKind } from "@/lib/statuses";
 
 /*
  * The component layer over the design tokens in `app/globals.css`.
@@ -190,13 +192,27 @@ function stateTone(state: string): Tone {
 }
 
 /** A state chip. Colour follows meaning, and the label is always the state's own
- *  name: an operator searching logs for `awaiting_user` finds the same word here. */
-export function StateChip({ state }: { state: string }) {
-  return (
+ *  name: an operator searching logs for `awaiting_user` finds the same word here.
+ *
+ *  `kind` names the glossary group the value belongs to (`lib/statuses.json`); the
+ *  same word can mean different things in different places (`degraded` for a run
+ *  and for a parse). With it, an info button beside the chip explains the value.
+ *  Every chip that shows a status passes one, so the explanation is never missing
+ *  from one page and present on another. */
+export function StateChip({ state, kind }: { state: string; kind?: StatusKind }) {
+  const chip = (
     <span
       className={`inline-flex items-center rounded-badge border px-1.5 py-0.5 font-mono text-xs font-medium ${tones[stateTone(state)]}`}
     >
       {state}
+    </span>
+  );
+  const description = kind ? describeStatus(kind, state) : null;
+  if (!description) return chip;
+  return (
+    <span className="inline-flex items-center gap-1">
+      {chip}
+      <InfoTip label={state}>{description}</InfoTip>
     </span>
   );
 }

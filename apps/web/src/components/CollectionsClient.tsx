@@ -97,7 +97,7 @@ export function CollectionsClient() {
               <span className="font-mono text-xs">
                 {proposal.left_work_id.slice(0, 8)} ↔ {proposal.right_work_id.slice(0, 8)}
               </span>
-              <StateChip state={proposal.reason_code} />
+              <StateChip state={proposal.reason_code} kind="duplicate_reason" />
               <span className="text-xs text-muted">
                 similarity {proposal.similarity.toFixed(2)} — title similarity alone never merges
               </span>
@@ -132,10 +132,10 @@ export function CollectionsClient() {
             <li key={candidate.work_id} className={row}>
               <div className="flex flex-wrap items-center gap-2">
                 <strong className="text-heading">{candidate.title ?? "Untitled"}</strong>
-                <StateChip state={candidate.relevance} />
-                <StateChip state={candidate.identity_status} />
+                <StateChip state={candidate.relevance} kind="relevance" />
+                <StateChip state={candidate.identity_status} kind="identity" />
                 {candidate.retraction_status !== "none" ? (
-                  <StateChip state={candidate.retraction_status} />
+                  <StateChip state={candidate.retraction_status} kind="retraction" />
                 ) : null}
               </div>
               <p className="mt-1 text-xs text-muted">
@@ -197,7 +197,7 @@ export function CollectionsClient() {
             <li key={plan.plan_id} className={row}>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs">{plan.work_id.slice(0, 8)}</span>
-                <StateChip state={plan.status} />
+                <StateChip state={plan.status} kind="acquisition" />
                 <span className="text-xs text-muted">
                   routes: {plan.routes.join(" → ")}
                 </span>
@@ -210,9 +210,9 @@ export function CollectionsClient() {
               {plan.attempts.length > 0 ? (
                 <ul className="mt-2 space-y-0.5 text-xs text-muted">
                   {plan.attempts.map((attempt, index) => (
-                    <li key={index}>
-                      <span className="font-mono">{attempt.route}</span> via {attempt.connector_id}{" "}
-                      → {attempt.outcome ?? "pending"}
+                    <li key={index} className="flex flex-wrap items-center gap-1">
+                      <span className="font-mono">{attempt.route}</span> via {attempt.connector_id} →
+                      <StateChip state={attempt.outcome ?? "pending"} kind="acquisition_outcome" />
                       {attempt.http_status ? ` (${attempt.http_status})` : ""}
                       {attempt.note ? ` — ${attempt.note}` : ""}
                     </li>

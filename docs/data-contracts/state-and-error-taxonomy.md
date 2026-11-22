@@ -69,3 +69,13 @@ Errors reach the API as RFC 9457 problem details: `type`, `title`, `status`, `de
 A policy denial is `403` with `policy_blocked` — and a resource the caller may not see
 is `404`, with no hint that it exists. Distinguishing the two would be an enumeration
 oracle.
+
+## What members see
+
+Every status the web app shows is described, in one sentence, in
+`apps/web/src/lib/statuses.json`. A state chip given a `kind` shows an info button
+that opens that description, and each how-to guide tabulates the groups its page can
+show. Each group names the enum it describes, and
+`tests/contract/test_status_glossary.py` fails when an enum gains a value without a
+description, or the glossary describes one the enum no longer has, so adding a state
+here means describing it in the same change.

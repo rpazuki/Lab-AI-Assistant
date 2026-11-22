@@ -194,7 +194,7 @@ export function ReleasesClient() {
                   <strong className="text-heading">
                     {release.name}@{release.semantic_version}
                   </strong>
-                  <StateChip state={release.status} />
+                  <StateChip state={release.status} kind="release" />
                   <span className="ml-auto font-mono text-xs text-muted">
                     manifest {release.manifest_sha256?.slice(0, 12) ?? "—"}
                   </span>

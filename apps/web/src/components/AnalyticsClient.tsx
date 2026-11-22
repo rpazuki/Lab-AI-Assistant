@@ -93,7 +93,7 @@ export function AnalyticsClient() {
                 {label}
               </dt>
               <dd className="mt-1 text-stat font-semibold text-heading tabular-nums">
-                {value === null ? <StateChip state="restricted" /> : value}
+                {value === null ? <StateChip state="restricted" kind="flag" /> : value}
               </dd>
             </div>
           ))}

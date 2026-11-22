@@ -264,7 +264,7 @@ export function DatasheetsClient() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-xs">{run.run_id.slice(0, 8)}</span>
                   <strong className="text-heading">{run.template}</strong>
-                  <StateChip state={run.finished ? "finished" : "running"} />
+                  <StateChip state={run.finished ? "finished" : "running"} kind="extraction_run" />
                   <span className="text-xs text-muted">
                     {Object.entries(run.states)
                       .map(([state, count]) => `${count} ${state}`)
@@ -409,8 +409,8 @@ function TemplatesPanel({
               <div className="flex flex-wrap items-center gap-2">
                 <strong className="text-heading">{template.title}</strong>
                 <span className="font-mono text-xs text-muted">{template.key}</span>
-                <StateChip state={template.status} />
-                {template.active ? <StateChip state="active" /> : null}
+                <StateChip state={template.status} kind="approval" />
+                {template.active ? <StateChip state="active" kind="flag" /> : null}
                 <span className="ml-auto text-xs text-muted">
                   {template.targets.length} target{template.targets.length === 1 ? "" : "s"} ·{" "}
                   {template.cardinality.replace(/_/g, " ")}

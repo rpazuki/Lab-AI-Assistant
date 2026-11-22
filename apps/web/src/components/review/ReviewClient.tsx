@@ -115,9 +115,9 @@ export function ReviewClient() {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs text-muted">{item.predicate}</span>
                 <strong className="text-sm text-heading">{String(item.value.verbatim ?? "—")}</strong>
-                <StateChip state={item.validation_status} />
-                <StateChip state={item.abstention_reason} />
-                <StateChip state={item.proposal_source} />
+                <StateChip state={item.validation_status} kind="claim_validation" />
+                <StateChip state={item.abstention_reason} kind="abstention" />
+                <StateChip state={item.proposal_source} kind="proposal_source" />
                 <span className="ml-auto font-mono text-xs text-muted">
                   rev {item.revision_number}
                 </span>

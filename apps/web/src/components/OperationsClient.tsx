@@ -2,9 +2,11 @@
 
 import { useCallback, useState } from "react";
 
+import { InfoTip } from "@/components/ui/InfoTip";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Alert, Button, Empty, Panel, StateChip } from "@/components/ui/primitives";
 import { listAuditEvents, retryTask, taskSnapshot } from "@/lib/api";
+import { describeStatus } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import type { AuditEvent, TaskSnapshot } from "@/types";
 
@@ -114,7 +116,10 @@ export function OperationsClient() {
               key={state}
               className="rounded-card border border-border bg-surface px-4 py-3 shadow-card"
             >
-              <dt className="font-mono text-xs text-muted">{state}</dt>
+              <dt className="flex items-center gap-1 font-mono text-xs text-muted">
+                {state}
+                <InfoTip label={state}>{describeStatus("task", state)}</InfoTip>
+              </dt>
               <dd className="mt-1 text-stat font-semibold text-heading tabular-nums">
                 {snapshot ? (snapshot.counts[state] ?? 0) : "…"}
               </dd>
@@ -246,7 +251,7 @@ export function OperationsClient() {
                       {new Date(event.occurred_at).toLocaleString()}
                     </td>
                     <td>
-                      <StateChip state={event.action} />
+                      <StateChip state={event.action} kind="audit_action" />
                     </td>
                     <td className="font-mono text-xs">
                       {event.subject_type}

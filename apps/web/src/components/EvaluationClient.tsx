@@ -341,7 +341,7 @@ function RunRow({
         ) : null}
         <strong className="text-heading">{run.benchmark}</strong>
         <span className="text-muted">on {releaseLabel}</span>
-        <StateChip state={verdict(run)} />
+        <StateChip state={verdict(run)} kind="evaluation_run" />
         <span className="ml-auto text-xs text-muted">
           {run.created_at ? new Date(run.created_at).toLocaleString() : ""}
         </span>
@@ -597,9 +597,9 @@ function BenchmarksPanel({
             <li key={benchmark.key} className={row}>
               <div className="flex flex-wrap items-center gap-2">
                 <strong className="text-heading">{benchmark.key}</strong>
-                <StateChip state={benchmark.kind} />
-                <StateChip state={benchmark.sensitivity} />
-                {benchmark.blinded ? <StateChip state="blinded" /> : null}
+                <StateChip state={benchmark.kind} kind="benchmark_kind" />
+                <StateChip state={benchmark.sensitivity} kind="benchmark_sensitivity" />
+                {benchmark.blinded ? <StateChip state="blinded" kind="flag" /> : null}
                 <span className="ml-auto font-mono text-xs text-muted">
                   {benchmark.cases + benchmark.probes} {benchmark.kind === "policy" ? "probes" : "cases"}
                   {" · "}
@@ -610,7 +610,7 @@ function BenchmarksPanel({
                 </Button>
                 {gates.some((gate) => gate.key === benchmark.key) ? (
                   <>
-                    <StateChip state="required_for_publishing" />
+                    <StateChip state="required_for_publishing" kind="flag" />
                     <Button variant="ghost" size="sm" onClick={() => onGate(benchmark, false)}>
                       Stop requiring
                     </Button>
