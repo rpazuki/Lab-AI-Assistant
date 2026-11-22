@@ -151,6 +151,31 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         ],
       },
       {
+        id: "tables",
+        title: "Sorting and searching tables",
+        about: [
+          "Every table can be sorted by any of its columns. A table of events or anything dated starts newest first; others start in a useful order, such as the most-used first.",
+          "A table with more than ten rows shows a search box above it. Only the rows containing every word you type stay, and the count beside the box says how many match.",
+        ],
+        howTos: [
+          {
+            title: "How to sort a table",
+            steps: [
+              "Select a column's header. The arrow beside it shows the order.",
+              "Select the same header again to reverse the order.",
+            ],
+            note: "Empty values stay at the bottom whichever way you sort.",
+          },
+          {
+            title: "How to search a long table",
+            steps: [
+              "Type in the search box above the table. Words can come in any order.",
+              "Clear the box to see every row again.",
+            ],
+          },
+        ],
+      },
+      {
         id: "statuses",
         title: "What a status means",
         statuses: ["flag"],
@@ -956,13 +981,17 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         statuses: ["audit_action"],
         title: "The audit log",
         about: [
-          "Every decision that matters — sign-ins, membership changes, reviews, releases, overrides, reads of members' chats — is written to a tamper-evident audit log. The latest 100 events are shown here with what was done and to what.",
+          "Every decision that matters — sign-ins, membership changes, reviews, releases, overrides, reads of members' chats — is written to a tamper-evident audit log. The latest 500 events are shown here, newest first, with what was done and to what.",
         ],
         howTos: [
           {
             title: "How to see who changed something",
             needs: "Admins.",
-            steps: ["Scroll to **Audit log (latest 100)** and find the event by its action and subject."],
+            steps: [
+              "Scroll to **Audit log (latest 500)**.",
+              "Type an action, subject or detail in the search box above the table (for example scope_approved). Only matching events stay.",
+              "Select a column header, such as **When** or **Action**, to sort by it.",
+            ],
           },
         ],
       },

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { LiveStatus } from "@/components/ui/LiveStatus";
+import { SortHeader, TableSearch } from "@/components/ui/table";
 import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
   ApiError,
@@ -17,6 +18,7 @@ import {
   workingSheetCsvUrl,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
+import { useTable } from "@/lib/useTable";
 import type { ExtractionEstimate, ExtractionRun, ExtractionTemplate, WorkingSheet } from "@/types";
 
 /** A starting point: the worked example's shape, cut down to two targets. */
@@ -447,6 +449,12 @@ function SheetPanel({ sheet, template }: { sheet: WorkingSheet | null; template:
     () => (sheet?.wide.columns ?? []).filter((column) => column !== "revision_ids"),
     [sheet],
   );
+  const table = useTable(sheet?.wide.rows ?? [], {
+    columns: Object.fromEntries(
+      columns.map((column) => [column, (row: Record<string, string>) => row[column]]),
+    ),
+    searchText: (row) => columns.map((column) => row[column] ?? "").join(" "),
+  });
   return (
     <Panel
       title="Working sheet"
@@ -481,16 +489,19 @@ function SheetPanel({ sheet, template }: { sheet: WorkingSheet | null; template:
             either.
           </p>
           <div className="mt-2 overflow-x-auto">
+            <TableSearch table={table} label="working sheet rows" placeholder="Filter by strain, value or any column" />
             <table className="data-table">
               <thead>
                 <tr>
                   {columns.map((column) => (
-                    <th key={column}>{column.replace(/_/g, " ")}</th>
+                    <SortHeader key={column} table={table} column={column}>
+                      {column.replace(/_/g, " ")}
+                    </SortHeader>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {sheet.wide.rows.map((item, index) => (
+                {table.rows.map((item, index) => (
                   <tr key={`${item.work_id}:${item.experiment_id}:${index}`}>
                     {columns.map((column) => (
                       <td

@@ -67,7 +67,12 @@ def live_connector_registry(
         ),
         "europepmc": EuropePmcConnector(request_identity=identity, contact=contact),
         "crossref": CrossrefConnector(request_identity=identity, contact=contact),
-        "openalex": OpenAlexConnector(request_identity=identity, contact=contact),
+        "openalex": OpenAlexConnector(
+            request_identity=identity,
+            contact=contact,
+            # Required to page past the first page of results.
+            api_key=settings.openalex_api_key,
+        ),
         "datacite": DataCiteConnector(request_identity=identity, contact=contact),
     }
 

@@ -3,7 +3,9 @@
 import { useState } from "react";
 
 import { Alert, Button, Field, Input, Panel, StateChip } from "@/components/ui/primitives";
+import { SortHeader, TableSearch } from "@/components/ui/table";
 import { assistedUpload, bulkImport, type BulkImportItem } from "@/lib/api";
+import { useTable } from "@/lib/useTable";
 import type { AcquisitionPlan } from "@/types";
 
 /** Files the API accepts in one request; a bigger drop is sent in turns. */
@@ -95,6 +97,16 @@ export function BulkImport({
     }
   }
 
+  const fileTable = useTable(results ?? [], {
+    columns: {
+      file: (item) => item.filename,
+      outcome: (item) => item.outcome,
+      identifiers: (item) => item.identifiers.join(" "),
+      detail: (item) => item.detail,
+    },
+    searchText: (item) =>
+      `${item.filename} ${item.outcome} ${item.identifiers.join(" ")} ${item.detail ?? ""}`,
+  });
   const counts = (results ?? []).reduce<Record<string, number>>((tally, item) => {
     tally[item.outcome] = (tally[item.outcome] ?? 0) + 1;
     return tally;
@@ -170,17 +182,26 @@ export function BulkImport({
               .
             </p>
             <div className="overflow-x-auto rounded-control border border-border">
+              <TableSearch table={fileTable} label="imported files" placeholder="Filter by file, outcome or identifier" />
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>File</th>
-                    <th>Outcome</th>
-                    <th>Identifiers</th>
-                    <th>Detail</th>
+                    <SortHeader table={fileTable} column="file">
+                      File
+                    </SortHeader>
+                    <SortHeader table={fileTable} column="outcome">
+                      Outcome
+                    </SortHeader>
+                    <SortHeader table={fileTable} column="identifiers">
+                      Identifiers
+                    </SortHeader>
+                    <SortHeader table={fileTable} column="detail">
+                      Detail
+                    </SortHeader>
                   </tr>
                 </thead>
                 <tbody>
-                  {results.map((item) => (
+                  {fileTable.rows.map((item) => (
                     <tr key={item.filename}>
                       <td className="max-w-xs break-words text-xs">{item.filename}</td>
                       <td>

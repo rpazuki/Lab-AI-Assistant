@@ -69,6 +69,7 @@ _SECRET_KEYS = frozenset(
         "object_store_access_key",
         "object_store_session_token",
         "ncbi_api_key",
+        "openalex_api_key",
         "unpaywall_email",
         "smtp_password",
     }
@@ -299,6 +300,9 @@ class Settings(BaseSettings):
     connector_request_identity: str = "lab-ai-assistant (configure LAB_CONNECTOR_CONTACT)"
     connector_contact: str | None = None
     ncbi_api_key: str | None = None
+    # OpenAlex answers the first page of a search without a key and refuses to page
+    # further; a run of more than one page needs one (free, openalex.org/settings/api).
+    openalex_api_key: str | None = None
     live_source_tests_enabled: bool = False
 
     # ── staged controls (scale §3.2) ────────────────────────────────────────

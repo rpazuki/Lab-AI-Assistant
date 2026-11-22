@@ -71,8 +71,9 @@ class RateLimiter:
 
     async def acquire(self, key: str, *, policy: RatePolicy) -> None:
         """Take one request slot, waiting briefly or deferring the task."""
+        reclaimed_in: float | None = None
         for _ in range(_MAX_INLINE_ATTEMPTS):
-            granted, wait = await self._try_acquire(key, policy=policy)
+            granted, wait, reclaimed_in = await self._try_acquire(key, policy=policy)
             if granted:
                 return
             if wait > _MAX_INLINE_WAIT_SECONDS:
@@ -81,9 +82,15 @@ class RateLimiter:
                     context={"retry_after_seconds": int(wait) + 1, "budget_key": key},
                 ).with_class(ErrorClass.RATE_LIMITED)
             await asyncio.sleep(wait)
+        context: dict[str, object] = {"budget_key": key}
+        if reclaimed_in is not None:
+            # Every slot is held. Come back no later than the moment held slots
+            # count as abandoned, rather than spending the task's attempts on
+            # short backoffs that all meet the same full count.
+            context["retry_after_seconds"] = int(reclaimed_in) + 1
         raise LabAssistantError(
             f"rate budget for {key} did not refill after {_MAX_INLINE_ATTEMPTS} attempts",
-            context={"budget_key": key},
+            context=context,
         ).with_class(ErrorClass.RATE_LIMITED)
 
     async def release(self, key: str) -> None:
@@ -91,8 +98,9 @@ class RateLimiter:
             budget = await uow.tasks.get_rate_budget(key, for_update=True)
             if budget is None:  # pragma: no cover - release without acquire
                 return
-            budget.release()
-            budget.updated_at = self._now()
+            now = self._now()
+            budget.release(now=now)
+            budget.updated_at = now
             await uow.tasks.upsert_rate_budget(budget)
             await uow.commit()
 
@@ -161,7 +169,9 @@ class RateLimiter:
 
     # ── internals ──────────────────────────────────────────────────────────
 
-    async def _try_acquire(self, key: str, *, policy: RatePolicy) -> tuple[bool, float]:
+    async def _try_acquire(
+        self, key: str, *, policy: RatePolicy
+    ) -> tuple[bool, float, float | None]:
         now = self._now()
         async with self.context.uow_factory() as uow:
             budget = await uow.tasks.get_rate_budget(key, for_update=True)
@@ -181,9 +191,10 @@ class RateLimiter:
                 budget.burst = float(policy.burst or 1)
                 budget.max_concurrent = int(policy.max_concurrent or 1)
             granted, wait = budget.try_acquire(now=now)
+            reclaimed_in = None if granted else budget.slots_reclaimed_in(now=now)
             await uow.tasks.upsert_rate_budget(budget)
             await uow.commit()
-        return granted, wait
+        return granted, wait, reclaimed_in
 
     def _now(self) -> datetime:
         # The injected clock, so a test can hold time still and assert the exact

@@ -58,6 +58,21 @@ __all__ = [
 ]
 
 
+def _year(value: Any) -> int | None:
+    """A publication year as a number, or None when the source sent none.
+
+    Sources send years as numbers, digit strings, or a placeholder: Crossref's
+    ``date-parts`` is ``[[null]]`` for a work with no issue date. One such record
+    must not fail its whole page, so anything that is not a year is no year.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
 def map_http_error(status: int, *, retry_after: str | None = None) -> LabAssistantError:
     """Map an upstream status onto the outcome taxonomy.
 
@@ -441,10 +456,8 @@ class EuropePmcConnector(_HttpConnector):
             assertions.append(
                 assertion(Predicate.JOURNAL, result["journalTitle"], authority=authority)
             )
-        if result.get("pubYear"):
-            assertions.append(
-                assertion(Predicate.YEAR, int(result["pubYear"]), authority=authority)
-            )
+        if (year := _year(result.get("pubYear"))) is not None:
+            assertions.append(assertion(Predicate.YEAR, year, authority=authority))
         licence = (result.get("license") or "").strip()
         if licence:
             assertions.append(assertion(Predicate.LICENCE, licence, authority=authority))
@@ -642,8 +655,8 @@ class CrossrefConnector(_HttpConnector):
         if containers:
             assertions.append(assertion(Predicate.JOURNAL, containers[0], authority=authority))
         issued = (item.get("issued") or {}).get("date-parts") or []
-        if issued and issued[0]:
-            assertions.append(assertion(Predicate.YEAR, int(issued[0][0]), authority=authority))
+        if issued and issued[0] and (year := _year(issued[0][0])) is not None:
+            assertions.append(assertion(Predicate.YEAR, year, authority=authority))
         if item.get("publisher"):
             assertions.append(
                 assertion(Predicate.PUBLISHER, item["publisher"], authority=authority)
@@ -750,6 +763,9 @@ class OpenAlexConnector(_HttpConnector):
             ),
             terms_url="https://docs.openalex.org/",
             rate_policy=RatePolicy(requests_per_second=5.0, burst=5, max_concurrent=2),
+            required_secret_names=(
+                frozenset({"OPENALEX_API_KEY"}) if self.api_key else frozenset()
+            ),
             owner="platform",
         )
 
@@ -791,7 +807,10 @@ class OpenAlexConnector(_HttpConnector):
             }
             if self.contact:
                 params["mailto"] = self.contact
-            response = await self._get(f"{self.base_url}/works", params)
+            try:
+                response = await self._get(f"{self.base_url}/works", self._keyed(params))
+            except LabAssistantError as exc:
+                raise self._explain(exc) from exc
             payload = response.json()
             results = payload.get("results", [])
             meta = payload.get("meta", {})
@@ -823,6 +842,26 @@ class OpenAlexConnector(_HttpConnector):
                 return
             cursor = next_cursor
 
+    def _keyed(self, params: dict[str, Any]) -> dict[str, Any]:
+        # OpenAlex reads its key from the query string only; `_redact` strips it
+        # from every URL this connector stores.
+        return {**params, "api_key": self.api_key} if self.api_key else params
+
+    def _explain(self, error: LabAssistantError) -> LabAssistantError:
+        """Say what to configure when OpenAlex refuses a keyless request.
+
+        OpenAlex serves the first page of a search without a key and refuses the
+        cursor for the second, so a keyless run stops after one page with a bare
+        401 that reads like a revoked credential.
+        """
+        if self.api_key or error.error_class is not ErrorClass.AUTHENTICATION_REQUIRED:
+            return error
+        return LabAssistantError(
+            "OpenAlex requires an API key to page past the first page of results; "
+            "set LAB_OPENALEX_API_KEY (a free key from https://openalex.org/settings/api)",
+            context=error.context,
+        ).with_class(ErrorClass.AUTHENTICATION_REQUIRED)
+
     @staticmethod
     def _record(result: dict[str, Any]) -> dict[str, Any]:
         authority = "aggregator"
@@ -837,10 +876,8 @@ class OpenAlexConnector(_HttpConnector):
             assertions.append(identifier_assertion(IdentifierScheme.DOI, doi, authority=authority))
         if result.get("title"):
             assertions.append(assertion(Predicate.TITLE, result["title"], authority=authority))
-        if result.get("publication_year"):
-            assertions.append(
-                assertion(Predicate.YEAR, int(result["publication_year"]), authority=authority)
-            )
+        if (year := _year(result.get("publication_year"))) is not None:
+            assertions.append(assertion(Predicate.YEAR, year, authority=authority))
         if result.get("type"):
             assertions.append(
                 assertion(Predicate.RESOURCE_KIND, result["type"], authority=authority)
@@ -875,7 +912,7 @@ class OpenAlexConnector(_HttpConnector):
                 if identifier.scheme is IdentifierScheme.DOI
                 else f"works/{identifier.value}"
             )
-            response = await self._get(f"{self.base_url}/{path}", {})
+            response = await self._get(f"{self.base_url}/{path}", self._keyed({}))
             record = self._record(response.json())
             compiled = CompiledQuery(
                 connector_id=self.connector_id,
@@ -1022,10 +1059,8 @@ class DataCiteConnector(_HttpConnector):
                     authority=authority,
                 )
             )
-        if attributes.get("publicationYear"):
-            assertions.append(
-                assertion(Predicate.YEAR, int(attributes["publicationYear"]), authority=authority)
-            )
+        if (year := _year(attributes.get("publicationYear"))) is not None:
+            assertions.append(assertion(Predicate.YEAR, year, authority=authority))
         if attributes.get("publisher"):
             assertions.append(
                 assertion(Predicate.PUBLISHER, attributes["publisher"], authority=authority)

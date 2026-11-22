@@ -5,9 +5,11 @@ import { useCallback, useState } from "react";
 import { InfoTip } from "@/components/ui/InfoTip";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Alert, Button, Empty, Panel, StateChip } from "@/components/ui/primitives";
+import { SortHeader, TableSearch } from "@/components/ui/table";
 import { listAuditEvents, retryTask, taskSnapshot } from "@/lib/api";
 import { describeStatus } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
+import { useTable } from "@/lib/useTable";
 import type { AuditEvent, TaskSnapshot } from "@/types";
 
 /** The task states worth a tile, in the order work moves through them. */
@@ -25,6 +27,8 @@ const STATES = [
 ] as const;
 
 const REFRESH_MS = 15_000;
+/** The most the API returns; the search box narrows these, newest first. */
+const AUDIT_LIMIT = 500;
 
 function ago(iso: string): string {
   const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000));
@@ -56,7 +60,7 @@ export function OperationsClient() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextSnapshot, nextEvents] = await Promise.all([taskSnapshot(), listAuditEvents(100)]);
+      const [nextSnapshot, nextEvents] = await Promise.all([taskSnapshot(), listAuditEvents(AUDIT_LIMIT)]);
       setSnapshot(nextSnapshot);
       setEvents(nextEvents);
       setError(null);
@@ -90,7 +94,38 @@ export function OperationsClient() {
     else setError(report.message);
   }
 
-  const oldest = Object.entries(snapshot?.oldest_pending_by_stage ?? {});
+  const oldest = useTable(Object.entries(snapshot?.oldest_pending_by_stage ?? {}), {
+    columns: { stage: ([stage]) => stage, since: ([, since]) => since },
+    // The panel is about what has waited longest, so its oldest entry leads.
+    defaultSort: { key: "since", direction: "asc" },
+  });
+  const awaiting = useTable(snapshot?.awaiting_user ?? [], {
+    columns: { task: (task) => task.task_id, stage: (task) => task.stage, needs: (task) => task.action },
+    searchText: (task) => `${task.task_id} ${task.stage} ${task.action ?? ""}`,
+  });
+  const dead = useTable(snapshot?.dead_letters ?? [], {
+    columns: { task: (task) => task.task_id, stage: (task) => task.stage, error: (task) => task.error },
+    searchText: (task) => `${task.task_id} ${task.stage} ${task.error ?? ""}`,
+  });
+  const audit = useTable(events, {
+    columns: {
+      when: (event) => event.occurred_at,
+      action: (event) => event.action,
+      subject: (event) => `${event.subject_type}:${event.subject_id ?? ""}`,
+      detail: (event) => event.reason_code,
+    },
+    defaultSort: { key: "when", direction: "desc" },
+    searchText: (event) =>
+      [
+        event.action,
+        describeStatus("audit_action", event.action) ?? "",
+        event.actor_type,
+        event.subject_type,
+        event.subject_id ?? "",
+        event.reason_code ?? "",
+        summarise(event.metadata),
+      ].join(" "),
+  });
 
   return (
     <div className="space-y-4">
@@ -130,7 +165,7 @@ export function OperationsClient() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="Waiting longest, by stage" flush>
-          {oldest.length === 0 ? (
+          {oldest.total === 0 ? (
             <div className="px-5 py-3">
               <Empty>Nothing is waiting to run.</Empty>
             </div>
@@ -138,12 +173,16 @@ export function OperationsClient() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Stage</th>
-                  <th className="numeric">Oldest waiting</th>
+                  <SortHeader table={oldest} column="stage">
+                    Stage
+                  </SortHeader>
+                  <SortHeader table={oldest} column="since" numeric>
+                    Oldest waiting
+                  </SortHeader>
                 </tr>
               </thead>
               <tbody>
-                {oldest.map(([stage, since]) => (
+                {oldest.rows.map(([stage, since]) => (
                   <tr key={stage}>
                     <td className="font-mono text-xs">{stage}</td>
                     <td className="numeric" title={since}>
@@ -157,21 +196,29 @@ export function OperationsClient() {
         </Panel>
 
         <Panel title="Waiting for a person" flush>
-          {(snapshot?.awaiting_user ?? []).length === 0 ? (
+          {awaiting.total === 0 ? (
             <div className="px-5 py-3">
               <Empty>No task needs a decision.</Empty>
             </div>
           ) : (
+            <>
+            <TableSearch table={awaiting} label="tasks waiting for a person" />
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Task</th>
-                  <th>Stage</th>
-                  <th>Needs</th>
+                  <SortHeader table={awaiting} column="task">
+                    Task
+                  </SortHeader>
+                  <SortHeader table={awaiting} column="stage">
+                    Stage
+                  </SortHeader>
+                  <SortHeader table={awaiting} column="needs">
+                    Needs
+                  </SortHeader>
                 </tr>
               </thead>
               <tbody>
-                {snapshot?.awaiting_user.map((task) => (
+                {awaiting.rows.map((task) => (
                   <tr key={task.task_id}>
                     <td className="font-mono text-xs">{task.task_id.slice(0, 8)}</td>
                     <td className="font-mono text-xs">{task.stage}</td>
@@ -180,29 +227,38 @@ export function OperationsClient() {
                 ))}
               </tbody>
             </table>
+            </>
           )}
         </Panel>
       </div>
 
       <Panel title="Dead letters" flush>
-        {(snapshot?.dead_letters ?? []).length === 0 ? (
+        {dead.total === 0 ? (
           <div className="px-5 py-3">
             <Empty>No task has exhausted its retries.</Empty>
           </div>
         ) : (
+          <>
+          <TableSearch table={dead} label="dead letters" />
           <table className="data-table">
             <thead>
               <tr>
-                <th>Task</th>
-                <th>Stage</th>
-                <th>Last error</th>
+                <SortHeader table={dead} column="task">
+                  Task
+                </SortHeader>
+                <SortHeader table={dead} column="stage">
+                  Stage
+                </SortHeader>
+                <SortHeader table={dead} column="error">
+                  Last error
+                </SortHeader>
                 <th>
                   <span className="sr-only">Actions</span>
                 </th>
               </tr>
             </thead>
             <tbody>
-              {snapshot?.dead_letters.map((task) => (
+              {dead.rows.map((task) => (
                 <tr key={task.task_id}>
                   <td className="font-mono text-xs">{task.task_id.slice(0, 8)}</td>
                   <td className="font-mono text-xs">{task.stage}</td>
@@ -225,27 +281,37 @@ export function OperationsClient() {
               ))}
             </tbody>
           </table>
+          </>
         )}
       </Panel>
 
-      <Panel title="Audit log (latest 100)" flush>
-        {events.length === 0 ? (
+      <Panel title={`Audit log (latest ${AUDIT_LIMIT})`} flush>
+        {audit.total === 0 ? (
           <div className="px-5 py-3">
             <Empty>No audit events yet.</Empty>
           </div>
         ) : (
           <div className="overflow-x-auto">
+            <TableSearch table={audit} label="audit events" placeholder="Filter by action, subject or detail" />
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>When</th>
-                  <th>Action</th>
-                  <th>Subject</th>
-                  <th>Detail</th>
+                  <SortHeader table={audit} column="when">
+                    When
+                  </SortHeader>
+                  <SortHeader table={audit} column="action">
+                    Action
+                  </SortHeader>
+                  <SortHeader table={audit} column="subject">
+                    Subject
+                  </SortHeader>
+                  <SortHeader table={audit} column="detail">
+                    Detail
+                  </SortHeader>
                 </tr>
               </thead>
               <tbody>
-                {events.map((event) => (
+                {audit.rows.map((event) => (
                   <tr key={event.id}>
                     <td className="whitespace-nowrap text-xs text-muted" title={event.occurred_at}>
                       {new Date(event.occurred_at).toLocaleString()}

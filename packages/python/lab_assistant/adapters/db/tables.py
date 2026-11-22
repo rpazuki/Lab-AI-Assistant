@@ -968,6 +968,8 @@ rate_budgets = Table(
     Column("in_flight", Integer, nullable=False, server_default=text("0")),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     Column("next_permitted_at", DateTime(timezone=True)),
+    # When a slot was last taken or returned: lets a dead worker's slot expire.
+    Column("slots_changed_at", DateTime(timezone=True)),
 )
 
 audit_events = Table(

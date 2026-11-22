@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 
 import { QueryHelper } from "@/components/QueryHelper";
 import { LiveStatus } from "@/components/ui/LiveStatus";
+import { SortHeader } from "@/components/ui/table";
 import {
   Alert,
   Button,
@@ -27,6 +28,7 @@ import {
   updateScopeDraft,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
+import { useTable } from "@/lib/useTable";
 import type { DiscoveryRun, ScopeGateReport, ScopeVersion } from "@/types";
 
 /** The sources this installation registers. Each takes its own query language. */
@@ -313,33 +315,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                 {run.degraded_reason ? (
                   <p className="mt-1 text-xs text-warning-strong">{run.degraded_reason}</p>
                 ) : null}
-                {run.connectors.length > 0 ? (
-                  <table className="data-table mt-2">
-                    <thead>
-                      <tr>
-                        <th>Source</th>
-                        <th>Outcome</th>
-                        <th className="numeric">Seen</th>
-                        <th className="numeric">Declared</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {run.connectors.map((state) => (
-                        <tr key={state.connector_id}>
-                          <td className="font-mono text-xs">
-                            {state.connector_id}
-                            {state.required ? "" : " (optional)"}
-                          </td>
-                          <td>
-                            <StateChip state={state.outcome ?? "pending"} kind="source_outcome" />
-                          </td>
-                          <td className="numeric">{state.records_seen}</td>
-                          <td className="numeric">{state.declared_total ?? "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : null}
+                {run.connectors.length > 0 ? <SourceTable connectors={run.connectors} /> : null}
               </li>
             ))}
           </ul>
@@ -354,6 +330,53 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
  * either in place (the same version, corrected) or as the scope's next version,
  * leaving the one opened unchanged.
  */
+/** One run's sources: what each returned, sortable like every table. */
+function SourceTable({ connectors }: { connectors: DiscoveryRun["connectors"] }) {
+  const table = useTable(connectors, {
+    columns: {
+      source: (state) => state.connector_id,
+      outcome: (state) => state.outcome ?? "pending",
+      seen: (state) => state.records_seen,
+      declared: (state) => state.declared_total,
+    },
+  });
+  return (
+    <table className="data-table mt-2">
+      <thead>
+        <tr>
+          <SortHeader table={table} column="source">
+            Source
+          </SortHeader>
+          <SortHeader table={table} column="outcome">
+            Outcome
+          </SortHeader>
+          <SortHeader table={table} column="seen" numeric>
+            Seen
+          </SortHeader>
+          <SortHeader table={table} column="declared" numeric>
+            Declared
+          </SortHeader>
+        </tr>
+      </thead>
+      <tbody>
+        {table.rows.map((state) => (
+          <tr key={state.connector_id}>
+            <td className="font-mono text-xs">
+              {state.connector_id}
+              {state.required ? "" : " (optional)"}
+            </td>
+            <td>
+              <StateChip state={state.outcome ?? "pending"} kind="source_outcome" />
+            </td>
+            <td className="numeric">{state.records_seen}</td>
+            <td className="numeric">{state.declared_total ?? "—"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function ScopeForm({
   initial,
   nextVersion,

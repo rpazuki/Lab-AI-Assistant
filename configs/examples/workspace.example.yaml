@@ -40,6 +40,7 @@ embedding:
 # Secrets by name. The deployment's secret manager supplies the values.
 secret_names:
   - NCBI_API_KEY
+  - OPENALEX_API_KEY
   - UNPAYWALL_EMAIL
   - LAB_LLM_API_KEY
 

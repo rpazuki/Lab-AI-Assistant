@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { SortHeader, TableSearch } from "@/components/ui/table";
 import {
   Alert,
   Button,
@@ -13,6 +14,7 @@ import {
   rowList,
 } from "@/components/ui/primitives";
 import { correctionRate, decideReview, listReviewQueue } from "@/lib/api";
+import { useTable } from "@/lib/useTable";
 import type { ReviewItem } from "@/types";
 
 /**
@@ -214,23 +216,34 @@ export function ReviewClient() {
  * reviewing happens.
  */
 export function CorrectionRates({ rates }: { rates: Record<string, number> | null }) {
-  const entries = Object.entries(rates ?? {}).sort(([, a], [, b]) => b - a);
+  const table = useTable(Object.entries(rates ?? {}), {
+    columns: { predicate: ([predicate]) => predicate, rate: ([, rate]) => rate },
+    // The most-corrected predicate is the one worth a second reviewer: it leads.
+    defaultSort: { key: "rate", direction: "desc" },
+    searchText: ([predicate]) => predicate,
+  });
   return (
     <Panel title="Correction rate by predicate" flush>
-      {entries.length === 0 ? (
+      {table.total === 0 ? (
         <div className="px-5 py-3">
           <Empty>No reviewed claims yet, so there is nothing to measure.</Empty>
         </div>
       ) : (
+        <>
+        <TableSearch table={table} label="predicates" />
         <table className="data-table">
           <thead>
             <tr>
-              <th>Predicate</th>
-              <th className="numeric">Corrected</th>
+              <SortHeader table={table} column="predicate">
+                Predicate
+              </SortHeader>
+              <SortHeader table={table} column="rate" numeric>
+                Corrected
+              </SortHeader>
             </tr>
           </thead>
           <tbody>
-            {entries.map(([predicate, rate]) => (
+            {table.rows.map(([predicate, rate]) => (
               <tr key={predicate}>
                 <td className="font-mono text-xs">{predicate}</td>
                 <td className="numeric">{(rate * 100).toFixed(1)}%</td>
@@ -238,6 +251,7 @@ export function CorrectionRates({ rates }: { rates: Record<string, number> | nul
             ))}
           </tbody>
         </table>
+        </>
       )}
     </Panel>
   );

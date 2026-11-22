@@ -21,6 +21,7 @@ from lab_assistant.domain.states import TaskState
 
 __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
+    "SLOT_LEASE_SECONDS",
     "RateBudget",
     "Task",
     "backoff_seconds",
@@ -28,6 +29,11 @@ __all__ = [
 ]
 
 DEFAULT_MAX_ATTEMPTS = 5
+
+#: How long a request may hold a concurrency slot. Four times the connectors' HTTP
+#: timeout: a slot unchanged for longer belongs to a request that will never return
+#: it, usually because its worker was stopped mid-request by a redeploy.
+SLOT_LEASE_SECONDS = 120
 
 
 def backoff_seconds(attempt: int, *, base: int = 2, cap: int = 900) -> int:
@@ -193,6 +199,9 @@ class RateBudget(BaseModel):
     in_flight: int = 0
     updated_at: datetime
     next_permitted_at: datetime | None = None
+    #: When a slot was last taken or returned. `in_flight` is a count, not a set of
+    #: leases, so this is what lets a slot a dead worker held be reclaimed.
+    slots_changed_at: datetime | None = None
 
     def try_acquire(self, *, now: datetime) -> tuple[bool, float]:
         """Attempt to take one request slot.
@@ -205,6 +214,7 @@ class RateBudget(BaseModel):
         elapsed = max(0.0, (now - self.updated_at).total_seconds())
         self.tokens = min(self.burst, self.tokens + elapsed * self.refill_per_second)
         self.updated_at = now
+        self._reclaim_abandoned_slots(now=now)
         if self.in_flight >= self.max_concurrent:
             return False, 1.0 / max(self.refill_per_second, 0.001)
         if self.tokens < 1.0:
@@ -212,10 +222,39 @@ class RateBudget(BaseModel):
             return False, deficit / max(self.refill_per_second, 0.001)
         self.tokens -= 1.0
         self.in_flight += 1
+        self.slots_changed_at = now
         return True, 0.0
 
-    def release(self) -> None:
+    def release(self, *, now: datetime) -> None:
         self.in_flight = max(0, self.in_flight - 1)
+        self.slots_changed_at = now
+
+    def slots_reclaimed_in(self, *, now: datetime) -> float | None:
+        """Seconds until a full set of slots counts as abandoned; None if not full."""
+        if self.in_flight < self.max_concurrent:
+            return None
+        if self.slots_changed_at is None:
+            return 0.0
+        held = (now - self.slots_changed_at).total_seconds()
+        return max(0.0, SLOT_LEASE_SECONDS - held)
+
+    def _reclaim_abandoned_slots(self, *, now: datetime) -> None:
+        """Return slots no request has touched for a whole lease.
+
+        A worker stopped between acquire and release (a redeploy, an OOM kill) never
+        returns its slot. Without this, two such stops fill a two-slot connector for
+        good: every later request waits on slots nobody holds, and the task
+        dead-letters with "did not refill". While any request still takes or returns
+        a slot the count is trusted; once none has for a lease, nothing is in flight.
+        A row with slots but no change time predates this field and is reclaimed.
+        """
+        if self.in_flight == 0:
+            return
+        if (
+            self.slots_changed_at is None
+            or (now - self.slots_changed_at).total_seconds() >= SLOT_LEASE_SECONDS
+        ):
+            self.in_flight = 0
 
     def apply_retry_after(self, *, now: datetime, seconds: int) -> None:
         self.next_permitted_at = now + timedelta(seconds=seconds)

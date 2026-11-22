@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Alert, Button, Empty, Input, Panel, StateChip } from "@/components/ui/primitives";
+import { SortHeader } from "@/components/ui/table";
 import {
   assignEvaluationReviews,
   compareEvaluationRuns,
   listEvaluationReviewers,
   listRunReviews,
 } from "@/lib/api";
+import { useTable } from "@/lib/useTable";
 import type { Reviewer, RunComparison, RunReviewSummary } from "@/types";
 
 const label = (name: string) => name.replace(/_/g, " ");
@@ -54,6 +56,15 @@ export function RunComparisonPanel({
     };
   }, [baseId, candidateId]);
 
+  const metrics = useTable(report?.metrics ?? [], {
+    columns: {
+      metric: (metric) => metric.name,
+      base: (metric) => metric.base,
+      candidate: (metric) => metric.candidate,
+      change: (metric) => metric.delta,
+    },
+  });
+
   return (
     <Panel
       title="Comparison"
@@ -79,14 +90,22 @@ export function RunComparisonPanel({
           <table className="data-table">
             <thead>
               <tr>
-                <th>Metric</th>
-                <th className="numeric">Base</th>
-                <th className="numeric">Candidate</th>
-                <th className="numeric">Change</th>
+                <SortHeader table={metrics} column="metric">
+                  Metric
+                </SortHeader>
+                <SortHeader table={metrics} column="base" numeric>
+                  Base
+                </SortHeader>
+                <SortHeader table={metrics} column="candidate" numeric>
+                  Candidate
+                </SortHeader>
+                <SortHeader table={metrics} column="change" numeric>
+                  Change
+                </SortHeader>
               </tr>
             </thead>
             <tbody>
-              {report.metrics.map((metric) => (
+              {metrics.rows.map((metric) => (
                 <tr key={metric.name}>
                   <td className="font-mono text-xs">{metric.name}</td>
                   <td className="numeric">{show(metric.base)}</td>

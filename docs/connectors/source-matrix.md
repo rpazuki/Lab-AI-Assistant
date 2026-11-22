@@ -39,7 +39,10 @@ awaiting a workaround.
 ## API keys
 
 `NCBI_API_KEY` raises PubMed's rate ceiling; Unpaywall and Crossref want a contact
-email; OpenAlex wants one in the user agent. All are optional, named in
-`required_secret_names`, and supplied by environment variable. A connector's
+email; OpenAlex wants one in the user agent. `OPENALEX_API_KEY` is optional only for
+searches of a single page: OpenAlex refuses cursor paging without a key, so a run
+without one stops after the first page with `authentication_required`. Each is named
+in `required_secret_names` when configured and supplied by environment variable
+(`LAB_NCBI_API_KEY`, `LAB_OPENALEX_API_KEY`, `LAB_CONNECTOR_CONTACT`). A connector's
 capabilities change with the credential present — a declared property, not hidden
 behaviour.

@@ -11,6 +11,7 @@ import {
   Panel,
   StateChip,
 } from "@/components/ui/primitives";
+import { SortHeader, TableSearch } from "@/components/ui/table";
 import {
   createInvitation,
   getMe,
@@ -23,6 +24,7 @@ import {
   revokeMemberSessions,
   updateMember,
 } from "@/lib/api";
+import { useTable } from "@/lib/useTable";
 import type { ChatMessage, Invitation, Member, MemberSession } from "@/types";
 
 /** The roles a person can hold, in order of reach. A service account is not one. */
@@ -136,8 +138,29 @@ export function MembersClient() {
     }
   }
 
-  const open = invitations.filter((item) => item.state === "open");
-  const past = invitations.filter((item) => item.state !== "open");
+  const people = useTable(members, {
+    columns: {
+      member: (member) => member.full_name ?? member.email,
+      role: (member) => member.role,
+      status: (member) => member.status,
+      usage: (member) => member.usage.total_tokens,
+      last: (member) => member.last_login_at,
+    },
+    defaultSort: { key: "member", direction: "asc" },
+    searchText: (member) =>
+      `${member.full_name ?? ""} ${member.email} ${member.role} ${member.status}`,
+  });
+  const invites = useTable(invitations, {
+    columns: {
+      email: (item) => item.email,
+      role: (item) => item.role,
+      state: (item) => item.state,
+      expires: (item) => item.expires_at,
+    },
+    // Newest first: the invitation just sent is the one being checked.
+    defaultSort: { key: "expires", direction: "desc" },
+    searchText: (item) => `${item.email} ${item.role} ${item.state}`,
+  });
 
   return (
     <div className="space-y-4">
@@ -215,21 +238,32 @@ export function MembersClient() {
           </div>
         ) : (
           <div className="overflow-x-auto">
+            <TableSearch table={people} label="members" placeholder="Filter by name, email, role or status" />
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Member</th>
-                  <th>Role</th>
-                  <th>Status</th>
-                  <th>Usage</th>
-                  <th>Last sign-in</th>
+                  <SortHeader table={people} column="member">
+                    Member
+                  </SortHeader>
+                  <SortHeader table={people} column="role">
+                    Role
+                  </SortHeader>
+                  <SortHeader table={people} column="status">
+                    Status
+                  </SortHeader>
+                  <SortHeader table={people} column="usage">
+                    Usage
+                  </SortHeader>
+                  <SortHeader table={people} column="last">
+                    Last sign-in
+                  </SortHeader>
                   <th>
                     <span className="sr-only">Actions</span>
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {members.map((member) => {
+                {people.rows.map((member) => {
                   const self = member.user_id === selfId;
                   const suspended = member.status === "suspended";
                   return (
@@ -369,20 +403,29 @@ export function MembersClient() {
           </div>
         ) : (
           <div className="overflow-x-auto">
+            <TableSearch table={invites} label="invitations" placeholder="Filter by email, role or state" />
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>State</th>
-                  <th>Expires</th>
+                  <SortHeader table={invites} column="email">
+                    Email
+                  </SortHeader>
+                  <SortHeader table={invites} column="role">
+                    Role
+                  </SortHeader>
+                  <SortHeader table={invites} column="state">
+                    State
+                  </SortHeader>
+                  <SortHeader table={invites} column="expires">
+                    Expires
+                  </SortHeader>
                   <th>
                     <span className="sr-only">Actions</span>
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {[...open, ...past].map((item) => (
+                {invites.rows.map((item) => (
                   <tr key={item.id}>
                     <td>{item.email}</td>
                     <td>{roleLabel(item.role)}</td>

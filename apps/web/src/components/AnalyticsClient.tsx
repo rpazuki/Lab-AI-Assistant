@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 
 import { Alert, Empty, Panel, StateChip } from "@/components/ui/primitives";
+import { SortHeader, TableSearch } from "@/components/ui/table";
 import { corpusStats, journals, sourceContribution, subjectTerms, temporal } from "@/lib/api";
+import { useTable } from "@/lib/useTable";
 import type { CorpusStats } from "@/types";
 
 /**
@@ -47,6 +49,20 @@ export function AnalyticsClient() {
       }
     })();
   }, []);
+
+  const venueTable = useTable(venues, {
+    columns: { venue: (row) => row.journal, works: (row) => row.count },
+    defaultSort: { key: "works", direction: "desc" },
+    searchText: (row) => row.journal,
+  });
+  const sourceTable = useTable(sources, {
+    columns: {
+      connector: (row) => row.connector_id,
+      works: (row) => row.works,
+      unique: (row) => row.unique_contribution,
+    },
+    defaultSort: { key: "works", direction: "desc" },
+  });
 
   if (error) {
     return (
@@ -128,17 +144,21 @@ export function AnalyticsClient() {
               <Empty>No venue assertions in this release.</Empty>
             </div>
           ) : (
+            <>
+            <TableSearch table={venueTable} label="venues" />
             <table className="data-table">
               <thead>
                 <tr>
-                  <th scope="col">Venue</th>
-                  <th scope="col" className="numeric">
+                  <SortHeader table={venueTable} column="venue">
+                    Venue
+                  </SortHeader>
+                  <SortHeader table={venueTable} column="works" numeric>
                     Works
-                  </th>
+                  </SortHeader>
                 </tr>
               </thead>
               <tbody>
-                {venues.map((row) => (
+                {venueTable.rows.map((row) => (
                   <tr key={row.journal}>
                     <td className="max-w-0 truncate">{row.journal}</td>
                     <td className="numeric">{row.count}</td>
@@ -146,6 +166,7 @@ export function AnalyticsClient() {
                 ))}
               </tbody>
             </table>
+            </>
           )}
         </Panel>
 
@@ -182,17 +203,19 @@ export function AnalyticsClient() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th scope="col">Connector</th>
-                  <th scope="col" className="numeric">
+                  <SortHeader table={sourceTable} column="connector">
+                    Connector
+                  </SortHeader>
+                  <SortHeader table={sourceTable} column="works" numeric>
                     Works
-                  </th>
-                  <th scope="col" className="numeric">
+                  </SortHeader>
+                  <SortHeader table={sourceTable} column="unique" numeric>
                     Unique
-                  </th>
+                  </SortHeader>
                 </tr>
               </thead>
               <tbody>
-                {sources.map((row) => (
+                {sourceTable.rows.map((row) => (
                   <tr key={row.connector_id}>
                     <td className="font-mono text-xs">{row.connector_id}</td>
                     <td className="numeric">{row.works}</td>

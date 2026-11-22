@@ -537,3 +537,77 @@ class TestRateLimitedWorkAlwaysComesBack:
         assert budget is not None, "acquisition bypassed the shared rate budget"
         assert budget.tokens < budget.burst
         assert budget.in_flight == 0
+
+
+class TestAbandonedSlots:
+    """A worker stopped mid-request never returns its slot.
+
+    Two redeploys during a Europe PMC run left `in_flight` at 2 of 2 with nothing
+    running, and every later request for that source waited on slots nobody held
+    until the task dead-lettered with "did not refill".
+    """
+
+    async def test_a_slot_untouched_for_a_lease_is_reclaimed(self, limiter_harness) -> None:
+        from lab_assistant.domain.tasks import SLOT_LEASE_SECONDS
+
+        policy = RatePolicy(requests_per_second=10.0, burst=10, max_concurrent=2)
+        limiter = RateLimiter(limiter_harness.context)
+        # Two requests whose workers die before releasing.
+        await limiter.acquire(KEY, policy=policy)
+        await limiter.acquire(KEY, policy=policy)
+
+        with pytest.raises(LabAssistantError) as raised:
+            await limiter.acquire(KEY, policy=policy)
+        # Deferred until the slots would count as abandoned, not for a short backoff
+        # that would spend the task's attempts against the same full count.
+        assert raised.value.error_class is ErrorClass.RATE_LIMITED
+        assert raised.value.context["retry_after_seconds"] == SLOT_LEASE_SECONDS + 1
+
+        limiter_harness.clock.advance(SLOT_LEASE_SECONDS)
+        await limiter.acquire(KEY, policy=policy)
+        async with limiter_harness.context.uow_factory() as uow:
+            budget = await uow.tasks.get_rate_budget(KEY)
+        assert budget is not None and budget.in_flight == 1
+
+    async def test_a_slot_in_use_is_not_reclaimed(self, limiter_harness) -> None:
+        """Slots still being taken and returned are trusted, however old the first."""
+        from lab_assistant.domain.tasks import SLOT_LEASE_SECONDS
+
+        policy = RatePolicy(requests_per_second=10.0, burst=10, max_concurrent=2)
+        limiter = RateLimiter(limiter_harness.context)
+        await limiter.acquire(KEY, policy=policy)  # a long request, still running
+        limiter_harness.clock.advance(SLOT_LEASE_SECONDS - 10)
+        await limiter.acquire(KEY, policy=policy)
+        await limiter.release(KEY)
+        limiter_harness.clock.advance(20)
+        await limiter.acquire(KEY, policy=policy)
+        async with limiter_harness.context.uow_factory() as uow:
+            budget = await uow.tasks.get_rate_budget(KEY)
+        assert budget is not None and budget.in_flight == 2
+
+    async def test_slots_leaked_before_the_lease_existed_are_reclaimed(
+        self, limiter_harness
+    ) -> None:
+        """The state the server's Europe PMC row is in: full, with no change time."""
+        from lab_assistant.domain.tasks import RateBudget
+
+        async with limiter_harness.context.uow_factory() as uow:
+            await uow.tasks.upsert_rate_budget(
+                RateBudget(
+                    key=KEY,
+                    tokens=5.0,
+                    refill_per_second=5.0,
+                    burst=5.0,
+                    max_concurrent=2,
+                    in_flight=2,
+                    updated_at=limiter_harness.context.now(),
+                )
+            )
+            await uow.commit()
+        limiter = RateLimiter(limiter_harness.context)
+        await limiter.acquire(
+            KEY, policy=RatePolicy(requests_per_second=5.0, burst=5, max_concurrent=2)
+        )
+        async with limiter_harness.context.uow_factory() as uow:
+            budget = await uow.tasks.get_rate_budget(KEY)
+        assert budget is not None and budget.in_flight == 1

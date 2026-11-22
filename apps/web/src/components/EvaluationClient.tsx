@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 
 import { LiveStatus } from "@/components/ui/LiveStatus";
+import { SortHeader, TableSearch } from "@/components/ui/table";
 import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
   BenchmarkEditor,
@@ -24,6 +25,7 @@ import {
   setReleaseGate,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
+import { useTable } from "@/lib/useTable";
 import type { Benchmark, EvaluationRun, Release, ReleaseGate } from "@/types";
 
 /** A starting point for a benchmark file: a retrieval set naming papers by DOI. */
@@ -386,6 +388,20 @@ function RunDetail({ run }: { run: EvaluationRun }) {
   const columns = Array.from(
     new Set(cases.flatMap((item) => Object.keys(item)).filter((key) => !hidden.has(key))),
   );
+  const cell = (value: unknown) =>
+    Array.isArray(value) ? value.join(", ") : value === undefined ? "" : formatMetric(value);
+  const table = useTable(cases, {
+    columns: Object.fromEntries(
+      columns.map((column) => [
+        column,
+        (item: (typeof cases)[number]) => {
+          const value = item[column];
+          return typeof value === "number" || typeof value === "boolean" ? value : cell(value);
+        },
+      ]),
+    ),
+    searchText: (item) => columns.map((column) => cell(item[column])).join(" "),
+  });
   return (
     <div className="mt-3 space-y-3">
       {Object.keys(run.gates).length > 0 ? (
@@ -405,27 +421,24 @@ function RunDetail({ run }: { run: EvaluationRun }) {
         </ul>
       ) : null}
       {cases.length > 0 ? (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left font-mono text-xs">
-            <thead className="text-muted">
+        <div className="overflow-x-auto rounded-control border border-border">
+          <TableSearch table={table} label="cases" placeholder="Filter cases" />
+          <table className="data-table font-mono text-xs">
+            <thead>
               <tr>
                 {columns.map((column) => (
-                  <th key={column} className="border-b border-border px-2 py-1 font-medium">
+                  <SortHeader key={column} table={table} column={column}>
                     {column}
-                  </th>
+                  </SortHeader>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {cases.map((item, index) => (
-                <tr key={index} className="border-b border-border last:border-0">
+              {table.rows.map((item, index) => (
+                <tr key={index}>
                   {columns.map((column) => (
-                    <td key={column} className="px-2 py-1 align-top text-ink">
-                      {Array.isArray(item[column])
-                        ? (item[column] as unknown[]).join(", ")
-                        : item[column] === undefined
-                          ? ""
-                          : formatMetric(item[column])}
+                    <td key={column} className="align-top text-ink">
+                      {cell(item[column])}
                     </td>
                   ))}
                 </tr>
