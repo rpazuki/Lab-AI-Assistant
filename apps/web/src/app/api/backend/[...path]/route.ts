@@ -51,6 +51,9 @@ export async function GET(request: Request, context: { params: Promise<{ path: s
 export async function POST(request: Request, context: { params: Promise<{ path: string[] }> }) {
   return proxy(request, (await context.params).path);
 }
+export async function PUT(request: Request, context: { params: Promise<{ path: string[] }> }) {
+  return proxy(request, (await context.params).path);
+}
 export async function PATCH(request: Request, context: { params: Promise<{ path: string[] }> }) {
   return proxy(request, (await context.params).path);
 }
