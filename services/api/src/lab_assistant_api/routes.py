@@ -699,6 +699,21 @@ async def list_scopes(actor: CurrentActor, container: Container) -> dict[str, An
                 "name": scope.name,
                 "approval_state": scope.approval_state.value,
                 "connectors": [entry.connector_id for entry in scope.connector_plan],
+                # Everything the form edits, so a draft that fails its gate can be
+                # reopened and saved as its next version instead of retyped.
+                "scientific_objective": scope.scientific_objective,
+                "inclusion_criteria": list(scope.inclusion_criteria),
+                "exclusion_criteria": list(scope.exclusion_criteria),
+                "concepts": list(scope.concepts),
+                "intended_uses": list(scope.intended_uses),
+                "connector_plan": [
+                    {
+                        "connector_id": entry.connector_id,
+                        "query": entry.query,
+                        "required": entry.required,
+                    }
+                    for entry in scope.connector_plan
+                ],
             }
             for scope in scopes
         ]

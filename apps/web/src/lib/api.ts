@@ -259,6 +259,8 @@ export const createScope = (payload: {
   scientific_objective: string;
   inclusion_criteria?: string[];
   exclusion_criteria?: string[];
+  concepts?: string[];
+  intended_uses?: string[];
   connectors: { connector_id: string; query: string; required?: boolean }[];
   scope_id?: string;
 }) =>

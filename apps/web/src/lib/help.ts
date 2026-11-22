@@ -297,9 +297,21 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             steps: [
               "On **Collections**, select **New scope**.",
               "Enter a **Name** and the **Scientific objective**.",
-              "Optionally list **Inclusion criteria** and **Exclusion criteria**, one per line.",
+              "List the **Inclusion criteria** and, optionally, the **Exclusion criteria**, one per line.",
+              "Under **Intended uses**, say what the collection is for, one per line (for example literature search).",
               "Under sources, tick each source to search and type its query (or write them with the organism lookup, below).",
               "Select **Save as draft**.",
+            ],
+            note: "The gate needs inclusion criteria, intended uses and a query that compiles for every ticked source.",
+          },
+          {
+            title: "How to fix a scope whose gate fails",
+            needs: STEWARD,
+            steps: [
+              "Select **Edit** on the draft. The form opens with its values.",
+              "Correct what the gate listed.",
+              "Select **Save as v2** (the next version number). The earlier version is kept unchanged.",
+              "Select **Check gate** on the new version, then **Approve**.",
             ],
           },
           {

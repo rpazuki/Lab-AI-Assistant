@@ -753,6 +753,50 @@ class TestCollections:
         )
         assert approved.json()["approval_state"] == "approved"
 
+    async def test_a_draft_failing_its_gate_is_fixed_by_its_next_version(self, api) -> None:
+        """The edit loop the web form relies on: list a draft, resend it fixed."""
+        token = await _login(api["client"], "steward@lab.invalid")
+        created = await api["client"].post(
+            "/api/v1/scopes",
+            headers=_auth(token),
+            json={
+                "name": "Yarrowia",
+                "scientific_objective": "Yarrowia literature",
+                "exclusion_criteria": ["not English"],
+                "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
+            },
+        )
+        draft_id = created.json()["id"]
+        gate = await api["client"].post(f"/api/v1/scopes/{draft_id}/gate", headers=_auth(token))
+        assert gate.json()["passed"] is False
+
+        listed = await api["client"].get("/api/v1/scopes", headers=_auth(token))
+        draft = next(item for item in listed.json()["items"] if item["id"] == draft_id)
+        assert draft["scientific_objective"] == "Yarrowia literature"
+        assert draft["exclusion_criteria"] == ["not English"]
+        assert draft["connector_plan"] == [
+            {"connector_id": "pubmed-fixture", "query": "lipid production", "required": True}
+        ]
+
+        fixed = await api["client"].post(
+            "/api/v1/scopes",
+            headers=_auth(token),
+            json={
+                "scope_id": draft["scope_id"],
+                "name": draft["name"],
+                "scientific_objective": draft["scientific_objective"],
+                "inclusion_criteria": ["Y. lipolytica is a studied organism"],
+                "exclusion_criteria": draft["exclusion_criteria"],
+                "intended_uses": ["literature search"],
+                "connectors": draft["connector_plan"],
+            },
+        )
+        assert fixed.json()["version"] == 2
+        regate = await api["client"].post(
+            f"/api/v1/scopes/{fixed.json()['id']}/gate", headers=_auth(token)
+        )
+        assert regate.json()["passed"] is True
+
     async def test_a_researcher_cannot_create_a_scope(self, api) -> None:
         token = await _login(api["client"], "researcher@lab.invalid")
         response = await api["client"].post(

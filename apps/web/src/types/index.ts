@@ -297,6 +297,12 @@ export interface ScopeVersion {
   name: string;
   approval_state: string;
   connectors: string[];
+  scientific_objective: string;
+  inclusion_criteria: string[];
+  exclusion_criteria: string[];
+  concepts: string[];
+  intended_uses: string[];
+  connector_plan: { connector_id: string; query: string; required: boolean }[];
 }
 
 export interface ScopeGateReport {
