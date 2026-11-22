@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 
+import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { SortHeader, TableSearch } from "@/components/ui/table";
 import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
@@ -14,6 +15,8 @@ import { AnswerReviewSection, RunComparisonPanel } from "@/components/Evaluation
 import {
   ApiError,
   cancelEvaluationRun,
+  deleteBenchmark,
+  deleteEvaluationRun,
   getBenchmark,
   getEvaluationRun,
   listBenchmarks,
@@ -261,6 +264,13 @@ export function EvaluationClient() {
                     "the run could not be cancelled",
                   )
                 }
+                onDelete={() =>
+                  act(
+                    () => deleteEvaluationRun(run.id),
+                    `The ${run.status} run of ${run.benchmark} is deleted.`,
+                    "the run could not be deleted",
+                  )
+                }
               />
             ))}
           </ul>
@@ -279,6 +289,14 @@ export function EvaluationClient() {
       <BenchmarksPanel
         benchmarks={benchmarks}
         gates={gates}
+        usedKeys={new Set(runs.map((run) => run.benchmark))}
+        onDelete={(benchmark) =>
+          act(
+            () => deleteBenchmark(benchmark.benchmark_id, benchmark.version),
+            `${benchmark.key} is deleted.`,
+            "the benchmark could not be deleted",
+          )
+        }
         onGate={(benchmark, require) =>
           act(
             () => setReleaseGate(benchmark.benchmark_id, require ? benchmark.version : null),
@@ -314,12 +332,14 @@ function RunRow({
   selected,
   onSelect,
   onCancel,
+  onDelete,
 }: {
   run: EvaluationRun;
   releaseLabel: string;
   selected: boolean;
   onSelect: () => void;
   onCancel: () => void;
+  onDelete: () => void;
 }) {
   const [detail, setDetail] = useState<EvaluationRun | null>(null);
   const [open, setOpen] = useState(false);
@@ -351,6 +371,13 @@ function RunRow({
           <Button variant="danger" size="sm" onClick={onCancel}>
             Cancel
           </Button>
+        ) : null}
+        {run.status === "failed" || run.status === "cancelled" ? (
+          <DeleteButton
+            what={`this ${run.status} run of ${run.benchmark}`}
+            consequence="It has no result; it is refused if its answers were assigned for review."
+            onDelete={onDelete}
+          />
         ) : null}
         <Button variant="ghost" size="sm" onClick={toggle} aria-expanded={open}>
           {open ? "Hide" : "Details"}
@@ -458,12 +485,17 @@ function RunDetail({ run }: { run: EvaluationRun }) {
 function BenchmarksPanel({
   benchmarks,
   gates,
+  usedKeys,
+  onDelete,
   onGate,
   onRegistered,
   onError,
 }: {
   benchmarks: Benchmark[];
   gates: ReleaseGate[];
+  /** Benchmark versions some listed run measured against: those are kept. */
+  usedKeys: Set<string>;
+  onDelete: (benchmark: Benchmark) => void;
   onGate: (benchmark: Benchmark, require: boolean) => void;
   onRegistered: (message: string) => Promise<void>;
   onError: (caught: unknown) => void;
@@ -633,6 +665,13 @@ function BenchmarksPanel({
                     Require for publishing
                   </Button>
                 )}
+                {!usedKeys.has(benchmark.key) && !gates.some((gate) => gate.key === benchmark.key) ? (
+                  <DeleteButton
+                    what={`benchmark ${benchmark.key}`}
+                    consequence="No run has measured against this version and publishing does not require it."
+                    onDelete={() => onDelete(benchmark)}
+                  />
+                ) : null}
               </div>
               {benchmark.description ? (
                 <p className="mt-1 text-muted">{benchmark.description}</p>

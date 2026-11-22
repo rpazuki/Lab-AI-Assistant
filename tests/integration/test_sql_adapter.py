@@ -36,7 +36,7 @@ from lab_assistant.contracts.policy import Effect, PolicyAction, ResourceType, S
 from lab_assistant.contracts.runtime import SequentialIds, system_clock
 from lab_assistant.contracts.stage import StageName
 from lab_assistant.domain.identity import Work, WorkIdentifier, WorkKind
-from lab_assistant.domain.states import RelevanceState
+from lab_assistant.domain.states import RelevanceState, TaskState
 from lab_assistant.domain.tasks import Task
 from lab_assistant.domain.workspace import Role
 from lab_assistant.policy.engine import PolicyEngine
@@ -935,3 +935,181 @@ class TestEvaluationsOverSql:
             await uow.commit()
         async with context.uow_factory() as uow:
             assert await uow.evaluations.list_release_gates(workspace.id) == []
+
+
+class TestDeletesOverSql:
+    """Every delete the app offers removes its rows, children first, over SQL."""
+
+    async def test_each_delete_removes_exactly_its_rows(self, sql_stack) -> None:
+        from datetime import UTC, datetime
+
+        from lab_assistant.application.scopes import ScopeService
+        from lab_assistant.domain.observation import (
+            DiscoveryRun,
+            Predicate,
+            SourceAssertion,
+            SourceObservation,
+            SourceRequest,
+        )
+        from lab_assistant.domain.scope import ConfigKind, ConfigVersion, ConnectorPlanEntry
+
+        context, accounts = sql_stack["context"], sql_stack["accounts"]
+        owner = await accounts.create_user(email="d@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="delete-lab", display_name="Delete Lab", owner_user_id=owner.id
+        )
+        admin = make_actor(user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN)
+        scope = await ScopeService(context).create_version(
+            admin,
+            scope_id=None,
+            name="Scope",
+            scientific_objective="o",
+            connector_plan=[
+                ConnectorPlanEntry(connector_id="pubmed", connector_version="1.0.0", query="q")
+            ],
+            inclusion_criteria=("x",),
+            intended_uses=("y",),
+            concepts=("z",),
+        )
+        now = datetime(2026, 11, 22, 9, tzinfo=UTC)
+        ws = workspace.id
+        run_id, request_id, observation_id = (context.id_factory() for _ in range(3))
+        task_id, config_id, eval_id = (context.id_factory() for _ in range(3))
+        async with context.uow_factory() as uow:
+            await uow.observations.add_run(
+                DiscoveryRun(
+                    id=run_id,
+                    workspace_id=ws,
+                    scope_version_id=scope.id,
+                    run_fingerprint="f",
+                    requested_by=owner.id,
+                    started_at=now,
+                )
+            )
+            await uow.observations.add_request(
+                SourceRequest(
+                    id=request_id,
+                    workspace_id=ws,
+                    discovery_run_id=run_id,
+                    connector_id="pubmed",
+                    connector_version="1.0.0",
+                    request_fingerprint="rf",
+                    method="GET",
+                    canonical_url_redacted="https://example.invalid/q",
+                    requested_at=now,
+                )
+            )
+            await uow.observations.add_observation(
+                SourceObservation(
+                    id=observation_id,
+                    workspace_id=ws,
+                    source_request_id=request_id,
+                    source_record_locator="doi:10.1/x",
+                    parser_id="p",
+                    parser_version="1",
+                    schema_version="1",
+                    observed_at=now,
+                )
+            )
+            await uow.observations.add_assertions(
+                [
+                    SourceAssertion(
+                        id=context.id_factory(),
+                        workspace_id=ws,
+                        source_observation_id=observation_id,
+                        subject_hint="doi:10.1/x",
+                        predicate=Predicate.TITLE,
+                        value_json="A title",
+                    )
+                ]
+            )
+            await uow.tasks.add(
+                Task(
+                    id=task_id,
+                    workspace_id=ws,
+                    stage=StageName.DISCOVERY,
+                    state=TaskState.DEAD_LETTER,
+                    input_fingerprint="tf",
+                    run_id=run_id,
+                    created_at=now,
+                )
+            )
+            await uow.configs.add_config_version(
+                ConfigVersion(
+                    id=config_id,
+                    workspace_id=ws,
+                    kind=ConfigKind.EXTRACTION_TEMPLATE,
+                    logical_id="t",
+                    semantic_version="1",
+                    payload={"a": 1},
+                    created_at=now,
+                )
+            )
+            await uow.evaluations.add_benchmark(
+                {
+                    "id": context.id_factory(),
+                    "workspace_id": ws,
+                    "benchmark_id": "b",
+                    "version": "1",
+                    "kind": "retrieval",
+                    "checksum": "c",
+                    "sensitivity": "internal",
+                    "definition": {},
+                }
+            )
+            await uow.evaluations.add_run(
+                {
+                    "id": eval_id,
+                    "workspace_id": ws,
+                    "benchmark": "b@1",
+                    "benchmark_checksum": "c",
+                    "status": "failed",
+                    "created_at": now,
+                }
+            )
+            await uow.commit()
+
+        async with context.uow_factory() as uow:
+            assert [task.id for task in await uow.tasks.list_run_tasks(ws, run_id)] == [task_id]
+            await uow.tasks.delete_tasks(ws, [task_id])
+            await uow.observations.delete_run(ws, run_id)
+            await uow.configs.delete_config_version(ws, config_id)
+            await uow.evaluations.delete_run(ws, eval_id)
+            await uow.evaluations.delete_benchmark(ws, "b", "1")
+            await uow.commit()
+
+        async with context.uow_factory() as uow:
+            assert await uow.observations.get_run(ws, run_id) is None
+            assert await uow.observations.list_requests(ws, run_id) == []
+            assert await uow.observations.list_observations(ws) == []
+            assert await uow.observations.list_assertions(ws) == []
+            assert await uow.tasks.get(ws, task_id) is None
+            assert await uow.configs.list_config_versions(ws) == []
+            assert await uow.evaluations.get_run(ws, eval_id) is None
+            assert await uow.evaluations.get_benchmark(ws, "b", "1") is None
+            # The scope the run belonged to is untouched.
+            assert await uow.configs.get_scope_version(ws, scope.id) is not None
+
+    async def test_a_revoked_invitation_and_a_draft_release_are_deleted(self, sql_stack) -> None:
+        from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseService
+
+        context, accounts = sql_stack["context"], sql_stack["accounts"]
+        owner = await accounts.create_user(email="i@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="invite-lab", display_name="Invite Lab", owner_user_id=owner.id
+        )
+        admin = make_actor(user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN)
+        invitation, _ = await accounts.invite(admin, email="n@lab.invalid", role=Role.RESEARCHER)
+        await accounts.revoke_invitation(admin, invitation_id=invitation.id)
+        await accounts.delete_invitation(admin, invitation_id=invitation.id)
+
+        releases = ReleaseService(context)
+        draft, _, _ = await releases.draft(
+            admin, ReleaseDraftRequest(name="corpus", semantic_version="0.1.0")
+        )
+        await releases.delete_draft(admin, release_id=draft.id)
+
+        async with context.uow_factory() as uow:
+            assert await uow.workspaces.list_invitations(workspace.id) == []
+            assert await uow.releases.get(workspace.id, draft.id) is None
+            assert await uow.releases.list_items(workspace.id, draft.id) == []

@@ -37,6 +37,7 @@ from lab_assistant.contracts.errors import (
     LabAssistantError,
     NotFound,
     SourceOutcome,
+    StateTransitionError,
     ValidationFailure,
 )
 from lab_assistant.contracts.events import ActorType, AuditAction
@@ -289,6 +290,167 @@ class DiscoveryService:
         return run, (
             TaskRequest(stage=StageName.RECONCILIATION, inputs={"discovery_run_id": str(run.id)}),
         )
+
+    async def delete_run(self, actor: ActorContext, *, run_id: UUID) -> None:
+        """Delete a run that nothing else depends on, with every page it fetched.
+
+        Refused, with the reason, unless all of these hold:
+
+        * none of its tasks is still queued, running or waiting for a person;
+        * it is not frozen, or it is frozen but no candidate came from it (no
+          assertion of it was linked to a work, and nothing past reconciliation
+          ran for it) — a frozen run's candidates are shared works that releases,
+          decisions and acquisitions point at;
+        * no later run searched a source with the same query. A page is stored
+          once and reused by any later run that requests it again, so a later
+          run's results could be resting on this run's rows.
+
+        Each source's cursor is put back where this run found it — where the
+        previous run of the same search ended, or the beginning — so the next run
+        fetches again what this one fetched instead of skipping it. The bytes the
+        pages were stored as stay in the object store: they are shared by digest.
+        """
+        self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
+        actor.require(Capability.RUN_DISCOVERY)
+        context = self._context
+        async with context.uow_factory() as uow:
+            run = await uow.observations.get_run(actor.workspace_id, run_id)
+            if run is None:
+                raise NotFound(f"discovery run {run_id} not found")
+            tasks = await uow.tasks.list_run_tasks(actor.workspace_id, run_id)
+            unsettled = [task for task in tasks if not task.state.is_settled]
+            if unsettled:
+                raise StateTransitionError(
+                    "this run still has work queued or running; cancel or wait for it first",
+                    context={"tasks": len(unsettled)},
+                )
+            requests = await uow.observations.list_requests(actor.workspace_id, run_id)
+            if run.status is DiscoveryRunStatus.FROZEN:
+                beyond = {task.stage for task in tasks} - {
+                    StageName.DISCOVERY,
+                    StageName.RECONCILIATION,
+                }
+                if beyond or await _has_linked_assertions(uow, actor.workspace_id, requests):
+                    raise StateTransitionError(
+                        "this run is frozen and its candidates are in use; a frozen run "
+                        "with candidates cannot be deleted"
+                    )
+
+            searches = {
+                (state.connector_id, state.connector_version, state.query_fingerprint)
+                for state in run.connector_states
+            }
+            started = run.started_at
+            others = [
+                other
+                for other in await uow.observations.list_runs(actor.workspace_id, limit=10_000)
+                if other.id != run.id
+            ]
+            later = [
+                other
+                for other in others
+                if started is None or other.started_at is None or other.started_at >= started
+            ]
+            for other in later:
+                shared = searches & {
+                    (state.connector_id, state.connector_version, state.query_fingerprint)
+                    for state in other.connector_states
+                }
+                if shared:
+                    raise StateTransitionError(
+                        "a later discovery run searched the same source with the same "
+                        "query and may reuse this run's pages; delete that run first",
+                        context={"later_run_id": str(other.id)},
+                    )
+
+            fetched = {request.connector_id for request in requests}
+            for state in run.connector_states:
+                if state.connector_id not in fetched:
+                    continue
+                previous = _previous_state(others, run, state)
+                await uow.observations.set_cursor(
+                    actor.workspace_id,
+                    lineage_key=cursor_lineage_key(
+                        workspace_id=actor.workspace_id,
+                        scope_version_id=run.scope_version_id,
+                        connector_id=state.connector_id,
+                        connector_version=state.connector_version,
+                        query_fingerprint=state.query_fingerprint,
+                        cursor_semantics_version="1",
+                    ),
+                    position=previous.cursor_after if previous else None,
+                    exhausted=bool(
+                        previous and previous.cursor_after is None and previous.pages_fetched
+                    ),
+                )
+
+            await uow.tasks.delete_tasks(actor.workspace_id, [task.id for task in tasks])
+            await uow.observations.delete_run(actor.workspace_id, run_id)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=actor.workspace_id,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.DISCOVERY_RUN_DELETED,
+                    subject_type="discovery_run",
+                    subject_id=run.id,
+                    previous_hash=await uow.audit.latest_hash(actor.workspace_id),
+                    run_id=run.id,
+                    reason_code="run_deleted",
+                    metadata={
+                        "status": run.status.value,
+                        "scope_version_id": str(run.scope_version_id),
+                        "run_fingerprint": run.run_fingerprint,
+                        "pages": len(requests),
+                        "records_seen": sum(s.records_seen for s in run.connector_states),
+                        "tasks": len(tasks),
+                    },
+                )
+            )
+            await uow.commit()
+
+
+async def _has_linked_assertions(
+    uow: Any, workspace_id: UUID, requests: list[SourceRequest]
+) -> bool:
+    """Whether reconciliation linked any of these pages' assertions to a work."""
+    for request in requests:
+        for observation in await uow.observations.list_observations(
+            workspace_id, request_id=request.id
+        ):
+            for assertion in await uow.observations.list_assertions(
+                workspace_id, observation_id=observation.id
+            ):
+                if assertion.work_id is not None:
+                    return True
+    return False
+
+
+def _previous_state(
+    others: list[DiscoveryRun], run: DiscoveryRun, state: ConnectorRunState
+) -> ConnectorRunState | None:
+    """The same search in the latest earlier run of the same scope version."""
+    earlier = sorted(
+        (
+            other
+            for other in others
+            if other.scope_version_id == run.scope_version_id
+            and other.started_at is not None
+            and run.started_at is not None
+            and other.started_at < run.started_at
+        ),
+        key=lambda other: other.started_at,
+        reverse=True,
+    )
+    for other in earlier:
+        for candidate in other.connector_states:
+            if (
+                candidate.connector_id,
+                candidate.connector_version,
+                candidate.query_fingerprint,
+            ) == (state.connector_id, state.connector_version, state.query_fingerprint):
+                return candidate
+    return None
 
 
 class DiscoveryHandler:

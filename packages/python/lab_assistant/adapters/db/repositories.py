@@ -338,6 +338,14 @@ class _Workspaces(_Base):
     async def list_invitations(self, workspace_id: UUID) -> list[Invitation]:
         return await self._many(INVITATIONS, self._scope(INVITATIONS, workspace_id))
 
+    async def delete_invitation(self, workspace_id: UUID, invitation_id: UUID) -> None:
+        await self._c.execute(
+            delete(t.invitations).where(
+                t.invitations.c.workspace_id == workspace_id,
+                t.invitations.c.id == invitation_id,
+            )
+        )
+
 
 class _Policies(_Base):
     async def list_grants(
@@ -437,6 +445,14 @@ class _Configs(_Base):
 
     async def add_config_version(self, config: ConfigVersion) -> None:
         await self._upsert(CONFIGS, config)
+
+    async def delete_config_version(self, workspace_id: UUID, config_version_id: UUID) -> None:
+        await self._c.execute(
+            delete(t.config_versions).where(
+                t.config_versions.c.workspace_id == workspace_id,
+                t.config_versions.c.id == config_version_id,
+            )
+        )
 
     async def get_config_version(self, config_version_id: UUID) -> ConfigVersion | None:
         return await self._one(CONFIGS, t.config_versions.c.id == config_version_id)
@@ -689,6 +705,42 @@ class _Observations(_Base):
             )
         else:
             await self._c.execute(update(t.source_cursors).where(conditions).values(**values))
+
+    async def delete_run(self, workspace_id: UUID, run_id: UUID) -> None:
+        # Child rows explicitly, deepest first, rather than leaning on ON DELETE
+        # CASCADE: SQLite enforces cascades only with a per-connection pragma.
+        requests = select(t.source_requests.c.id).where(
+            t.source_requests.c.workspace_id == workspace_id,
+            t.source_requests.c.discovery_run_id == run_id,
+        )
+        observations = select(t.source_observations.c.id).where(
+            t.source_observations.c.workspace_id == workspace_id,
+            t.source_observations.c.source_request_id.in_(requests),
+        )
+        await self._c.execute(
+            delete(t.source_assertions).where(
+                t.source_assertions.c.workspace_id == workspace_id,
+                t.source_assertions.c.source_observation_id.in_(observations),
+            )
+        )
+        await self._c.execute(
+            delete(t.source_observations).where(
+                t.source_observations.c.workspace_id == workspace_id,
+                t.source_observations.c.source_request_id.in_(requests),
+            )
+        )
+        await self._c.execute(
+            delete(t.source_requests).where(
+                t.source_requests.c.workspace_id == workspace_id,
+                t.source_requests.c.discovery_run_id == run_id,
+            )
+        )
+        await self._c.execute(
+            delete(t.discovery_runs).where(
+                t.discovery_runs.c.workspace_id == workspace_id,
+                t.discovery_runs.c.id == run_id,
+            )
+        )
 
 
 class _Works(_Base):
@@ -1155,6 +1207,20 @@ class _Releases(_Base):
             conditions.append(t.corpus_releases.c.id > after_id)
         return await self._many(RELEASES, *conditions, order=t.corpus_releases.c.id, limit=limit)
 
+    async def delete(self, workspace_id: UUID, release_id: UUID) -> None:
+        await self._c.execute(
+            delete(t.release_items).where(
+                t.release_items.c.workspace_id == workspace_id,
+                t.release_items.c.release_id == release_id,
+            )
+        )
+        await self._c.execute(
+            delete(t.corpus_releases).where(
+                t.corpus_releases.c.workspace_id == workspace_id,
+                t.corpus_releases.c.id == release_id,
+            )
+        )
+
     async def add_items(self, items: Sequence[ReleaseItem]) -> None:
         for item in items:
             record = item.record
@@ -1331,6 +1397,23 @@ class _Tasks(_Base):
             .group_by(t.tasks.c.state)
         )
         return {row[0]: row[1] for row in sorted(result.all())}
+
+    async def list_run_tasks(self, workspace_id: UUID, run_id: UUID) -> list[Task]:
+        return await self._many(
+            TASKS,
+            self._scope(TASKS, workspace_id),
+            t.tasks.c.run_id == run_id,
+            order=t.tasks.c.created_at,
+        )
+
+    async def delete_tasks(self, workspace_id: UUID, task_ids: Sequence[UUID]) -> None:
+        if not task_ids:
+            return
+        await self._c.execute(
+            delete(t.tasks).where(
+                t.tasks.c.workspace_id == workspace_id, t.tasks.c.id.in_(list(task_ids))
+            )
+        )
 
     async def release_dependencies(self, workspace_id: UUID, completed_task_id: UUID) -> list[Task]:
         blocked = await self._many(
@@ -1730,6 +1813,29 @@ class _Evaluations(_Base):
             delete(t.release_gate_benchmarks).where(
                 t.release_gate_benchmarks.c.workspace_id == workspace_id,
                 t.release_gate_benchmarks.c.benchmark_id == benchmark_id,
+            )
+        )
+
+    async def delete_run(self, workspace_id: UUID, run_id: UUID) -> None:
+        await self._c.execute(
+            delete(t.evaluation_reviews).where(
+                t.evaluation_reviews.c.workspace_id == workspace_id,
+                t.evaluation_reviews.c.run_id == run_id,
+            )
+        )
+        await self._c.execute(
+            delete(t.evaluation_runs).where(
+                t.evaluation_runs.c.workspace_id == workspace_id,
+                t.evaluation_runs.c.id == run_id,
+            )
+        )
+
+    async def delete_benchmark(self, workspace_id: UUID, benchmark_id: str, version: str) -> None:
+        await self._c.execute(
+            delete(t.benchmarks).where(
+                t.benchmarks.c.workspace_id == workspace_id,
+                t.benchmarks.c.benchmark_id == benchmark_id,
+                t.benchmarks.c.version == version,
             )
         )
 

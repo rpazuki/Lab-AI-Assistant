@@ -627,6 +627,75 @@ class ReleaseService:
             await uow.commit()
         return release
 
+    async def delete_draft(self, actor: ActorContext, *, release_id: UUID) -> None:
+        """Delete a release that was never approved and that nothing points at.
+
+        Only ``draft`` and ``rejected``: from ``approved`` on, a release has been
+        indexed, may have been served, and is what answers and exports cite. Even a
+        draft stays while another release names it as its parent, an alias serves
+        it, a chat is pinned to it, an evaluation ran against it, or a task names
+        it. Its manifest and validation report stay in the object store.
+        """
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
+        actor.require(Capability.MANAGE_RELEASE)
+        context = self._context
+        async with context.uow_factory() as uow:
+            release = await uow.releases.get(actor.workspace_id, release_id)
+            if release is None:
+                raise NotFound(f"release {release_id} not found")
+            if release.status not in (ReleaseState.DRAFT, ReleaseState.REJECTED):
+                raise StateTransitionError(
+                    f"a {release.status.value} release cannot be deleted; "
+                    "only a draft or rejected one can",
+                    context={"status": release.status.value},
+                )
+            others = await collect_pages(
+                lambda after, size: uow.releases.list_all_releases(
+                    actor.workspace_id, limit=size, after_id=after
+                )
+            )
+            if any(
+                release_id in (other.parent_release_id, other.superseded_by_id) for other in others
+            ):
+                raise StateTransitionError("another release is built on this one")
+            if any(
+                alias.release_id == release_id
+                for alias in await uow.releases.list_aliases(actor.workspace_id)
+            ):
+                raise StateTransitionError("this release is served by an alias")
+            if await uow.evaluations.list_runs(actor.workspace_id, release_id=release_id, limit=1):
+                raise StateTransitionError(
+                    "an evaluation ran against this release; delete that run first"
+                )
+            if any(
+                session.pinned_release_id == release_id
+                for session in await uow.chat.list_workspace_sessions(actor.workspace_id)
+            ):
+                raise StateTransitionError("a conversation is pinned to this release")
+            tasks = await uow.tasks.list_tasks(actor.workspace_id, limit=100_000)
+            if any(str(task.inputs.get("release_id")) == str(release_id) for task in tasks):
+                raise StateTransitionError("a background task names this release")
+            await uow.releases.delete(actor.workspace_id, release_id)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=actor.workspace_id,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.RELEASE_DRAFT_DELETED,
+                    subject_type="corpus_release",
+                    subject_id=release_id,
+                    previous_hash=await uow.audit.latest_hash(actor.workspace_id),
+                    reason_code="draft_deleted",
+                    metadata={
+                        "name": release.name,
+                        "semantic_version": release.semantic_version,
+                        "status": release.status.value,
+                        "manifest_sha256": release.manifest_sha256,
+                    },
+                )
+            )
+            await uow.commit()
+
     async def active_release_id(
         self, workspace_id: UUID, *, alias: str = DEFAULT_ALIAS
     ) -> UUID | None:

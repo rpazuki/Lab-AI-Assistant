@@ -65,6 +65,9 @@ REVIEW_FLAGS: tuple[str, ...] = (
 MAX_SAMPLE = 200
 
 _CANCELLABLE = frozenset({"queued", "running"})
+#: A run with no result to rely on. A succeeded run is evidence, even one that
+#: failed its gates: it is what a release's gate check and a comparison read.
+_DELETABLE = frozenset({"failed", "cancelled"})
 
 
 def _sample_order(run_id: UUID, case_id: str) -> str:
@@ -169,6 +172,87 @@ class EvaluationWorkbench:
             )
             await uow.commit()
             return await self._run(uow, actor, run_id)
+
+    # ── delete ──────────────────────────────────────────────────────────────
+    async def delete_run(self, actor: ActorContext, *, run_id: UUID) -> None:
+        """Delete a failed or cancelled run that no release and no reviewer used."""
+        self._require(actor)
+        context = self._context
+        async with context.uow_factory() as uow:
+            run = await self._run(uow, actor, run_id)
+            status = run.get("status", "succeeded")
+            if status not in _DELETABLE:
+                raise StateTransitionError(
+                    f"a {status} run cannot be deleted; only a failed or cancelled one can",
+                    context={"status": status},
+                )
+            if await uow.evaluations.list_reviews(actor.workspace_id, run_id=run_id):
+                raise StateTransitionError("answers from this run were assigned for review")
+            releases = await uow.releases.list_all_releases(actor.workspace_id, limit=100_000)
+            if any(str(release.evaluation_run_id) == str(run_id) for release in releases):
+                raise StateTransitionError("a release was approved on this run")
+            task_ids: list[UUID] = []
+            if run.get("task_id"):
+                task = await uow.tasks.get(actor.workspace_id, UUID(str(run["task_id"])))
+                if task is not None:
+                    if not task.state.is_settled:
+                        raise StateTransitionError("this run's task has not finished yet")
+                    task_ids.append(task.id)
+            await uow.tasks.delete_tasks(actor.workspace_id, task_ids)
+            await uow.evaluations.delete_run(actor.workspace_id, run_id)
+            await self._audit(
+                uow,
+                actor,
+                action=AuditAction.EVALUATION_RUN_DELETED,
+                subject_type="evaluation_run",
+                subject_id=run_id,
+                reason_code="run_deleted",
+                metadata={"status": status, "benchmark": run.get("benchmark")},
+            )
+            await uow.commit()
+
+    async def delete_benchmark(
+        self, actor: ActorContext, *, benchmark_id: str, version: str
+    ) -> None:
+        """Delete a benchmark version no run measured against and no gate requires.
+
+        Versions are immutable so that a run's checksum always names what it was
+        measured against; with no run, there is nothing for the version to explain.
+        """
+        self._require(actor)
+        context = self._context
+        key = f"{benchmark_id}@{version}"
+        async with context.uow_factory() as uow:
+            benchmark = await uow.evaluations.get_benchmark(
+                actor.workspace_id, benchmark_id, version
+            )
+            if benchmark is None:
+                raise NotFound(f"benchmark {key} not found")
+            runs = await uow.evaluations.list_runs(
+                actor.workspace_id, benchmark_id=benchmark_id, limit=100_000
+            )
+            if any(run.get("benchmark") == key for run in runs):
+                raise StateTransitionError(
+                    "evaluation runs measured against this version; it cannot be deleted"
+                )
+            if any(
+                gate["benchmark_id"] == benchmark_id and gate["version"] == version
+                for gate in await uow.evaluations.list_release_gates(actor.workspace_id)
+            ):
+                raise StateTransitionError(
+                    "publishing requires this version; remove it from the release gates first"
+                )
+            await uow.evaluations.delete_benchmark(actor.workspace_id, benchmark_id, version)
+            await self._audit(
+                uow,
+                actor,
+                action=AuditAction.BENCHMARK_DELETED,
+                subject_type="benchmark",
+                subject_id=UUID(str(benchmark["id"])) if benchmark.get("id") else None,
+                reason_code="benchmark_deleted",
+                metadata={"benchmark": key, "checksum": benchmark.get("checksum")},
+            )
+            await uow.commit()
 
     # ── compare ─────────────────────────────────────────────────────────────
     async def compare_runs(

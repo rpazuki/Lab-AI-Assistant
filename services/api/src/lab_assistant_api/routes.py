@@ -427,6 +427,19 @@ async def revoke_invitation(
     return {"id": str(invitation.id), "state": "revoked"}
 
 
+@router.delete(
+    "/invitations/{invitation_id}",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def delete_invitation(
+    invitation_id: UUID, actor: CurrentActor, container: Container
+) -> Response:
+    """Remove a revoked or expired invitation."""
+    await container.accounts.delete_invitation(actor, invitation_id=invitation_id)
+    return Response(status_code=204)
+
+
 @router.post(
     "/invitations/preview",
     dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
@@ -870,6 +883,17 @@ async def freeze_discovery(
     }
 
 
+@router.delete(
+    "/discovery-runs/{run_id}",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
+async def delete_discovery_run(run_id: UUID, actor: CurrentActor, container: Container) -> Response:
+    """Delete a run that produced no candidates in use; 409 says why not."""
+    await DiscoveryService(container.context).delete_run(actor, run_id=run_id)
+    return Response(status_code=204)
+
+
 # ── organism and product lookup, for scope queries ──────────────────────────
 class QueryTermsRequest(BaseModel):
     organism_terms: list[str] = Field(default_factory=list, max_length=60)
@@ -1232,6 +1256,21 @@ async def approve_extraction_template(
     )
 
 
+@router.delete(
+    "/extraction/templates/{template_id}/{version}",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def delete_extraction_template(
+    template_id: str, version: str, actor: CurrentActor, container: Container
+) -> Response:
+    """Delete a draft template version that nothing has used."""
+    await DatasheetService(container.context).delete_template(
+        actor, template_id=template_id, version=version
+    )
+    return Response(status_code=204)
+
+
 @router.get("/extraction/estimate")
 async def estimate_extraction(
     actor: CurrentActor,
@@ -1271,6 +1310,19 @@ async def cancel_extraction_run(
         actor, run_id=run_id
     )
     return {"run_id": str(run_id), "cancelled_tasks": cancelled}
+
+
+@router.delete(
+    "/extraction/runs/{run_id}",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.PROCESS_CONTENT)],
+)
+async def delete_extraction_run(
+    run_id: UUID, actor: CurrentActor, container: Container
+) -> Response:
+    """Delete a run in which every batch failed or was cancelled."""
+    await DatasheetService(container.context).delete_run(actor, run_id=run_id)
+    return Response(status_code=204)
 
 
 def _wide_rows(long_form: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, str]]]:
@@ -1505,6 +1557,17 @@ async def approve_release(
     }
 
 
+@router.delete(
+    "/corpus-releases/{release_id}",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def delete_release(release_id: UUID, actor: CurrentActor, container: Container) -> Response:
+    """Delete a draft or rejected release that nothing points at."""
+    await ReleaseService(container.context).delete_draft(actor, release_id=release_id)
+    return Response(status_code=204)
+
+
 @router.post(
     "/corpus-releases/{release_id}/publish",
     dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
@@ -1719,6 +1782,21 @@ async def get_benchmark(
     return benchmark_json(row, include_definition=True)
 
 
+@router.delete(
+    "/evaluation/benchmarks/{benchmark_id}/{version}",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def delete_benchmark(
+    benchmark_id: str, version: str, actor: CurrentActor, container: Container
+) -> Response:
+    """Delete a benchmark version no run used and no release gate requires."""
+    await EvaluationWorkbench(container.context).delete_benchmark(
+        actor, benchmark_id=benchmark_id, version=version
+    )
+    return Response(status_code=204)
+
+
 @router.get("/evaluation/runs")
 async def list_evaluation_runs(
     actor: CurrentActor,
@@ -1764,6 +1842,19 @@ async def cancel_evaluation_run(
 ) -> dict[str, Any]:
     run = await EvaluationWorkbench(container.context).cancel_run(actor, run_id=run_id)
     return run_json(run)
+
+
+@router.delete(
+    "/evaluation/runs/{run_id}",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def delete_evaluation_run(
+    run_id: UUID, actor: CurrentActor, container: Container
+) -> Response:
+    """Delete a failed or cancelled run that no release or reviewer used."""
+    await EvaluationWorkbench(container.context).delete_run(actor, run_id=run_id)
+    return Response(status_code=204)
 
 
 @router.get("/evaluation/compare")

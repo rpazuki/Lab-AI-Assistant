@@ -11,9 +11,11 @@ import {
   Panel,
   StateChip,
 } from "@/components/ui/primitives";
+import { DeleteButton } from "@/components/ui/DeleteButton";
 import { SortHeader, TableSearch } from "@/components/ui/table";
 import {
   createInvitation,
+  deleteInvitation,
   getMe,
   getMemberSession,
   invitationLink,
@@ -447,6 +449,20 @@ export function MembersClient() {
                           >
                             Revoke
                           </Button>
+                        </div>
+                      ) : null}
+                      {item.state === "revoked" || item.state === "expired" ? (
+                        <div className="flex justify-end">
+                          <DeleteButton
+                            what={`the ${item.state} invitation to ${item.email}`}
+                            consequence="Its link already does not work; it only leaves this list."
+                            onDelete={() =>
+                              void act(
+                                () => deleteInvitation(item.id),
+                                `The invitation to ${item.email} is deleted.`,
+                              )
+                            }
+                          />
                         </div>
                       ) : null}
                     </td>

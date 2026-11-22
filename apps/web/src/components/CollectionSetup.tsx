@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 
 import { QueryHelper } from "@/components/QueryHelper";
+import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { SortHeader } from "@/components/ui/table";
 import {
@@ -20,6 +21,7 @@ import {
   approveScope,
   checkScopeGate,
   createScope,
+  deleteDiscoveryRun,
   deleteScopeDraft,
   freezeDiscovery,
   listDiscoveryRuns,
@@ -54,6 +56,18 @@ const lines = (text: string) =>
 const FREEZABLE = new Set(["planned", "running", "degraded"]);
 /** A run whose sources are still being searched. */
 const SEARCHING = new Set(["planned", "running"]);
+/** A run that stopped short. A frozen run can go only if it found nothing. */
+const STOPPED = new Set(["degraded", "failed", "cancelled"]);
+
+/**
+ * Whether the server would delete this run. A frozen run with records has
+ * candidates that decisions and releases point at; the server refuses the rest
+ * it can see and the page cannot (queued work, a later run of the same search).
+ */
+function runDeletable(run: DiscoveryRun): boolean {
+  if (STOPPED.has(run.status)) return true;
+  return run.status === "frozen" && run.connectors.every((state) => state.records_seen === 0);
+}
 
 /**
  * Setting a collection up: its scope, and the discovery runs that search it.
@@ -283,8 +297,19 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                     {run.started_at ? `started ${new Date(run.started_at).toLocaleString()}` : "not started"}
                     {run.frozen_at ? ` · frozen ${new Date(run.frozen_at).toLocaleString()}` : ""}
                   </span>
-                  {FREEZABLE.has(run.status) ? (
+                  {runDeletable(run) ? (
                     <div className="ml-auto">
+                      <DeleteButton
+                        what={`discovery run ${run.id.slice(0, 8)}`}
+                        consequence="The pages it fetched are removed, and the next run of the same search starts again from where this one started."
+                        onDelete={() =>
+                          void act(() => deleteDiscoveryRun(run.id), `Discovery run ${run.id.slice(0, 8)} deleted.`)
+                        }
+                      />
+                    </div>
+                  ) : null}
+                  {FREEZABLE.has(run.status) ? (
+                    <div className={runDeletable(run) ? "" : "ml-auto"}>
                       {run.status === "degraded" ? (
                         <Button
                           variant="danger"

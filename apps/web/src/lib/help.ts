@@ -176,6 +176,63 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         ],
       },
       {
+        id: "deleting",
+        title: "What can be deleted, and when",
+        about: [
+          "Something can be deleted only while nothing else depends on it. Where deletion is allowed a red **Delete** button appears; where it is missing, the item is part of the record others rely on and stays. Every deletion asks first, is recorded in the audit log, and cannot be undone.",
+          "Members, candidates, papers, files, values and reviews are never deleted: exclude, withdraw or reject them instead, so the history of what was decided stays complete.",
+        ],
+        howTos: [
+          {
+            title: "How to delete something",
+            steps: [
+              "Find it in its list and select **Delete**. If there is no Delete button, it cannot be deleted.",
+              "Read the question: it says what else goes with it. Select OK to delete, or Cancel to keep it.",
+            ],
+            note: "If the server finds a reason the page could not see, such as a later run of the same search, the deletion is refused and the message says what to do first.",
+          },
+          {
+            title: "How to delete a discovery run",
+            needs: "A degraded, failed or cancelled run, or a frozen run that found nothing.",
+            steps: [
+              "On **Collections**, select **Delete** on the discovery run.",
+              "The pages it fetched go with it, and the next run of the same search starts again from where this one started.",
+            ],
+            note: "It waits while work for it is still queued, and while a later run of the same search may be reusing its pages: delete the later run first. A frozen run with candidates stays, because decisions, acquisitions and releases point at them.",
+          },
+          {
+            title: "How to delete an extraction run or a draft template",
+            needs: "A finished run in which every batch failed or was cancelled; a draft template version no run used and no value was extracted with.",
+            steps: [
+              "On **Datasheets**, select **Delete** on the run or the template version.",
+              "The run's papers are queued again by the next run.",
+            ],
+            note: "A run with a succeeded batch stays: that batch marks its papers as done. Approved and retired templates record what produced reviewed values.",
+          },
+          {
+            title: "How to delete a draft release",
+            needs: "A draft or rejected release, never approved, that no other release builds on, no evaluation ran against and no conversation is pinned to.",
+            steps: ["On **Releases**, select **Delete** on the release."],
+            note: "From approval on, a release is indexed and may have been served, so it stays.",
+          },
+          {
+            title: "How to delete an evaluation run or a benchmark",
+            needs: "A failed or cancelled run whose answers were not assigned for review; a benchmark version no run measured against and publishing does not require.",
+            steps: ["On **Evaluation**, select **Delete** on the run or the benchmark version."],
+            note: "A succeeded run is evidence for publishing and comparisons, even when its gates failed.",
+          },
+          {
+            title: "How to delete an invitation",
+            needs: "A revoked or expired invitation.",
+            steps: [
+              "On **Members**, select **Revoke** first if the invitation is still open.",
+              "Select **Delete** on the revoked or expired invitation.",
+            ],
+            note: "An accepted invitation records how a member joined, so it stays.",
+          },
+        ],
+      },
+      {
         id: "statuses",
         title: "What a status means",
         statuses: ["flag"],

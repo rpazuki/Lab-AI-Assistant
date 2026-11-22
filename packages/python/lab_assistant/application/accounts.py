@@ -565,6 +565,48 @@ class AccountService:
             await uow.commit()
         return revoked
 
+    async def delete_invitation(self, actor: ActorContext, *, invitation_id: UUID) -> None:
+        """Remove a revoked or expired invitation from the list.
+
+        An open one is revoked first, so that a link already sent stops working
+        through a step that says so; an accepted one is how a member joined.
+        """
+        actor.require(Capability.MANAGE_MEMBERS)
+        context = self._context
+        async with context.uow_factory() as uow:
+            invitation = next(
+                (
+                    item
+                    for item in await uow.workspaces.list_invitations(actor.workspace_id)
+                    if item.id == invitation_id
+                ),
+                None,
+            )
+            if invitation is None:
+                raise NotFound(f"invitation {invitation_id} not found")
+            state = invitation_state(invitation, context.now())
+            if state not in (InvitationState.REVOKED, InvitationState.EXPIRED):
+                raise StateTransitionError(
+                    "only a revoked or expired invitation can be deleted"
+                    + ("; revoke it first" if state is InvitationState.OPEN else ""),
+                    context={"state": state.value},
+                )
+            await uow.workspaces.delete_invitation(actor.workspace_id, invitation_id)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=actor.workspace_id,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.INVITATION_DELETED,
+                    subject_type="invitation",
+                    subject_id=invitation.id,
+                    previous_hash=await uow.audit.latest_hash(actor.workspace_id),
+                    reason_code=f"{state.value}_invitation_deleted",
+                    metadata={"role": invitation.role.value, "state": state.value},
+                )
+            )
+            await uow.commit()
+
     async def preview_invitation(self, *, token: str) -> tuple[Invitation, Workspace]:
         """What an open invitation offers, for the page that accepts it.
 

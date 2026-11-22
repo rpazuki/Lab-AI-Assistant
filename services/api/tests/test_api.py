@@ -380,6 +380,24 @@ class TestMembers:
         ]
         assert states == ["accepted"]
 
+    async def test_an_accepted_or_open_invitation_stays_and_a_revoked_one_goes(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        created = (
+            await client.post(
+                "/api/v1/invitations", json={"email": "gone@lab.invalid"}, headers=_auth(admin)
+            )
+        ).json()
+        invitation_id = created["id"]
+        refused = await client.delete(f"/api/v1/invitations/{invitation_id}", headers=_auth(admin))
+        assert refused.status_code == 409
+        assert "revoke it first" in refused.text
+        await client.post(f"/api/v1/invitations/{invitation_id}/revoke", headers=_auth(admin))
+        deleted = await client.delete(f"/api/v1/invitations/{invitation_id}", headers=_auth(admin))
+        assert deleted.status_code == 204
+        listed = (await client.get("/api/v1/invitations", headers=_auth(admin))).json()["items"]
+        assert all(row["id"] != invitation_id for row in listed)
+
     async def test_inviting_again_replaces_the_earlier_link(self, api) -> None:
         client = api["client"]
         admin = await _login(client, "steward@lab.invalid")

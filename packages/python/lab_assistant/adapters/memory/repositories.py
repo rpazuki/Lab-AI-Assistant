@@ -224,6 +224,11 @@ class _Workspaces:
     async def list_invitations(self, workspace_id: UUID) -> list[Invitation]:
         return [i for i in self._db.invitations.values() if i.workspace_id == workspace_id]
 
+    async def delete_invitation(self, workspace_id: UUID, invitation_id: UUID) -> None:
+        invitation = self._db.invitations.get(invitation_id)
+        if invitation is not None and invitation.workspace_id == workspace_id:
+            del self._db.invitations[invitation_id]
+
 
 class _Policies:
     def __init__(self, db: MemoryDatabase) -> None:
@@ -348,6 +353,11 @@ class _Configs:
             if config.workspace_id == workspace_id and (kind is None or config.kind.value == kind)
         ]
         return sorted(configs, key=lambda c: (c.logical_id, c.semantic_version))
+
+    async def delete_config_version(self, workspace_id: UUID, config_version_id: UUID) -> None:
+        config = self._db.config_versions.get(config_version_id)
+        if config is not None and config.workspace_id == workspace_id:
+            del self._db.config_versions[config_version_id]
 
 
 #: ``(table, column) -> the MemoryDatabase attribute holding those rows``. Built
@@ -576,6 +586,32 @@ class _Observations:
         self, workspace_id: UUID, *, lineage_key: str, position: str | None, exhausted: bool
     ) -> None:
         self._db.cursors[(workspace_id, lineage_key)] = (position, exhausted)
+
+    async def delete_run(self, workspace_id: UUID, run_id: UUID) -> None:
+        run = self._db.discovery_runs.get(run_id)
+        if run is None or run.workspace_id != workspace_id:
+            return
+        requests = {
+            request.id
+            for request in self._db.source_requests.values()
+            if request.workspace_id == workspace_id and request.discovery_run_id == run_id
+        }
+        observations = {
+            observation.id
+            for observation in self._db.observations.values()
+            if observation.source_request_id in requests
+        }
+        for assertion_id in [
+            assertion.id
+            for assertion in self._db.assertions.values()
+            if assertion.source_observation_id in observations
+        ]:
+            del self._db.assertions[assertion_id]
+        for observation_id in observations:
+            del self._db.observations[observation_id]
+        for request_id in requests:
+            del self._db.source_requests[request_id]
+        del self._db.discovery_runs[run_id]
 
 
 class _Works:
@@ -1164,6 +1200,16 @@ class _Releases:
         ]
         return sorted(items, key=lambda i: i.record.sort_key)
 
+    async def delete(self, workspace_id: UUID, release_id: UUID) -> None:
+        release = self._db.releases.get(release_id)
+        if release is None or release.workspace_id != workspace_id:
+            return
+        for item_id in [
+            item.id for item in self._db.release_items.values() if item.release_id == release_id
+        ]:
+            del self._db.release_items[item_id]
+        del self._db.releases[release_id]
+
     async def get_alias(self, workspace_id: UUID, alias: str) -> SearchAlias | None:
         return self._db.aliases.get((workspace_id, alias))
 
@@ -1267,6 +1313,22 @@ class _Tasks:
                 continue
             counts[task.state.value] = counts.get(task.state.value, 0) + 1
         return dict(sorted(counts.items()))
+
+    async def list_run_tasks(self, workspace_id: UUID, run_id: UUID) -> list[Task]:
+        tasks = [
+            task
+            for task in self._db.tasks.values()
+            if task.workspace_id == workspace_id and task.run_id == run_id
+        ]
+        return sorted(tasks, key=lambda t: t.created_at or datetime.min)
+
+    async def delete_tasks(self, workspace_id: UUID, task_ids: Sequence[UUID]) -> None:
+        for task_id in task_ids:
+            task = self._db.tasks.get(task_id)
+            if task is not None and task.workspace_id == workspace_id:
+                del self._db.tasks[task_id]
+                for leased in self._db.leased_task_ids.values():
+                    leased.discard(task_id)
 
     async def release_dependencies(self, workspace_id: UUID, completed_task_id: UUID) -> list[Task]:
         unblocked: list[Task] = []
@@ -1564,6 +1626,21 @@ class _Evaluations:
 
     async def clear_release_gate(self, workspace_id: UUID, benchmark_id: str) -> None:
         self._db.release_gates.pop((str(workspace_id), benchmark_id), None)
+
+    async def delete_run(self, workspace_id: UUID, run_id: UUID) -> None:
+        run = self._db.evaluation_runs.get(str(run_id))
+        if run is None or str(run.get("workspace_id")) != str(workspace_id):
+            return
+        for review_id in [
+            key
+            for key, row in self._db.evaluation_reviews.items()
+            if str(row["run_id"]) == str(run_id)
+        ]:
+            del self._db.evaluation_reviews[review_id]
+        del self._db.evaluation_runs[str(run_id)]
+
+    async def delete_benchmark(self, workspace_id: UUID, benchmark_id: str, version: str) -> None:
+        self._db.benchmarks.pop((str(workspace_id), benchmark_id, version), None)
 
 
 class MemoryUnitOfWork:

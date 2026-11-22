@@ -143,6 +143,16 @@ class TaskState(StrEnum):
         )
 
     @property
+    def is_settled(self) -> bool:
+        """Nothing will run this task again without a person asking.
+
+        Terminal, or finished with a degraded result. Not ``quarantined``, which is
+        parked for someone to look at, nor ``awaiting_user``: both still expect a
+        decision, so what they belong to is not finished.
+        """
+        return self.is_terminal or self is TaskState.DEGRADED
+
+    @property
     def counts_as_failure(self) -> bool:
         """Waiting for a human is not a failure."""
         return self in (TaskState.FAILED, TaskState.DEAD_LETTER)

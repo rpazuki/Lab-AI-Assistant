@@ -46,12 +46,16 @@ class AuditAction(StrEnum):
     GRANT_CHANGED = "grant_changed"
     #: An admin opened a member's conversation. Recorded on every read.
     MEMBER_CHAT_READ = "member_chat_read"
+    #: A revoked or expired invitation was removed from the list.
+    INVITATION_DELETED = "invitation_deleted"
     # discovery and identity
     SCOPE_APPROVED = "scope_approved"
     #: An unapproved scope version was deleted. Nothing had searched with it.
     SCOPE_DRAFT_DELETED = "scope_draft_deleted"
     DISCOVERY_RUN_STARTED = "discovery_run_started"
     DISCOVERY_RUN_FROZEN = "discovery_run_frozen"
+    #: A discovery run that contributed no candidates was deleted, with its pages.
+    DISCOVERY_RUN_DELETED = "discovery_run_deleted"
     DEGRADED_SOURCE_ACCEPTED = "degraded_source_accepted"
     IDENTITY_DECIDED = "identity_decided"
     RELEVANCE_DECIDED = "relevance_decided"
@@ -66,18 +70,28 @@ class AuditAction(StrEnum):
     RENDITION_ACCEPTED_DEGRADED = "rendition_accepted_degraded"
     EXTRACTION_COMPLETED = "extraction_completed"
     PROPOSAL_REJECTED = "proposal_rejected"
+    #: An extraction run none of whose batches succeeded was deleted.
+    EXTRACTION_RUN_DELETED = "extraction_run_deleted"
+    #: A draft extraction template version nothing had used was deleted.
+    EXTRACTION_TEMPLATE_DELETED = "extraction_template_deleted"
     # review and release
     CLAIM_REVIEWED = "claim_reviewed"
     RELEASE_DRAFTED = "release_drafted"
+    #: A draft or rejected release, never approved, was deleted.
+    RELEASE_DRAFT_DELETED = "release_draft_deleted"
     RELEASE_VALIDATED = "release_validated"
     RELEASE_APPROVED = "release_approved"
     RELEASE_PUBLISHED = "release_published"
     RELEASE_ROLLED_BACK = "release_rolled_back"
     RELEASE_WITHDRAWN = "release_withdrawn"
     BENCHMARK_REGISTERED = "benchmark_registered"
+    #: A benchmark version no run had measured against was deleted.
+    BENCHMARK_DELETED = "benchmark_deleted"
     EVALUATION_REQUESTED = "evaluation_requested"
     EVALUATION_COMPLETED = "evaluation_completed"
     EVALUATION_CANCELLED = "evaluation_cancelled"
+    #: A failed or cancelled evaluation run was deleted.
+    EVALUATION_RUN_DELETED = "evaluation_run_deleted"
     EVALUATION_REVIEW_ASSIGNED = "evaluation_review_assigned"
     EVALUATION_REVIEW_SUBMITTED = "evaluation_review_submitted"
     RELEASE_GATE_CHANGED = "release_gate_changed"

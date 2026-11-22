@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { SortHeader, TableSearch } from "@/components/ui/table";
 import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
@@ -9,6 +10,8 @@ import {
   ApiError,
   approveExtractionTemplate,
   cancelExtractionRun,
+  deleteExtractionRun,
+  deleteExtractionTemplate,
   estimateExtraction,
   listExtractionRuns,
   listExtractionTemplates,
@@ -166,6 +169,13 @@ export function DatasheetsClient() {
             "the template was not approved",
           )
         }
+        onDelete={(template) =>
+          act(
+            () => deleteExtractionTemplate(template.template_id, template.version),
+            `${template.key} is deleted.`,
+            "the template was not deleted",
+          )
+        }
         onRegister={(source) =>
           act(
             async () => {
@@ -290,6 +300,19 @@ export function DatasheetsClient() {
                       Cancel
                     </Button>
                   )}
+                  {extractionRunDeletable(run) ? (
+                    <DeleteButton
+                      what={`extraction run ${run.run_id.slice(0, 8)}`}
+                      consequence="No batch of it succeeded, so its papers are queued again by the next run."
+                      onDelete={() =>
+                        act(
+                          () => deleteExtractionRun(run.run_id),
+                          `Extraction run ${run.run_id.slice(0, 8)} deleted.`,
+                          "the run was not deleted",
+                        )
+                      }
+                    />
+                  ) : null}
                 </div>
                 {run.errors.length > 0 ? (
                   <ul className="mt-1 list-disc pl-6 text-xs text-danger-strong">
@@ -330,15 +353,26 @@ function EstimateView({ estimate }: { estimate: ExtractionEstimate }) {
   );
 }
 
+/** States of a batch that produced nothing to keep. */
+const NOTHING_KEPT = new Set(["failed", "dead_letter", "cancelled"]);
+
+/** A run can go once every batch failed or was cancelled; a succeeded batch is kept. */
+export function extractionRunDeletable(run: ExtractionRun): boolean {
+  return run.finished && Object.keys(run.states).every((state) => NOTHING_KEPT.has(state));
+}
+
 function TemplatesPanel({
   templates,
   busy,
   onApprove,
+  onDelete,
   onRegister,
 }: {
   templates: ExtractionTemplate[];
   busy: boolean;
   onApprove: (template: ExtractionTemplate) => void;
+  /** Offered for drafts only; the server also refuses a draft a run has used. */
+  onDelete: (template: ExtractionTemplate) => void;
   onRegister: (source: { yaml: string }) => Promise<void>;
 }) {
   const [adding, setAdding] = useState(false);
@@ -422,6 +456,13 @@ function TemplatesPanel({
                     Approve
                   </Button>
                 )}
+                {template.status === "draft" ? (
+                  <DeleteButton
+                    what={`template ${template.key}`}
+                    consequence="It is a draft; it can be deleted only if no run used it and no value was extracted with it."
+                    onDelete={() => onDelete(template)}
+                  />
+                ) : null}
               </div>
               {template.scientific_purpose ? (
                 <p className="mt-1 text-muted">{template.scientific_purpose}</p>

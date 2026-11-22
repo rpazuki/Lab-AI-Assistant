@@ -2,12 +2,14 @@
 
 import { useCallback, useState } from "react";
 
+import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Alert, Button, Empty, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
   ApiError,
   approveRelease,
   buildExport,
+  deleteRelease,
   exportDownloadUrl,
   draftRelease,
   listReleaseGates,
@@ -113,6 +115,19 @@ export function ReleasesClient() {
       setStatus(null);
       setError(caught instanceof Error ? caught.message : `${label} failed`);
     }
+  }
+
+  async function remove(release: Release) {
+    setStatus("deleting…");
+    try {
+      await deleteRelease(release.id);
+      setStatus(`${release.name}@${release.semantic_version} deleted.`);
+      setError(null);
+    } catch (caught) {
+      setStatus(null);
+      setError(caught instanceof Error ? caught.message : "the release was not deleted");
+    }
+    await live.refresh();
   }
 
   return (
@@ -253,6 +268,13 @@ export function ReleasesClient() {
                   >
                     Build export
                   </Button>
+                  {release.status === "draft" || release.status === "rejected" ? (
+                    <DeleteButton
+                      what={`release ${release.name}@${release.semantic_version}`}
+                      consequence="It was never approved, so nothing was served from it; it is refused while another release, an evaluation run or a conversation points at it."
+                      onDelete={() => void remove(release)}
+                    />
+                  ) : null}
                 </div>
                 {(gateStatus[release.id] ?? []).length > 0 ? (
                   <ul aria-label="Required benchmarks" className="mt-2 flex flex-wrap gap-1">

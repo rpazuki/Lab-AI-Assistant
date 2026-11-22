@@ -31,7 +31,7 @@ from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
-from lab_assistant.contracts.errors import NotFound, ValidationFailure
+from lab_assistant.contracts.errors import NotFound, StateTransitionError, ValidationFailure
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.contracts.extraction import TemplateVersionSpec
 from lab_assistant.contracts.stage import StageName, TaskRequest
@@ -250,6 +250,69 @@ class DatasheetService:
         active = active_template(configs)
         return template_json(approved, active_id=active.id if active else None)
 
+    async def delete_template(self, actor: ActorContext, *, template_id: str, version: str) -> None:
+        """Delete a draft template version that nothing has used.
+
+        An approved or retired version is the record of what produced reviewed
+        values, so only a draft can go, and only while no extraction task named it
+        and no value carries it.
+        """
+        from lab_assistant.application.pagination import collect_pages
+
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
+        actor.require(Capability.RUN_EXTRACTION)
+        actor.require(Capability.MANAGE_SCOPE)
+        context = self._context
+        key = f"{template_id}@{version}"
+        async with context.uow_factory() as uow:
+            config = await uow.configs.find_config_version(
+                actor.workspace_id,
+                kind=ConfigKind.EXTRACTION_TEMPLATE.value,
+                logical_id=template_id,
+                semantic_version=version,
+            )
+            if config is None:
+                raise NotFound(f"extraction template {key} not found")
+            if config.status is not ApprovalState.DRAFT:
+                raise StateTransitionError(
+                    f"a {config.status.value} template version cannot be deleted; only a draft can",
+                    context={"status": config.status.value},
+                )
+            tasks = await uow.tasks.list_tasks(
+                actor.workspace_id, stage=StageName.EXTRACTION.value, limit=100_000
+            )
+            if any(task.inputs.get("template") in (key, template_id) for task in tasks):
+                raise StateTransitionError(
+                    "an extraction run used this template version; it cannot be deleted"
+                )
+            claims = await collect_pages(
+                lambda after, size: uow.claims.list_claims(
+                    actor.workspace_id, limit=size, after_id=after
+                )
+            )
+            if any(
+                claim.template_id == template_id and claim.template_version == version
+                for claim in claims
+            ):
+                raise StateTransitionError(
+                    "values were extracted with this template version; it cannot be deleted"
+                )
+            await uow.configs.delete_config_version(actor.workspace_id, config.id)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=actor.workspace_id,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.EXTRACTION_TEMPLATE_DELETED,
+                    subject_type="extraction_template",
+                    subject_id=config.id,
+                    previous_hash=await uow.audit.latest_hash(actor.workspace_id),
+                    reason_code="draft_deleted",
+                    metadata={"template": key, "checksum": config.checksum[:16]},
+                )
+            )
+            await uow.commit()
+
     # ── runs ────────────────────────────────────────────────────────────────
     async def estimate(self, actor: ActorContext, *, template: str | None) -> Estimate:
         """What a run would extract, and roughly what it would cost."""
@@ -399,6 +462,54 @@ class DatasheetService:
         if self._orchestrator is None:
             raise RuntimeError("DatasheetService needs a task orchestrator to cancel a run")
         return await self._orchestrator.cancel_run(workspace_id=actor.workspace_id, run_id=run_id)
+
+    async def delete_run(self, actor: ActorContext, *, run_id: UUID) -> int:
+        """Delete an extraction run in which no batch succeeded. Returns its task count.
+
+        A run is its tasks, so that is what goes. Only when every one failed or
+        was cancelled: a succeeded batch marks its papers as done for its
+        template, and deleting it would queue them again. Values a failed batch
+        managed to write stay, with their reviews; they are not the run's to take.
+        """
+        from lab_assistant.domain.states import TaskState
+
+        self._context.require_installation(InstallationCapability.PROCESS_CONTENT)
+        actor.require(Capability.RUN_EXTRACTION)
+        context = self._context
+        failed = {TaskState.FAILED, TaskState.DEAD_LETTER, TaskState.CANCELLED}
+        async with context.uow_factory() as uow:
+            tasks = await uow.tasks.list_run_tasks(actor.workspace_id, run_id)
+            if not any(task.stage is StageName.EXTRACTION for task in tasks):
+                raise NotFound(f"extraction run {run_id} not found")
+            kept = [task for task in tasks if task.state not in failed]
+            if kept:
+                raise StateTransitionError(
+                    "only a run whose every batch failed or was cancelled can be deleted",
+                    context={"states": sorted({task.state.value for task in kept})},
+                )
+            await uow.tasks.delete_tasks(actor.workspace_id, [task.id for task in tasks])
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=actor.workspace_id,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.EXTRACTION_RUN_DELETED,
+                    subject_type="extraction_run",
+                    subject_id=run_id,
+                    previous_hash=await uow.audit.latest_hash(actor.workspace_id),
+                    run_id=run_id,
+                    reason_code="run_deleted",
+                    metadata={
+                        "tasks": len(tasks),
+                        "template": next(
+                            (t.inputs.get("template") for t in tasks if t.inputs.get("template")),
+                            None,
+                        ),
+                    },
+                )
+            )
+            await uow.commit()
+        return len(tasks)
 
     # ── the working sheet ───────────────────────────────────────────────────
     async def rows(self, actor: ActorContext, *, template: str | None) -> list[dict[str, Any]]:

@@ -299,6 +299,14 @@ export const startDiscovery = (scopeVersionId: string) =>
     body: JSON.stringify({ scope_version_id: scopeVersionId }),
   });
 
+/**
+ * Delete a run that produced no candidates in use. Refused with 409, and the reason,
+ * while it has work queued, once its frozen candidates exist, or while a later run
+ * of the same search may be reusing its pages.
+ */
+export const deleteDiscoveryRun = (runId: string) =>
+  request<void>(`/discovery-runs/${runId}`, { method: "DELETE" });
+
 /** Freeze a run. A degraded run freezes only when the steward accepts the gap. */
 export const freezeDiscovery = (runId: string, acceptDegraded = false) =>
   request<{ run_id: string; status: string }>(
@@ -443,6 +451,10 @@ export const decideReview = (
 export const correctionRate = () => request<Record<string, number>>("/reviews/correction-rate");
 
 // ── releases ──────────────────────────────────────────────────────────────
+/** Delete a draft or rejected release that nothing points at. */
+export const deleteRelease = (releaseId: string) =>
+  request<void>(`/corpus-releases/${releaseId}`, { method: "DELETE" });
+
 export const listReleases = () =>
   request<{
     items: Release[];
@@ -576,6 +588,10 @@ export const revokeInvitation = (invitationId: string) =>
     method: "POST",
   });
 
+/** Remove a revoked or expired invitation from the list. */
+export const deleteInvitation = (invitationId: string) =>
+  request<void>(`/invitations/${invitationId}`, { method: "DELETE" });
+
 /** The token travels in a POST body, never in a URL an access log would keep. */
 export const previewInvitation = (token: string) =>
   request<InvitationPreview>("/invitations/preview", {
@@ -627,6 +643,13 @@ export const getBenchmark = (benchmarkId: string, version: string) =>
     `/evaluation/benchmarks/${encodeURIComponent(benchmarkId)}/${encodeURIComponent(version)}`,
   );
 
+/** Delete a benchmark version no run used and no release gate requires. */
+export const deleteBenchmark = (benchmarkId: string, version: string) =>
+  request<void>(
+    `/evaluation/benchmarks/${encodeURIComponent(benchmarkId)}/${encodeURIComponent(version)}`,
+    { method: "DELETE" },
+  );
+
 export const listEvaluationRuns = (releaseId?: string) =>
   request<{ items: EvaluationRun[] }>(
     `/evaluation/runs${releaseId ? `?release_id=${encodeURIComponent(releaseId)}` : ""}`,
@@ -645,6 +668,10 @@ export const getEvaluationRun = (runId: string) =>
 
 export const cancelEvaluationRun = (runId: string) =>
   request<EvaluationRun>(`/evaluation/runs/${runId}/cancel`, { method: "POST" });
+
+/** Delete a failed or cancelled run that no release or reviewer used. */
+export const deleteEvaluationRun = (runId: string) =>
+  request<void>(`/evaluation/runs/${runId}`, { method: "DELETE" });
 
 export const compareEvaluationRuns = (baseId: string, candidateId: string) =>
   request<RunComparison>(
@@ -715,6 +742,13 @@ export const approveExtractionTemplate = (templateId: string, version: string) =
     { method: "POST" },
   );
 
+/** Delete a draft version that no run and no extracted value used. */
+export const deleteExtractionTemplate = (templateId: string, version: string) =>
+  request<void>(
+    `/extraction/templates/${encodeURIComponent(templateId)}/${encodeURIComponent(version)}`,
+    { method: "DELETE" },
+  );
+
 const templateQuery = (template?: string) =>
   template ? `?template=${encodeURIComponent(template)}` : "";
 
@@ -734,6 +768,10 @@ export const cancelExtractionRun = (runId: string) =>
   request<{ run_id: string; cancelled_tasks: number }>(`/extraction/runs/${runId}/cancel`, {
     method: "POST",
   });
+
+/** Delete a run in which every batch failed or was cancelled. */
+export const deleteExtractionRun = (runId: string) =>
+  request<void>(`/extraction/runs/${runId}`, { method: "DELETE" });
 
 export const workingSheet = (template?: string) =>
   request<WorkingSheet>(`/extraction/rows${templateQuery(template)}`);
