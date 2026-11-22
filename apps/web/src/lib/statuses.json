@@ -282,6 +282,7 @@
       "login_failed": "A sign-in attempt failed.",
       "logout": "A member signed out.",
       "session_revoked": "A sign-in session was ended by an admin or a security rule.",
+      "password_changed": "A password was set from the server's command line, which signs that person out everywhere.",
       "invitation_created": "An admin invited someone.",
       "invitation_accepted": "Someone accepted an invitation and joined.",
       "membership_changed": "A member's role or status changed.",

@@ -40,6 +40,8 @@ class AuditAction(StrEnum):
     LOGIN_FAILED = "login_failed"
     LOGOUT = "logout"
     SESSION_REVOKED = "session_revoked"
+    #: A password was set by an operator; every earlier sign-in stops working.
+    PASSWORD_CHANGED = "password_changed"
     INVITATION_CREATED = "invitation_created"
     INVITATION_ACCEPTED = "invitation_accepted"
     MEMBERSHIP_CHANGED = "membership_changed"

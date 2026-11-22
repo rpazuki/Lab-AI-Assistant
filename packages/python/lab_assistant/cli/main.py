@@ -69,6 +69,11 @@ def _parser() -> argparse.ArgumentParser:
         "revoke-sessions", help="invalidate every issued session for a user"
     )
     revoke_sessions.add_argument("--user", required=True, help="user id")
+    set_password = database_sub.add_parser(
+        "set-password",
+        help="set someone's password and sign them out everywhere",
+    )
+    set_password.add_argument("--email", required=True)
 
     storage = subparsers.add_parser("storage", help="object store and registry operations")
     storage_sub = storage.add_subparsers(dest="storage_command", required=True)
@@ -566,6 +571,8 @@ async def _db(args: argparse.Namespace, settings: Settings) -> int:
     from lab_assistant.adapters.db.engine import create_schema, make_engine
     from lab_assistant.adapters.db.tables import METADATA
 
+    if args.db_command == "set-password":
+        return await _set_password(args, settings)
     if args.db_command in ("create-admin", "verify-audit", "verify-restore", "revoke-sessions"):
         return await _db_service_command(args, settings)
 
@@ -654,6 +661,73 @@ async def _db_service_command(args: argparse.Namespace, settings: Settings) -> i
     finally:
         for hook in container.shutdown:
             await hook()
+
+
+def _read_new_password() -> str | None:
+    """The new password from ``LAB_NEW_PASSWORD``, or typed twice at a prompt.
+
+    Never from argv, where it would show in ``ps`` and shell history. Typed twice
+    because the point of this command is to know for certain what the password is.
+    """
+    import os
+    from getpass import getpass
+
+    from_env = os.environ.get("LAB_NEW_PASSWORD")
+    if from_env:
+        return from_env
+    first = getpass("new password: ")
+    if getpass("again: ") != first:
+        print("the two passwords differ; nothing was changed", file=sys.stderr)
+        return None
+    return first
+
+
+async def _set_password(
+    args: argparse.Namespace,
+    settings: Settings,
+    *,
+    container: Any | None = None,
+    read_password: Any = _read_new_password,
+) -> int:
+    """Set a password from the server, for the account that can no longer sign in.
+
+    Goes through the account service, so the change is hashed the way sign-in
+    checks it, every earlier session stops working, and the audit log records it.
+    """
+    from lab_assistant.application.accounts import AccountService
+    from lab_assistant.contracts.errors import ValidationFailure
+    from lab_assistant.domain.workspace import normalise_email
+
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        email = normalise_email(args.email)
+        async with container.context.uow_factory() as uow:
+            user = await uow.users.get_by_email(email)
+        if user is None:
+            print(f"no account has the email {email}", file=sys.stderr)
+            return 1
+        password = read_password()
+        if password is None:
+            return 1
+        try:
+            await AccountService(container.context).set_password(
+                user_id=user.id, password=password, actor_id=None
+            )
+        except ValidationFailure as error:
+            print(f"{error}; nothing was changed", file=sys.stderr)
+            return 1
+        print(f"password set for {email}; every earlier sign-in has ended")
+        if not user.is_active:
+            print("the account is deactivated, so it still cannot sign in", file=sys.stderr)
+        return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
 
 
 async def _workspace_id(container: Any, slug: str) -> UUID | None:

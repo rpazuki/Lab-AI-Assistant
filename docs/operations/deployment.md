@@ -46,6 +46,14 @@ never from the command line, where it would land in `ps` output and shell histor
 lab db create-admin --email <you@example.ac.uk> --workspace <slug>
 ```
 
+If sign-in keeps refusing a password, set a new one the same way. The command asks
+for it twice (or reads `LAB_NEW_PASSWORD`), signs that person out everywhere, and
+records the change in the audit log:
+
+```bash
+lab db set-password --email <you@example.ac.uk>
+```
+
 ## Routine deploys
 
 Take a backup of PostgreSQL and the objects volume first, then, as root, from the

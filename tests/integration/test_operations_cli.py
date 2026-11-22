@@ -18,10 +18,12 @@ from typing import Any
 
 import pytest
 
+from lab_assistant.application.accounts import AuthenticationFailed
 from lab_assistant.application.releases import ReleaseService
 from lab_assistant.cli.main import (
     _demo,
     _release_references,
+    _set_password,
     _task,
     _verify_audit,
     _verify_restore,
@@ -357,6 +359,69 @@ class TestTaskCommands:
         )
         assert code == 1
         assert "not found" in capsys.readouterr().err
+
+
+class TestSetPassword:
+    """``lab db set-password``: the way back in when sign-in keeps refusing."""
+
+    async def test_the_new_password_signs_in_and_the_old_one_stops(
+        self, deployment, capsys
+    ) -> None:
+        harness = deployment["harness"]
+        epoch_before = (
+            await harness.accounts.authenticate(
+                email="steward@lab.invalid", password="a-long-passphrase"
+            )
+        ).auth_epoch
+        code = await _set_password(
+            _args(email="  Steward@Lab.invalid "),
+            harness.context.settings,
+            container=deployment["container"],
+            read_password=lambda: "a-brand-new-passphrase",
+        )
+        assert code == 0
+        assert "password set for steward@lab.invalid" in capsys.readouterr().out
+        after = await harness.accounts.authenticate(
+            email="steward@lab.invalid", password="a-brand-new-passphrase"
+        )
+        # Earlier sessions end: their tokens carry the old auth epoch.
+        assert after.auth_epoch == epoch_before + 1
+        with pytest.raises(AuthenticationFailed):
+            await harness.accounts.authenticate(
+                email="steward@lab.invalid", password="a-long-passphrase"
+            )
+        async with harness.context.uow_factory() as uow:
+            events = await uow.audit.list_events(None, limit=1000)
+        changed = [event for event in events if event.action == "password_changed"]
+        assert len(changed) == 1 and changed[0].subject_id == after.id
+        assert "passphrase" not in json.dumps(changed[0].metadata)
+
+    async def test_a_short_password_changes_nothing(self, deployment, capsys) -> None:
+        harness = deployment["harness"]
+        code = await _set_password(
+            _args(email="steward@lab.invalid"),
+            harness.context.settings,
+            container=deployment["container"],
+            read_password=lambda: "short",
+        )
+        assert code == 1
+        assert "at least 12 characters" in capsys.readouterr().err
+        await harness.accounts.authenticate(
+            email="steward@lab.invalid", password="a-long-passphrase"
+        )
+
+    async def test_an_unknown_email_is_an_error(self, deployment, capsys) -> None:
+        asked: list[bool] = []
+        code = await _set_password(
+            _args(email="nobody@lab.invalid"),
+            deployment["harness"].context.settings,
+            container=deployment["container"],
+            read_password=lambda: asked.append(True) or "a-brand-new-passphrase",
+        )
+        assert code == 1
+        assert "no account has the email nobody@lab.invalid" in capsys.readouterr().err
+        # It says so before asking for a password nobody could use.
+        assert asked == []
 
 
 class TestDemo:

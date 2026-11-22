@@ -367,6 +367,11 @@ class AccountService:
         return user
 
     async def set_password(self, *, user_id: UUID, password: str, actor_id: UUID | None) -> User:
+        """Replace a password, signing the person out everywhere, and audit it.
+
+        The audit row records that the password changed and who changed it, never
+        anything derived from the password itself.
+        """
         context = self._context
         async with context.uow_factory() as uow:
             user = await uow.users.get(user_id)
@@ -376,6 +381,18 @@ class AccountService:
             user.auth_epoch += 1  # a password change revokes existing tokens
             user.updated_at = context.now()
             await uow.users.update(user)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=None,
+                    actor_type=ActorType.USER if actor_id else ActorType.SYSTEM,
+                    actor_id=actor_id,
+                    action=AuditAction.PASSWORD_CHANGED,
+                    subject_type="user",
+                    subject_id=user.id,
+                    previous_hash=await uow.audit.latest_hash(None),
+                    metadata={"auth_epoch": user.auth_epoch},
+                )
+            )
             await uow.commit()
         return user
 
