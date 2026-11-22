@@ -9,8 +9,17 @@ x-logging: &logging
   driver: json-file
   options: { max-size: "20m", max-file: "5" }
 
+# Every container, the database and one-off `compose run` containers included,
+# runs in one systemd slice. scripts/deploy/update.sh gives the slice a CPU quota
+# of 80% of the host's CPUs, so together they never take the whole VM; the
+# per-container limits below cannot do that, since each can sit under its own
+# limit while their sum is the whole machine. On a host whose slice has no quota
+# yet (before the first update.sh run), the slice is created without one.
+x-cpu-slice: &cpu-slice labassistant.slice
+
 services:
   db:
+    cgroup_parent: *cpu-slice
     ports: !reset []          # never publish the database on the VM
     restart: unless-stopped
     logging: *logging
@@ -22,6 +31,7 @@ services:
       - log_min_duration_statement=1000
 
   api:
+    cgroup_parent: *cpu-slice
     ports: !override ["127.0.0.1:${LAB_API_HOST_PORT:-8100}:8000"]
     volumes:
       - clamav-socket:/run/clamav:ro
@@ -44,6 +54,7 @@ services:
     logging: *logging
 
   worker-network:
+    cgroup_parent: *cpu-slice
     env_file: *server-env
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
@@ -53,6 +64,7 @@ services:
     logging: *logging
 
   worker-compute:
+    cgroup_parent: *cpu-slice
     env_file: *server-env
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
@@ -69,6 +81,7 @@ services:
     logging: *logging
 
   web:
+    cgroup_parent: *cpu-slice
     ports: !override ["127.0.0.1:${LAB_WEB_HOST_PORT:-3300}:3002"]
     restart: unless-stopped
     read_only: true
@@ -80,6 +93,7 @@ services:
     logging: *logging
 
   scanner:
+    cgroup_parent: *cpu-slice
     build:
       context: .
       dockerfile: infra/compose/scanner.Dockerfile

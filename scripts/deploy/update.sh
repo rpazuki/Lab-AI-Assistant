@@ -23,6 +23,9 @@ Usage: sudo bash scripts/deploy/update.sh [options]
   --api-port N       Loopback API port (default: 8100, LAB_API_HOST_PORT)
   --web-port N       Loopback web port (default: 3300, LAB_WEB_HOST_PORT)
   --base-path PATH   Web path prefix (default: /assist)
+  --cpu-percent N    Most of this host's CPU every container together may use
+                     (default: 80). Applied to the labassistant.slice systemd
+                     slice that every container runs in.
   --help
 
 The installation role is read from .env, .env.server and .env.site (last wins,
@@ -39,9 +42,10 @@ The old services keep serving while images build. They then stop, migrations run
 (`alembic upgrade head`, which applies only pending revisions), and the stack
 starts and must pass /health, /ready and the login-page check over loopback.
 A failure leaves the stack stopped or unhealthy for diagnosis; nothing is rolled
-back. The database container is started if stopped and never recreated. nginx,
-SELinux, the firewall, and the other applications on this server are never
-touched. Secrets stay in .env and are never printed. Do not run with bash -x.
+back. The database container is started if stopped, and recreated only when
+its configuration changed (its data is in a named volume). nginx, SELinux, the
+firewall, and the other applications on this server are never touched; the one
+host change is the labassistant.slice unit that caps this stack's CPU. Secrets stay in .env and are never printed. Do not run with bash -x.
 HELP
 }
 
@@ -72,6 +76,46 @@ setting() {
 
 # Whether a key has a non-empty value in .env, without reading the value out.
 has_secret() { grep -Eq "^$1=.+" "$repo/.env"; }
+
+# The systemd slice every container runs in (cgroup_parent in the production
+# overlay). Its quota caps the containers together: per-container limits cannot,
+# since each can sit under its own limit while together they take the whole VM.
+CPU_SLICE=labassistant.slice
+
+cpu_quota() { printf '%s' $(( $(nproc) * $1 )); }
+
+cap_cpus() {
+    # cap_cpus PERCENT: write the slice unit and apply its quota now.
+    local percent=$1 quota unit=/etc/systemd/system/$CPU_SLICE content
+    quota=$(cpu_quota "$percent")
+    content=$(printf '%s\n' \
+        '# Written by scripts/deploy/update.sh; rewritten on every deployment.' \
+        '# Every Lab AI Assistant container runs in this slice, so together they' \
+        "# never use more than ${percent}% of this host's $(nproc) CPUs." \
+        '[Unit]' \
+        'Description=Lab AI Assistant containers, CPU capped' \
+        '' \
+        '[Slice]' \
+        "CPUQuota=${quota}%")
+    if [[ ! -f $unit || $(cat "$unit") != "$content" ]]; then
+        printf '%s\n' "$content" > "$unit"
+        systemctl daemon-reload
+    fi
+    # Applies to the running slice too, without restarting anything in it.
+    systemctl set-property --runtime "$CPU_SLICE" "CPUQuota=${quota}%"
+    note "CPU cap: all containers together use at most ${percent}% of $(nproc) CPUs (CPUQuota=${quota}%)."
+}
+
+verify_cpu_cap() {
+    local id parent outside=()
+    for id in $(compose ps -q); do
+        parent=$(docker inspect -f '{{.HostConfig.CgroupParent}}' "$id")
+        [[ $parent == "$CPU_SLICE" ]] || outside+=("$(docker inspect -f '{{.Name}}' "$id")")
+    done
+    (( ${#outside[@]} == 0 )) \
+        || fail "Running outside the CPU cap ($CPU_SLICE): ${outside[*]}. Recreate them: sudo ./scripts/restart.sh --recreate"
+    note "Every container runs in $CPU_SLICE."
+}
 
 on_error() {
     local result=$?
@@ -131,6 +175,7 @@ PY
 
 main() {
     local check_only=false first_install=false repo app_user=labassistant project=lab-assistant
+    local cpu_percent=80
     local api_port=8100 web_port=3300 base_path=/assist
     local before after app_stopped=false db_running role
     local -a app_services build_services
@@ -140,11 +185,12 @@ main() {
             --help|-h) usage; return 0 ;;
             --check) check_only=true; shift ;;
             --first-install) first_install=true; shift ;;
-            --repo|--user|--project|--api-port|--web-port|--base-path)
+            --repo|--user|--project|--api-port|--web-port|--base-path|--cpu-percent)
                 (( $# >= 2 )) || fail "Missing value for $1"
                 case "$1" in
                     --repo) repo=$2 ;; --user) app_user=$2 ;; --project) project=$2 ;;
                     --api-port) api_port=$2 ;; --web-port) web_port=$2 ;; --base-path) base_path=$2 ;;
+                    --cpu-percent) cpu_percent=$2 ;;
                 esac
                 shift 2 ;;
             *) fail "Unknown option: $1 (see --help)" ;;
@@ -153,10 +199,16 @@ main() {
     [[ $base_path == /* && $base_path != */ && $base_path != *' '* ]] \
         || fail 'Use a base path such as /assist, without a trailing slash.'
     [[ $api_port =~ ^[0-9]+$ && $web_port =~ ^[0-9]+$ ]] || fail 'Ports must be numbers.'
+    [[ $cpu_percent =~ ^[0-9]+$ ]] && (( cpu_percent >= 10 && cpu_percent <= 100 )) \
+        || fail '--cpu-percent takes a whole number from 10 to 100.'
 
     (( EUID == 0 )) || fail 'Run this script with sudo bash.'
-    for command in git sudo flock curl docker; do need "$command"; done
+    for command in git sudo flock curl docker systemctl nproc; do need "$command"; done
     docker compose version >/dev/null 2>&1 || fail 'Docker Compose v2 is required.'
+    # The CPU cap is a systemd slice; under the cgroupfs driver Docker would put
+    # the containers in a plain cgroup of that name, with no cap at all.
+    [[ $(docker info --format '{{.CgroupDriver}}') == systemd ]] \
+        || fail "Docker uses the $(docker info --format '{{.CgroupDriver}}') cgroup driver; the CPU cap needs the systemd driver (the default on Red Hat with cgroup v2)."
 
     repo=$(cd -- "$repo" && pwd -P)
     cd -- "$repo"
@@ -217,6 +269,7 @@ main() {
         after=$(as_app git rev-parse '@{upstream}')
         note "Preflight passed. Checkout ${before:0:12}; upstream ${after:0:12}."
         note "Database: ${db_running:+running}${db_running:-not running (needs --first-install)}."
+        note "CPU cap to apply: ${cpu_percent}% of $(nproc) CPUs (CPUQuota=$(cpu_quota "$cpu_percent")%)."
         trap - ERR
         return 0
     fi
@@ -224,6 +277,8 @@ main() {
     as_app git pull --ff-only
     after=$(as_app git rev-parse HEAD)
     note "Deploying Lab AI Assistant ${before:0:12} -> ${after:0:12}."
+    # Before anything starts: a container joining the slice must find its quota.
+    cap_cpus "$cpu_percent"
 
     # Build while the old version keeps serving. Rebuilding at the same revision
     # is deliberate: it retries an interrupted deployment and picks up changes to
@@ -252,6 +307,7 @@ main() {
     compose run --rm --no-deps -w /app/database api alembic upgrade head
 
     compose up -d --wait --wait-timeout 900
+    verify_cpu_cap
 
     wait_for "http://127.0.0.1:${api_port}/health" 200 'API liveness'
     # 200 means fit to serve and 503 means not: readiness reports with the status code.

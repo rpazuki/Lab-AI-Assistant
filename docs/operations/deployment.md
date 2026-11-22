@@ -73,10 +73,35 @@ application, applies pending migrations, starts the stack and waits for `/health
 `/ready` and the login page over loopback. **It never rolls back.** After a migration,
 the previous code on the new schema is worse than a stopped service (audit F14), so a
 failure leaves the stack for diagnosis and the fix is to correct it and rerun. The
-database container is started if stopped and never recreated; nginx, SELinux, the
-firewall and the server's other applications are never touched. The first deployment
-of a checkout adds `--first-install`. `scripts/deploy.sh` remains as an entry point
-that hands to it.
+database container is started if stopped, and recreated only when its configuration
+changes (its data is in the `pgdata` volume); nginx, SELinux, the firewall and the
+server's other applications are never touched. The first deployment of a checkout adds
+`--first-install`. `scripts/deploy.sh` remains as an entry point that hands to it.
+
+### CPU cap
+
+All the containers together use at most **80% of the host's CPUs**, so the VM always
+has CPU left for itself, SSH and its other services. Every service in
+`infra/compose/docker-compose.prod.yml`, the database and one-off `compose run`
+containers included, runs in one systemd slice, `labassistant.slice`. The updater
+writes `/etc/systemd/system/labassistant.slice` with `CPUQuota` set to 80% of
+`nproc` (160% on a two-CPU VM). It applies the quota before it starts anything, and
+then checks that every container is inside the slice. The containers share the
+budget: one busy container can use all of it while the others are idle.
+
+Per-container `cpus:` limits can't do this, because each container can stay under
+its own limit while together they use the whole machine.
+
+- **Changing the share:** pass `--cpu-percent N` (10–100) on every deploy. The unit is
+  rewritten on each run, so a share given once and then omitted returns to 80.
+- **Resizing the VM:** redeploy so the quota follows the new CPU count.
+- **Checking it:** `./scripts/status.sh` prints the slice's quota and warns about any
+  container running outside the slice.
+- **Requirement:** Docker must use the systemd cgroup driver, the default on Red Hat
+  with cgroup v2. The updater refuses to deploy otherwise: under `cgroupfs` the slice
+  would be an ordinary cgroup with no cap.
+
+The cap covers this stack only; other services on the same server are outside it.
 
 The readiness gate reads the HTTP status rather than matching a string in the body —
 200 proceeds, 503 rolls back — and prints the check that failed, so a rolled-back

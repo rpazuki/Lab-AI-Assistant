@@ -57,6 +57,11 @@ def test_shared_host_compose_merge(tmp_path: Path) -> None:
         )
     assert not services["db"].get("ports")
     assert not services["scanner"].get("ports")
+    # One CPU cap for the whole stack: every service, the database included, runs
+    # in the slice scripts/deploy/update.sh gives a quota of 80% of the host.
+    assert {
+        name: service.get("cgroup_parent") for name, service in services.items()
+    } == dict.fromkeys(services, "labassistant.slice")
     for name, port in [("api", "8100"), ("web", "3300")]:
         assert len(services[name]["ports"]) == 1
         binding = services[name]["ports"][0]

@@ -28,6 +28,7 @@ Every script reads the installation role from `.env`, `.env.server` and `.env.si
 sudo bash scripts/deploy/update.sh --check          # preflight; what would deploy
 sudo bash scripts/deploy/update.sh                  # deploy the checked-out branch
 sudo bash scripts/deploy/update.sh --first-install  # first deployment of a checkout
+sudo bash scripts/deploy/update.sh --cpu-percent 70 # all containers together: at most 70% of the CPUs (default 80)
 ./scripts/status.sh                        # is it healthy, and how deep is the queue
 ./scripts/logs.sh api --since 30m --grep error
 ./scripts/restart.sh worker-compute --recreate
