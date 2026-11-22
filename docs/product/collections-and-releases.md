@@ -13,8 +13,11 @@ give different answers as material arrived mid-session.
 ## Building one
 
 1. **Define the scope.** Queries, sources, date range, inclusion and exclusion rules,
-   review thresholds. Every edit creates a new scope *version* with a config checksum,
-   so a release can name exactly which version produced it.
+   review thresholds. Each scope *version* has a config checksum, so a release can
+   name exactly which version produced it. Until a version is approved nothing refers
+   to it, so a draft may be corrected in place, saved as the next version, or deleted
+   (the deletion is audited). An approved version never changes: editing means a new
+   version.
 2. **Discover.** Each connector's raw response is stored before it is parsed, so a
    parser fix never requires re-querying a source. Partial failure is recorded per
    connector; a run with a failed connector is not silently a complete run.

@@ -4,6 +4,10 @@ A scope becomes runnable only when its gate passes: required fields validate,
 every required connector compiles its query, gold-seed recall reaches the
 workspace threshold, and the intended use is approved. Until then, discovery
 refuses to start rather than producing a run whose inputs nobody agreed to.
+
+A version is immutable once approved: discovery runs and releases name it. Until
+then nothing refers to it, so a draft may be corrected in place or deleted.
+Approved and retired versions refuse both; changing one means a new version.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.ports import UnitOfWork
 from lab_assistant.contracts.connector import ConnectorOperation
 from lab_assistant.contracts.errors import NotFound, StateTransitionError, ValidationFailure
 from lab_assistant.contracts.events import ActorType, AuditAction
@@ -73,6 +78,76 @@ class ScopeService:
             )
             await uow.configs.add_scope_version(scope)
             await uow.commit()
+        return scope
+
+    async def update_draft(
+        self,
+        actor: ActorContext,
+        *,
+        scope_version_id: UUID,
+        name: str,
+        scientific_objective: str,
+        connector_plan: list[ConnectorPlanEntry],
+        **fields: object,
+    ) -> ScopeVersion:
+        """Correct an unapproved version in place: same id, same version number."""
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
+        actor.require(Capability.MANAGE_SCOPE)
+        async with self._context.uow_factory() as uow:
+            current = await self._unapproved(uow, actor, scope_version_id, "edited")
+            corrected = current.model_copy(
+                update={
+                    "name": name,
+                    "scientific_objective": scientific_objective,
+                    "connector_plan": tuple(connector_plan),
+                    **fields,
+                }
+            )
+            # Revalidate: model_copy does not, and the payload is stored as given.
+            corrected = ScopeVersion.model_validate(corrected.model_dump())
+            await uow.configs.add_scope_version(corrected)
+            await uow.commit()
+        return corrected
+
+    async def delete_draft(self, actor: ActorContext, *, scope_version_id: UUID) -> None:
+        """Delete an unapproved version, and record that it existed."""
+        self._context.require_installation(InstallationCapability.CURATE_CORPUS)
+        actor.require(Capability.MANAGE_SCOPE)
+        context = self._context
+        async with context.uow_factory() as uow:
+            current = await self._unapproved(uow, actor, scope_version_id, "deleted")
+            await uow.configs.delete_scope_version(actor.workspace_id, scope_version_id)
+            event = context.audit.build(
+                workspace_id=actor.workspace_id,
+                actor_type=ActorType.USER,
+                actor_id=actor.user_id,
+                action=AuditAction.SCOPE_DRAFT_DELETED,
+                subject_type="scope_version",
+                subject_id=current.id,
+                previous_hash=await uow.audit.latest_hash(actor.workspace_id),
+                reason_code="draft_deleted",
+                metadata={
+                    "scope_id": str(current.scope_id),
+                    "version": current.version,
+                    "name": current.name,
+                    "checksum": current.config_checksum,
+                },
+            )
+            await uow.audit.append(event)
+            await uow.commit()
+
+    @staticmethod
+    async def _unapproved(
+        uow: UnitOfWork, actor: ActorContext, scope_version_id: UUID, verb: str
+    ) -> ScopeVersion:
+        scope = await uow.configs.get_scope_version(actor.workspace_id, scope_version_id)
+        if scope is None:
+            raise NotFound(f"scope version {scope_version_id} not found")
+        if scope.approval_state in (ApprovalState.APPROVED, ApprovalState.RETIRED):
+            raise StateTransitionError(
+                f"an {scope.approval_state.value} scope version cannot be {verb}; "
+                "save a new version instead"
+            )
         return scope
 
     async def evaluate_gate(

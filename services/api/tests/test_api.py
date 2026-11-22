@@ -797,6 +797,103 @@ class TestCollections:
         )
         assert regate.json()["passed"] is True
 
+    async def test_a_draft_is_corrected_in_place_keeping_its_version(self, api) -> None:
+        token = await _login(api["client"], "steward@lab.invalid")
+        created = await api["client"].post(
+            "/api/v1/scopes",
+            headers=_auth(token),
+            json={
+                "name": "Yarrowia",
+                "scientific_objective": "Yarrowia literature",
+                "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
+            },
+        )
+        draft_id = created.json()["id"]
+        corrected = await api["client"].put(
+            f"/api/v1/scopes/{draft_id}",
+            headers=_auth(token),
+            json={
+                "name": "Yarrowia lipolytica",
+                "scientific_objective": "Yarrowia literature",
+                "inclusion_criteria": ["Y. lipolytica is a studied organism"],
+                "intended_uses": ["literature search"],
+                "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
+            },
+        )
+        assert corrected.status_code == 200
+        assert corrected.json()["id"] == draft_id
+        assert corrected.json()["version"] == 1
+
+        listed = await api["client"].get("/api/v1/scopes", headers=_auth(token))
+        versions = [item for item in listed.json()["items"] if item["id"] == draft_id]
+        assert len(versions) == 1
+        assert versions[0]["name"] == "Yarrowia lipolytica"
+        assert versions[0]["intended_uses"] == ["literature search"]
+        gate = await api["client"].post(f"/api/v1/scopes/{draft_id}/gate", headers=_auth(token))
+        assert gate.json()["passed"] is True
+
+    async def test_a_draft_can_be_deleted_and_the_deletion_is_audited(self, api) -> None:
+        token = await _login(api["client"], "steward@lab.invalid")
+        created = await api["client"].post(
+            "/api/v1/scopes",
+            headers=_auth(token),
+            json={
+                "name": "Mistake",
+                "scientific_objective": "o",
+                "connectors": [{"connector_id": "pubmed-fixture", "query": "q"}],
+            },
+        )
+        draft_id = created.json()["id"]
+        deleted = await api["client"].delete(f"/api/v1/scopes/{draft_id}", headers=_auth(token))
+        assert deleted.status_code == 204
+
+        listed = await api["client"].get("/api/v1/scopes", headers=_auth(token))
+        assert all(item["id"] != draft_id for item in listed.json()["items"])
+        audit = await api["client"].get("/api/v1/audit-events", headers=_auth(token))
+        assert any(
+            event["action"] == "scope_draft_deleted" and event["subject_id"] == draft_id
+            for event in audit.json()["items"]
+        )
+
+    async def test_an_approved_scope_can_be_neither_corrected_nor_deleted(self, api) -> None:
+        token = await _login(api["client"], "steward@lab.invalid")
+        body = {
+            "name": "Yarrowia lipids",
+            "scientific_objective": "Lipid yields",
+            "inclusion_criteria": ["engineered yeast"],
+            "intended_uses": ["literature search"],
+            "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
+        }
+        created = await api["client"].post("/api/v1/scopes", headers=_auth(token), json=body)
+        scope_id = created.json()["id"]
+        await api["client"].post(f"/api/v1/scopes/{scope_id}/approve", headers=_auth(token))
+
+        edited = await api["client"].put(
+            f"/api/v1/scopes/{scope_id}", headers=_auth(token), json={**body, "name": "x"}
+        )
+        assert edited.status_code == 409
+        deleted = await api["client"].delete(f"/api/v1/scopes/{scope_id}", headers=_auth(token))
+        assert deleted.status_code == 409
+
+    async def test_a_researcher_cannot_edit_or_delete_a_draft(self, api) -> None:
+        steward = await _login(api["client"], "steward@lab.invalid")
+        body = {
+            "name": "n",
+            "scientific_objective": "o",
+            "connectors": [{"connector_id": "pubmed-fixture", "query": "q"}],
+        }
+        created = await api["client"].post("/api/v1/scopes", headers=_auth(steward), json=body)
+        draft_id = created.json()["id"]
+        researcher = await _login(api["client"], "researcher@lab.invalid")
+        edited = await api["client"].put(
+            f"/api/v1/scopes/{draft_id}", headers=_auth(researcher), json=body
+        )
+        assert edited.status_code == 403
+        deleted = await api["client"].delete(
+            f"/api/v1/scopes/{draft_id}", headers=_auth(researcher)
+        )
+        assert deleted.status_code == 403
+
     async def test_a_researcher_cannot_create_a_scope(self, api) -> None:
         token = await _login(api["client"], "researcher@lab.invalid")
         response = await api["client"].post(

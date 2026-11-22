@@ -254,7 +254,7 @@ export const search = (query: string, topK?: number) =>
 export const listScopes = () =>
   request<{ items: ScopeVersion[] }>("/scopes").then((body) => body.items);
 
-export const createScope = (payload: {
+export interface ScopeDocument {
   name: string;
   scientific_objective: string;
   inclusion_criteria?: string[];
@@ -262,12 +262,25 @@ export const createScope = (payload: {
   concepts?: string[];
   intended_uses?: string[];
   connectors: { connector_id: string; query: string; required?: boolean }[];
-  scope_id?: string;
-}) =>
+}
+
+/** A new scope, or (with `scope_id`) the next version of an existing one. */
+export const createScope = (payload: ScopeDocument & { scope_id?: string }) =>
   request<{ id: string; version: number; checksum: string }>("/scopes", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+
+/** Correct an unapproved version in place; approved versions refuse with 409. */
+export const updateScopeDraft = (scopeVersionId: string, payload: ScopeDocument) =>
+  request<{ id: string; version: number; checksum: string }>(`/scopes/${scopeVersionId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+
+/** Delete an unapproved version; approved versions refuse with 409. */
+export const deleteScopeDraft = (scopeVersionId: string) =>
+  request<void>(`/scopes/${scopeVersionId}`, { method: "DELETE" });
 
 export const checkScopeGate = (scopeVersionId: string) =>
   request<ScopeGateReport>(`/scopes/${scopeVersionId}/gate`, { method: "POST" });

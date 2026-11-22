@@ -90,7 +90,7 @@ parsing, extraction, review, releases, and export. There is nothing to redirect;
 
 | Predecessor | Successor | Notes |
 |---|---|---|
-| `/api/v1/admin/ingestion/configs…`, `/ingestion/defaults` | `POST/GET /api/v1/scopes`, `/scopes/{id}/gate`, `/scopes/{id}/approve` | a scope version is immutable; editing creates the next version |
+| `/api/v1/admin/ingestion/configs…`, `/ingestion/defaults` | `POST/GET /api/v1/scopes`, `PUT/DELETE /scopes/{id}`, `/scopes/{id}/gate`, `/scopes/{id}/approve` | a draft is corrected (`PUT`) or deleted (`DELETE`) in place; an approved version is immutable, and editing creates the next version |
 | `/api/v1/admin/ingestion/jobs…`, `/ingestion/worker` | `POST/GET /api/v1/discovery-runs`, `/discovery-runs/{id}/freeze`, `GET /api/v1/operations/tasks` | a job is a discovery run plus its tasks; worker state is read from task rows |
 | `/ingestion/jobs/{id}/cancel` | `lab task cancel --task …` | per task; the API offers retry of dead letters (`POST /operations/tasks/{id}/retry`), not cancellation |
 | `/ingestion/acquisition-queue[/review-csv]` | `GET /api/v1/acquisition-plans` | the CSV is retired; the queue is a page with an upload per plan |

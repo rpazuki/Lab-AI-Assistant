@@ -427,6 +427,14 @@ class _Configs(_Base):
         )
         return [ScopeVersion.model_validate(row[0]) for row in rows.all()]
 
+    async def delete_scope_version(self, workspace_id: UUID, scope_version_id: UUID) -> None:
+        await self._c.execute(
+            delete(t.scope_versions).where(
+                t.scope_versions.c.workspace_id == workspace_id,
+                t.scope_versions.c.id == scope_version_id,
+            )
+        )
+
     async def add_config_version(self, config: ConfigVersion) -> None:
         await self._upsert(CONFIGS, config)
 

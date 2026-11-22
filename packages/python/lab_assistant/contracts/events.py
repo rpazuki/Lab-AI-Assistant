@@ -48,6 +48,8 @@ class AuditAction(StrEnum):
     MEMBER_CHAT_READ = "member_chat_read"
     # discovery and identity
     SCOPE_APPROVED = "scope_approved"
+    #: An unapproved scope version was deleted. Nothing had searched with it.
+    SCOPE_DRAFT_DELETED = "scope_draft_deleted"
     DISCOVERY_RUN_STARTED = "discovery_run_started"
     DISCOVERY_RUN_FROZEN = "discovery_run_frozen"
     DEGRADED_SOURCE_ACCEPTED = "degraded_source_accepted"

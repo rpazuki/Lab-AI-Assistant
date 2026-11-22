@@ -18,10 +18,12 @@ import {
   approveScope,
   checkScopeGate,
   createScope,
+  deleteScopeDraft,
   freezeDiscovery,
   listDiscoveryRuns,
   listScopes,
   startDiscovery,
+  updateScopeDraft,
 } from "@/lib/api";
 import type { DiscoveryRun, ScopeGateReport, ScopeVersion } from "@/types";
 
@@ -50,10 +52,11 @@ const FREEZABLE = new Set(["planned", "running", "degraded"]);
 /**
  * Setting a collection up: its scope, and the discovery runs that search it.
  *
- * A scope version is immutable: editing one creates the next version. It has to
- * pass its gate (inclusion criteria, intended uses, every source query compiled)
- * and be approved before discovery may run against it. A draft that fails its
- * gate is reopened with **Edit** and saved as its next version. A discovery run is frozen once
+ * A scope has to pass its gate (inclusion criteria, intended uses, every source
+ * query compiled) and be approved before discovery may run against it. Until it
+ * is approved nothing refers to it, so a draft can be corrected in place, saved
+ * as a new version, or deleted. An approved version is immutable: discovery runs
+ * and releases name it. A discovery run is frozen once
  * its sources have answered; freezing is what turns observations into candidates,
  * so a run where a required source fell short freezes only when the steward
  * accepts the gap explicitly.
@@ -97,10 +100,22 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
     else setNotice(done);
   }
 
-  /** Only the newest version of a scope is edited; older ones are history. */
+  /** The next version number of each scope, for "Save as new version". */
   const latest = new Map<string, number>();
   for (const scope of scopes) {
     latest.set(scope.scope_id, Math.max(latest.get(scope.scope_id) ?? 0, scope.version));
+  }
+
+  function remove(scope: ScopeVersion) {
+    if (
+      window.confirm(
+        `Delete “${scope.name}” v${scope.version}? It is unapproved, so nothing has used it; ` +
+          "the deletion is recorded in the audit log and cannot be undone.",
+      )
+    ) {
+      if (editing?.id === scope.id) setEditing(null);
+      void act(() => deleteScopeDraft(scope.id), `“${scope.name}” v${scope.version} deleted.`);
+    }
   }
 
   async function gate(scope: ScopeVersion) {
@@ -146,12 +161,12 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
           <ScopeForm
             key={editing?.id ?? "new"}
             initial={editing}
-            onCreated={async (name, version) => {
+            nextVersion={editing ? (latest.get(editing.scope_id) ?? editing.version) + 1 : 1}
+            onSaved={async (message) => {
               setCreating(false);
               setEditing(null);
-              setNotice(
-                `Scope “${name}” v${version} saved as a draft. Check its gate, then approve it.`,
-              );
+              setGates({});
+              setNotice(`${message} Check its gate, then approve it.`);
               await refresh();
             }}
             onError={setError}
@@ -166,10 +181,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
             {scopes.map((scope) => {
               const report = gates[scope.id];
               const approved = scope.approval_state === "approved";
-              const editable =
-                !approved &&
-                scope.approval_state !== "retired" &&
-                latest.get(scope.scope_id) === scope.version;
+              const editable = !approved && scope.approval_state !== "retired";
               return (
                 <li key={scope.id} className={row}>
                   <div className="flex flex-wrap items-center gap-2">
@@ -189,6 +201,11 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                           }}
                         >
                           Edit
+                        </Button>
+                      ) : null}
+                      {editable ? (
+                        <Button variant="danger" size="sm" onClick={() => remove(scope)}>
+                          Delete
                         </Button>
                       ) : null}
                       <Button variant="ghost" size="sm" onClick={() => gate(scope)}>
@@ -329,16 +346,19 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
 }
 
 /**
- * New scope, or the next version of a draft. Editing never changes the draft
- * itself: it saves a new version under the same scope, starting from its values.
+ * A new scope, or an unapproved version opened for editing. An edit is saved
+ * either in place (the same version, corrected) or as the scope's next version,
+ * leaving the one opened unchanged.
  */
 function ScopeForm({
   initial,
-  onCreated,
+  nextVersion,
+  onSaved,
   onError,
 }: {
   initial?: ScopeVersion | null;
-  onCreated: (name: string, version: number) => void | Promise<void>;
+  nextVersion: number;
+  onSaved: (message: string) => void | Promise<void>;
   onError: (message: string) => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
@@ -353,11 +373,11 @@ function ScopeForm({
 
   const chosen = CONNECTORS.filter((connector) => connector.id in queries);
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
+  /** "in-place" corrects the opened version; "new" saves the next version. */
+  async function save(mode: "in-place" | "new") {
     setBusy(true);
     try {
-      const saved = await createScope({
+      const fields = {
         name: name.trim(),
         scientific_objective: objective.trim(),
         inclusion_criteria: lines(inclusion),
@@ -372,9 +392,14 @@ function ScopeForm({
             initial?.connector_plan.find((entry) => entry.connector_id === connector.id)?.required ??
             true,
         })),
-        ...(initial ? { scope_id: initial.scope_id } : {}),
-      });
-      await onCreated(name.trim(), saved.version);
+      };
+      if (initial && mode === "in-place") {
+        await updateScopeDraft(initial.id, fields);
+        await onSaved(`“${fields.name}” v${initial.version} corrected.`);
+      } else {
+        const saved = await createScope(initial ? { ...fields, scope_id: initial.scope_id } : fields);
+        await onSaved(`Scope “${fields.name}” v${saved.version} saved as a draft.`);
+      }
     } catch (caught) {
       onError(caught instanceof Error ? caught.message : "the scope was not saved");
     } finally {
@@ -390,14 +415,18 @@ function ScopeForm({
 
   return (
     <form
-      onSubmit={submit}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save("in-place");
+      }}
       aria-label={initial ? `Edit ${initial.name}` : "New scope"}
       className="space-y-3 border-b border-border bg-surface-subtle px-5 py-4"
     >
       {initial ? (
         <p className="text-sm text-muted">
-          Editing v{initial.version}. Saving creates v{initial.version + 1} as a new draft; v
-          {initial.version} is kept unchanged.
+          Editing v{initial.version}. <strong>Save changes</strong> corrects v{initial.version}
+          itself; <strong>Save as v{nextVersion}</strong> keeps v{initial.version} unchanged and adds
+          a new draft.
         </p>
       ) : null}
       <div className="grid gap-3 sm:grid-cols-2">
@@ -481,9 +510,21 @@ function ScopeForm({
           );
         })}
       </fieldset>
-      <Button type="submit" disabled={busy || !complete}>
-        {initial ? `Save as v${initial.version + 1}` : "Save as draft"}
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" disabled={busy || !complete}>
+          {initial ? "Save changes" : "Save as draft"}
+        </Button>
+        {initial ? (
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy || !complete}
+            onClick={() => void save("new")}
+          >
+            Save as v{nextVersion}
+          </Button>
+        ) : null}
+      </div>
     </form>
   );
 }

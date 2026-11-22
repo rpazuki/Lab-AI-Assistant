@@ -315,6 +315,11 @@ class _Configs:
             key=lambda s: (str(s.scope_id), s.version),
         )
 
+    async def delete_scope_version(self, workspace_id: UUID, scope_version_id: UUID) -> None:
+        scope = self._db.scope_versions.get(scope_version_id)
+        if scope is not None and scope.workspace_id == workspace_id:
+            del self._db.scope_versions[scope_version_id]
+
     async def add_config_version(self, config: ConfigVersion) -> None:
         self._db.config_versions[config.id] = config
 

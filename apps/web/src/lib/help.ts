@@ -288,7 +288,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "Scopes",
         about: [
           "A scope says what a collection is for and where to search: a scientific objective, inclusion and exclusion criteria, and a query for each source (PubMed, Europe PMC, Crossref, OpenAlex, DataCite) in that source's own syntax.",
-          "A scope starts as a draft. Its gate checks that it is complete enough to run; once approved, discovery can search with it. Approved scopes are a record of exactly what was searched.",
+          "A scope starts as a draft. Its gate checks that it is complete enough to run; once approved, discovery can search with it. Until then a draft can be corrected, saved as a new version, or deleted. Approved scopes cannot be changed: they are a record of exactly what was searched.",
         ],
         howTos: [
           {
@@ -310,9 +310,16 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             steps: [
               "Select **Edit** on the draft. The form opens with its values.",
               "Correct what the gate listed.",
-              "Select **Save as v2** (the next version number). The earlier version is kept unchanged.",
-              "Select **Check gate** on the new version, then **Approve**.",
+              "Select **Save changes** to correct this version, or **Save as v2** (the next version number) to keep it unchanged and add a new draft.",
+              "Select **Check gate** again, then **Approve**.",
             ],
+            note: "Only unapproved versions can be edited. An approved scope is the record of what was searched: change it by editing and saving a new version from a draft.",
+          },
+          {
+            title: "How to delete a draft scope",
+            needs: STEWARD,
+            steps: ["Select **Delete** on the draft and confirm."],
+            note: "Only unapproved versions can be deleted. The deletion is recorded in the audit log.",
           },
           {
             title: "How to approve a scope",

@@ -665,11 +665,17 @@ async def create_scope(
     actor: CurrentActor, container: Container, payload: ScopeRequest = Body(...)
 ) -> dict[str, Any]:
     scope = await ScopeService(container.context).create_version(
-        actor,
-        scope_id=payload.scope_id,
-        name=payload.name,
-        scientific_objective=payload.scientific_objective,
-        connector_plan=[
+        actor, scope_id=payload.scope_id, **_scope_fields(payload)
+    )
+    return {"id": str(scope.id), "version": scope.version, "checksum": scope.config_checksum}
+
+
+def _scope_fields(payload: ScopeRequest) -> dict[str, Any]:
+    """The scope document a create or a correction writes, from the form."""
+    return {
+        "name": payload.name,
+        "scientific_objective": payload.scientific_objective,
+        "connector_plan": [
             ConnectorPlanEntry(
                 connector_id=entry["connector_id"],
                 connector_version=entry.get("connector_version", "1.0.0"),
@@ -678,12 +684,40 @@ async def create_scope(
             )
             for entry in payload.connectors
         ],
-        inclusion_criteria=tuple(payload.inclusion_criteria),
-        exclusion_criteria=tuple(payload.exclusion_criteria),
-        concepts=tuple(payload.concepts),
-        intended_uses=tuple(payload.intended_uses),
+        "inclusion_criteria": tuple(payload.inclusion_criteria),
+        "exclusion_criteria": tuple(payload.exclusion_criteria),
+        "concepts": tuple(payload.concepts),
+        "intended_uses": tuple(payload.intended_uses),
+    }
+
+
+@router.put(
+    "/scopes/{scope_version_id}",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def update_scope_draft(
+    scope_version_id: UUID,
+    actor: CurrentActor,
+    container: Container,
+    payload: ScopeRequest = Body(...),
+) -> dict[str, Any]:
+    """Correct an unapproved version in place. ``scope_id`` in the body is ignored."""
+    scope = await ScopeService(container.context).update_draft(
+        actor, scope_version_id=scope_version_id, **_scope_fields(payload)
     )
     return {"id": str(scope.id), "version": scope.version, "checksum": scope.config_checksum}
+
+
+@router.delete(
+    "/scopes/{scope_version_id}",
+    status_code=204,
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def delete_scope_draft(
+    scope_version_id: UUID, actor: CurrentActor, container: Container
+) -> Response:
+    await ScopeService(container.context).delete_draft(actor, scope_version_id=scope_version_id)
+    return Response(status_code=204)
 
 
 @router.get("/scopes")
