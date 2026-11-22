@@ -579,6 +579,14 @@ class _Observations:
     async def update_assertion(self, assertion: SourceAssertion) -> None:
         self._db.assertions[assertion.id] = assertion
 
+    async def assign_assertions(
+        self, workspace_id: UUID, assertion_ids: Sequence[UUID], work_id: UUID
+    ) -> None:
+        for assertion_id in assertion_ids:
+            assertion = self._db.assertions.get(assertion_id)
+            if assertion is not None and assertion.workspace_id == workspace_id:
+                assertion.work_id = work_id
+
     async def get_cursor(self, workspace_id: UUID, *, lineage_key: str) -> str | None:
         return self._db.cursors.get((workspace_id, lineage_key), (None, False))[0]
 
@@ -709,6 +717,18 @@ class _Works:
             for identifier in self._db.identifiers.values()
             if identifier.workspace_id == workspace_id and identifier.work_id == work_id
         ]
+
+    async def list_all_identifiers(
+        self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[WorkIdentifier]:
+        ordered = sorted(
+            (i for i in self._db.identifiers.values() if i.workspace_id == workspace_id),
+            key=lambda i: str(i.id),
+        )
+        if after_id is not None:
+            cursor = str(after_id)
+            ordered = [i for i in ordered if str(i.id) > cursor]
+        return ordered[:limit]
 
     async def find_by_identifier(
         self, workspace_id: UUID, *, scheme: str, value_normalized: str
@@ -1249,6 +1269,20 @@ class _Tasks:
             if task.workspace_id == workspace_id and task.input_fingerprint == fingerprint:
                 return task
         return None
+
+    async def renew_lease(
+        self, workspace_id: UUID, task_id: UUID, *, owner: str, now: datetime, lease_seconds: int
+    ) -> bool:
+        task = self._db.tasks.get(task_id)
+        if (
+            task is None
+            or task.workspace_id != workspace_id
+            or task.state is not TaskState.LEASED
+            or task.lease_owner != owner
+        ):
+            return False
+        task.heartbeat(now=now, lease_seconds=lease_seconds)
+        return True
 
     async def claim_next(
         self,

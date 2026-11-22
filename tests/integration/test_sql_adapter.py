@@ -1113,3 +1113,217 @@ class TestDeletesOverSql:
             assert await uow.workspaces.list_invitations(workspace.id) == []
             assert await uow.releases.get(workspace.id, draft.id) is None
             assert await uow.releases.list_items(workspace.id, draft.id) == []
+
+
+class TestReconciliationOverSql:
+    """Reconciling a run large enough to need several batches.
+
+    Each paper is seen by two or three sources. For a third of them the first two
+    records share nothing (one has only a PMID, the other only a DOI) and a third
+    record carries both: two works with no identifier in common, which the rules
+    send to a person as a conflict rather than merging.
+    """
+
+    PAPERS = 240
+    TITLE_ONLY = 30
+
+    async def _run(self, sql_stack) -> dict:
+        from lab_assistant.application.scopes import ScopeService
+        from lab_assistant.domain.observation import (
+            DiscoveryRun,
+            Predicate,
+            SourceAssertion,
+            SourceObservation,
+            SourceRequest,
+        )
+        from lab_assistant.domain.scope import ConnectorPlanEntry
+
+        context, accounts = sql_stack["context"], sql_stack["accounts"]
+        owner = await accounts.create_user(email="r@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="recon-lab", display_name="Recon Lab", owner_user_id=owner.id
+        )
+        admin = make_actor(user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN)
+        scope = await ScopeService(context).create_version(
+            admin,
+            scope_id=None,
+            name="Scope",
+            scientific_objective="o",
+            connector_plan=[
+                ConnectorPlanEntry(connector_id="pubmed", connector_version="1.0.0", query="q")
+            ],
+            inclusion_criteria=("x",),
+            intended_uses=("y",),
+            concepts=("yarrowia",),
+        )
+        now = datetime(2026, 11, 22, 9, tzinfo=UTC)
+        ws = workspace.id
+        run_id, request_id = context.id_factory(), context.id_factory()
+
+        def records():
+            for k in range(self.PAPERS):
+                doi = {"scheme": "doi", "value": f"10.1000/paper.{k}"}
+                pmid = {"scheme": "pmid", "value": str(100_000 + k)}
+                title = f"Yarrowia study number {k} of lipid pathway variant {k * 7}"
+                if k % 3 == 0:
+                    yield f"a-pubmed-{k:05}", [pmid], title
+                    yield f"b-crossref-{k:05}", [doi], title
+                    yield f"c-europepmc-{k:05}", [pmid, doi], title
+                else:
+                    yield f"a-pubmed-{k:05}", [pmid, doi], title
+                    yield f"b-crossref-{k:05}", [doi], title
+            for k in range(self.TITLE_ONLY):
+                yield f"d-datacite-{k:05}", [], f"A dataset with no identifier, item {k}"
+
+        async with context.uow_factory() as uow:
+            await uow.observations.add_run(
+                DiscoveryRun(
+                    id=run_id,
+                    workspace_id=ws,
+                    scope_version_id=scope.id,
+                    run_fingerprint="f",
+                    requested_by=owner.id,
+                    started_at=now,
+                )
+            )
+            await uow.observations.add_request(
+                SourceRequest(
+                    id=request_id,
+                    workspace_id=ws,
+                    discovery_run_id=run_id,
+                    connector_id="pubmed",
+                    connector_version="1.0.0",
+                    request_fingerprint="rf",
+                    method="GET",
+                    canonical_url_redacted="https://example.invalid/q",
+                    requested_at=now,
+                )
+            )
+            count = 0
+            for hint, identifiers, title in records():
+                observation_id = context.id_factory()
+                await uow.observations.add_observation(
+                    SourceObservation(
+                        id=observation_id,
+                        workspace_id=ws,
+                        source_request_id=request_id,
+                        source_record_locator=hint,
+                        parser_id="p",
+                        parser_version="1",
+                        schema_version="1",
+                        observed_at=now,
+                    )
+                )
+                values = [(Predicate.TITLE, title), (Predicate.YEAR, 2024)]
+                values += [(Predicate.IDENTIFIER, identifier) for identifier in identifiers]
+                await uow.observations.add_assertions(
+                    [
+                        SourceAssertion(
+                            id=context.id_factory(),
+                            workspace_id=ws,
+                            source_observation_id=observation_id,
+                            subject_hint=hint,
+                            predicate=predicate,
+                            value_json=value,
+                        )
+                        for predicate, value in values
+                    ]
+                )
+                count += 1
+            await uow.commit()
+        return {"workspace_id": ws, "run_id": run_id, "owner": owner.id, "records": count}
+
+    @staticmethod
+    def _command(run: dict):
+        from lab_assistant.contracts.stage import StageCommand
+
+        return StageCommand(
+            stage=StageName.RECONCILIATION,
+            workspace_id=run["workspace_id"],
+            actor_id=run["owner"],
+            inputs={"discovery_run_id": str(run["run_id"])},
+            run_id=run["run_id"],
+        )
+
+    @staticmethod
+    async def _state(context, workspace_id) -> dict:
+        async with context.uow_factory() as uow:
+            works = await uow.works.list_works(workspace_id, limit=100_000)
+            identifiers = await uow.works.list_all_identifiers(workspace_id, limit=100_000)
+            decisions = await uow.works.list_decisions(workspace_id)
+        active = [w for w in works if w.is_active]
+        active_ids = {w.id for w in active}
+        return {
+            "active": len(active),
+            "merged": len(works) - len(active),
+            "orphaned_identifiers": sum(1 for i in identifiers if i.work_id not in active_ids),
+            "identifiers": len(identifiers),
+            "proposals": [
+                d for d in decisions if (d.after or {}).get("proposal") == "duplicate_review"
+            ],
+        }
+
+    async def test_records_resolve_to_works_across_batches(self, sql_stack, monkeypatch) -> None:
+        from lab_assistant.application import reconciliation
+
+        monkeypatch.setattr(reconciliation, "RECONCILIATION_BATCH_SIZE", 100)
+        run = await self._run(sql_stack)
+        handler = sql_stack["handlers"].get(StageName.RECONCILIATION)
+        result = await handler.execute(self._command(run))
+
+        bridged = len(range(0, self.PAPERS, 3))
+        assert result.metrics["automatic_merges"] == 0
+        # The bridging record finds both works (one conflict) and then cannot
+        # attach the second work's identifier (another).
+        assert result.metrics["conflicts"] == 2 * bridged
+        assert result.metrics["works_created"] == self.PAPERS + bridged + self.TITLE_ONLY
+        state = await self._state(sql_stack["context"], run["workspace_id"])
+        assert state["active"] == self.PAPERS + bridged + self.TITLE_ONLY
+        assert state["merged"] == 0
+        assert state["orphaned_identifiers"] == 0
+        assert state["identifiers"] == 2 * self.PAPERS
+        # Each conflicting pair shares a title, so it is queued for review once;
+        # no work is proposed as a duplicate of itself.
+        assert len(state["proposals"]) == bridged
+        assert all(len(set(p.subject_work_ids)) == 2 for p in state["proposals"])
+
+    async def test_a_retry_after_a_crash_resumes_without_duplicating(
+        self, sql_stack, monkeypatch
+    ) -> None:
+        from lab_assistant.application import reconciliation
+
+        monkeypatch.setattr(reconciliation, "RECONCILIATION_BATCH_SIZE", 100)
+        run = await self._run(sql_stack)
+        handler = sql_stack["handlers"].get(StageName.RECONCILIATION)
+        real = reconciliation.ReconciliationHandler._reconcile_record
+        calls = 0
+
+        async def crash_in_the_third_batch(self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 250:
+                raise RuntimeError("worker stopped")
+            return await real(self, *args, **kwargs)
+
+        monkeypatch.setattr(
+            reconciliation.ReconciliationHandler, "_reconcile_record", crash_in_the_third_batch
+        )
+        with pytest.raises(RuntimeError, match="worker stopped"):
+            await handler.execute(self._command(run))
+        partial = await self._state(sql_stack["context"], run["workspace_id"])
+        # Two batches committed: the candidates so far are visible, not lost.
+        assert 0 < partial["active"] < self.PAPERS
+        bridged = len(range(0, self.PAPERS, 3))
+
+        monkeypatch.setattr(reconciliation.ReconciliationHandler, "_reconcile_record", real)
+        await handler.execute(self._command(run))
+        state = await self._state(sql_stack["context"], run["workspace_id"])
+        # Exactly what one uninterrupted pass produces: the records with no
+        # identifier at all kept the works the first attempt gave them.
+        assert state["active"] == self.PAPERS + bridged + self.TITLE_ONLY
+        assert state["orphaned_identifiers"] == 0
+
+        # And a second full pass over the same run changes nothing.
+        again = await handler.execute(self._command(run))
+        assert again.metrics["works_created"] == 0
+        assert await self._state(sql_stack["context"], run["workspace_id"]) == state

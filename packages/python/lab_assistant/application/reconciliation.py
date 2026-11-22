@@ -61,6 +61,14 @@ __all__ = [
 
 IMPLEMENTATION_VERSION = "reconciliation/1"
 
+#: Records written per transaction. Small enough that a restart loses little and
+#: candidates appear while a large run is in progress; large enough that commits
+#: are a small share of the time.
+RECONCILIATION_BATCH_SIZE = 500
+
+#: How far a chain of merges is followed before giving up on it.
+_MAX_MERGE_CHAIN = 16
+
 #: Field authority by source class. A DOI registry outranks an aggregator for
 #: registration metadata; a full-text asset outranks both for reported values.
 AUTHORITY_ORDER: tuple[str, ...] = (
@@ -164,6 +172,15 @@ class ReconciliationHandler:
         return task_fingerprint(command, implementation_version=self.implementation_version)
 
     async def execute(self, command: StageCommand) -> StageResult:
+        """Group the run's records into works, a batch of records per transaction.
+
+        Every lookup goes to an in-memory map of the workspace's identifiers rather
+        than to the database: a run is tens of thousands of records, each with
+        several identifiers, and the work they resolve to is mostly created by this
+        same run. Each batch commits on its own, so candidates appear while the run
+        is in progress, and a retry after a restart resumes rather than starting
+        again: a record whose assertions already name a work keeps that work.
+        """
         context = self._context
         workspace_id = command.workspace_id
         run_id = UUID(str(command.inputs["discovery_run_id"]))
@@ -188,156 +205,37 @@ class ReconciliationHandler:
                     workspace_id, observation_id=observation.id
                 ):
                     assertions_by_subject[assertion.subject_hint].append(assertion)
+            index = await _IdentityIndex.load(uow, workspace_id)
 
-            titles_for_proposals: list[tuple[UUID, str, int | None, str | None]] = []
-
-            for _subject_hint, assertions in sorted(assertions_by_subject.items()):
-                identifiers = _identifier_assertions(assertions)
-                metadata = canonical_metadata(assertions)
-                kind = _work_kind(metadata, identifiers)
-
-                existing_work: Work | None = None
-                for scheme, value, assertion_id in identifiers:
-                    if not scheme.is_strong:
-                        continue
-                    found = await uow.works.find_by_identifier(
-                        workspace_id, scheme=scheme.value, value_normalized=value
+        #: One entry per work, in the order works were first met.
+        titles_by_work: dict[UUID, tuple[UUID, str, int | None, str | None]] = {}
+        groups = [assertions for _, assertions in sorted(assertions_by_subject.items())]
+        for start in range(0, len(groups), RECONCILIATION_BATCH_SIZE):
+            async with context.uow_factory() as uow:
+                for assertions in groups[start : start + RECONCILIATION_BATCH_SIZE]:
+                    await self._reconcile_record(
+                        uow, workspace_id, assertions, scope, index, report, titles_by_work
                     )
-                    if found is None:
-                        continue
-                    if existing_work is None:
-                        existing_work = found
-                        continue
-                    if found.id == existing_work.id:
-                        continue
-                    # Two existing works share this record's identifiers: only a
-                    # strong bridge with no contradiction may merge them.
-                    left_ids = await uow.works.list_identifiers(workspace_id, existing_work.id)
-                    right_ids = await uow.works.list_identifiers(workspace_id, found.id)
-                    assessment = assess_merge(
-                        left=existing_work,
-                        right=found,
-                        left_identifiers=left_ids,
-                        right_identifiers=right_ids,
-                    )
-                    decision = IdentityDecision(
-                        id=context.new_id(),
-                        workspace_id=workspace_id,
-                        decision_type=(
-                            IdentityDecisionType.MERGE
-                            if assessment.allowed
-                            else IdentityDecisionType.REOPEN
-                        ),
-                        subject_work_ids=(existing_work.id, found.id),
-                        supporting_assertion_ids=(assertion_id,),
-                        before={"works": [str(existing_work.id), str(found.id)]},
-                        after=assessment.as_decision_payload(),
-                        reason_code=assessment.reason_code,
-                        decided_by_type="automatic_rule",
-                        decided_at=context.now(),
-                    )
-                    await uow.works.add_decision(decision)
-                    if assessment.allowed:
-                        found.identity_status = IdentityState.MERGED
-                        found.merged_into_work_id = existing_work.id
-                        await uow.works.update(found)
-                        report.automatic_merges += 1
-                    else:
-                        existing_work.identity_status = IdentityState.CONFLICT
-                        found.identity_status = IdentityState.CONFLICT
-                        await uow.works.update(existing_work)
-                        await uow.works.update(found)
-                        report.conflicts += 1
+                await uow.commit()
 
-                if existing_work is None:
-                    work = Work(
-                        id=context.new_id(),
-                        workspace_id=workspace_id,
-                        work_kind=kind,
-                        identity_status=(
-                            IdentityState.RESOLVED
-                            if any(s.is_strong for s, _, _ in identifiers)
-                            else IdentityState.UNRESOLVED
-                        ),
-                        created_at=context.now(),
-                    )
-                    await uow.works.add(work)
-                    report.works_created += 1
-                else:
-                    work = existing_work
-
-                for scheme, value, assertion_id in identifiers:
-                    known = {
-                        (i.scheme, i.value_normalized)
-                        for i in await uow.works.list_identifiers(workspace_id, work.id)
-                    }
-                    if (scheme, value) in known:
-                        continue
-                    conflicting = await uow.works.find_by_identifier(
-                        workspace_id, scheme=scheme.value, value_normalized=value
-                    )
-                    if conflicting is not None and conflicting.id != work.id:
-                        work.identity_status = IdentityState.CONFLICT
-                        await uow.works.update(work)
-                        report.conflicts += 1
-                        continue
-                    await uow.works.add_identifier(
-                        WorkIdentifier(
-                            id=context.new_id(),
-                            workspace_id=workspace_id,
-                            work_id=work.id,
-                            scheme=scheme,
-                            value_normalized=value,
-                            value_display=value,
-                            assertion_id=assertion_id,
-                            confidence=1.0 if scheme.is_strong else 0.5,
-                        )
-                    )
-
-                for assertion in assertions:
-                    if assertion.work_id != work.id:
-                        assertion.work_id = work.id
-                        await uow.observations.update_assertion(assertion)
-
-                relevance, relevance_reason = _score_relevance(metadata, scope)
-                if work.relevance is RelevanceState.UNREVIEWED:
-                    work.relevance = relevance
-                    work.canonical_metadata_version += 1
-                    await uow.works.update(work)
-                    await uow.works.add_decision(
-                        IdentityDecision(
-                            id=context.new_id(),
-                            workspace_id=workspace_id,
-                            decision_type=IdentityDecisionType.SET_RELEVANCE,
-                            subject_work_ids=(work.id,),
-                            after={"relevance": relevance.value},
-                            reason_code=relevance_reason,
-                            decided_by_type="automatic_rule",
-                            decided_at=context.now(),
-                        )
-                    )
-                if relevance is RelevanceState.INCLUDED:
-                    report.relevance_included += 1
-                elif relevance is RelevanceState.EXCLUDED:
-                    report.relevance_excluded += 1
-                else:
-                    report.relevance_review += 1
-
-                title = metadata.get(Predicate.TITLE.value)
-                if isinstance(title, str) and title:
-                    year = metadata.get(Predicate.YEAR.value)
-                    first_author = None
-                    authors = metadata.get("authors")
-                    if isinstance(authors, list) and authors:
-                        first = authors[0]
-                        first_author = (
-                            first.get("last_name") if isinstance(first, dict) else str(first)
-                        )
-                    titles_for_proposals.append(
-                        (work.id, title, int(year) if isinstance(year, int) else None, first_author)
-                    )
-
-            proposals = propose_duplicates(titles_for_proposals)
+        async with context.uow_factory() as uow:
+            # A pair already in the review queue, from an earlier pass over this
+            # run or another run, is not queued twice.
+            queued = {
+                frozenset(decision.subject_work_ids)
+                for decision in await uow.works.list_decisions(workspace_id)
+                if (decision.after or {}).get("proposal") == "duplicate_review"
+            }
+            active_titles = [
+                entry
+                for work_id, entry in titles_by_work.items()
+                if (work := index.works.get(work_id)) is not None and work.is_active
+            ]
+            proposals = [
+                proposal
+                for proposal in propose_duplicates(active_titles)
+                if frozenset((proposal.left_work_id, proposal.right_work_id)) not in queued
+            ]
             report.duplicate_proposals = len(proposals)
             for proposal in proposals:
                 await uow.works.add_decision(
@@ -391,6 +289,232 @@ class ReconciliationHandler:
                 ),
             ),
         )
+
+    async def _reconcile_record(
+        self,
+        uow: Any,
+        workspace_id: UUID,
+        assertions: list[SourceAssertion],
+        scope: Any,
+        index: _IdentityIndex,
+        report: ReconciliationReport,
+        titles_by_work: dict[UUID, tuple[UUID, str, int | None, str | None]],
+    ) -> None:
+        """Resolve one source record to a work, creating or merging as the rules say."""
+        context = self._context
+        identifiers = _identifier_assertions(assertions)
+        metadata = canonical_metadata(assertions)
+        kind = _work_kind(metadata, identifiers)
+
+        # A record a previous attempt already resolved keeps its work. Without
+        # this, a retry would give every record with no strong identifier a
+        # second work.
+        existing_work = await index.resolved_work(
+            uow, workspace_id, [a.work_id for a in assertions if a.work_id is not None]
+        )
+        for scheme, value, assertion_id in identifiers:
+            if not scheme.is_strong:
+                continue
+            found = await index.find(uow, workspace_id, scheme.value, value)
+            if found is None:
+                continue
+            if existing_work is None:
+                existing_work = found
+                continue
+            if found.id == existing_work.id:
+                continue
+            # Two existing works share this record's identifiers: only a strong
+            # bridge with no contradiction may merge them.
+            left_ids = await uow.works.list_identifiers(workspace_id, existing_work.id)
+            right_ids = await uow.works.list_identifiers(workspace_id, found.id)
+            assessment = assess_merge(
+                left=existing_work,
+                right=found,
+                left_identifiers=left_ids,
+                right_identifiers=right_ids,
+            )
+            decision = IdentityDecision(
+                id=context.new_id(),
+                workspace_id=workspace_id,
+                decision_type=(
+                    IdentityDecisionType.MERGE
+                    if assessment.allowed
+                    else IdentityDecisionType.REOPEN
+                ),
+                subject_work_ids=(existing_work.id, found.id),
+                supporting_assertion_ids=(assertion_id,),
+                before={"works": [str(existing_work.id), str(found.id)]},
+                after=assessment.as_decision_payload(),
+                reason_code=assessment.reason_code,
+                decided_by_type="automatic_rule",
+                decided_at=context.now(),
+            )
+            await uow.works.add_decision(decision)
+            if assessment.allowed:
+                found.identity_status = IdentityState.MERGED
+                found.merged_into_work_id = existing_work.id
+                await uow.works.update(found)
+                report.automatic_merges += 1
+            else:
+                existing_work.identity_status = IdentityState.CONFLICT
+                found.identity_status = IdentityState.CONFLICT
+                await uow.works.update(existing_work)
+                await uow.works.update(found)
+                report.conflicts += 1
+
+        if existing_work is None:
+            work = Work(
+                id=context.new_id(),
+                workspace_id=workspace_id,
+                work_kind=kind,
+                identity_status=(
+                    IdentityState.RESOLVED
+                    if any(s.is_strong for s, _, _ in identifiers)
+                    else IdentityState.UNRESOLVED
+                ),
+                created_at=context.now(),
+            )
+            await uow.works.add(work)
+            index.works[work.id] = work
+            report.works_created += 1
+        else:
+            work = existing_work
+
+        for scheme, value, assertion_id in identifiers:
+            if index.has(work.id, scheme.value, value):
+                continue
+            conflicting = await index.find(uow, workspace_id, scheme.value, value)
+            if conflicting is not None and conflicting.id != work.id:
+                work.identity_status = IdentityState.CONFLICT
+                await uow.works.update(work)
+                report.conflicts += 1
+                continue
+            identifier = WorkIdentifier(
+                id=context.new_id(),
+                workspace_id=workspace_id,
+                work_id=work.id,
+                scheme=scheme,
+                value_normalized=value,
+                value_display=value,
+                assertion_id=assertion_id,
+                confidence=1.0 if scheme.is_strong else 0.5,
+            )
+            await uow.works.add_identifier(identifier)
+            index.add(identifier)
+
+        unassigned = [a for a in assertions if a.work_id != work.id]
+        if unassigned:
+            await uow.observations.assign_assertions(
+                workspace_id, [a.id for a in unassigned], work.id
+            )
+            for assertion in unassigned:
+                assertion.work_id = work.id
+
+        relevance, relevance_reason = _score_relevance(metadata, scope)
+        if work.relevance is RelevanceState.UNREVIEWED:
+            work.relevance = relevance
+            work.canonical_metadata_version += 1
+            await uow.works.update(work)
+            await uow.works.add_decision(
+                IdentityDecision(
+                    id=context.new_id(),
+                    workspace_id=workspace_id,
+                    decision_type=IdentityDecisionType.SET_RELEVANCE,
+                    subject_work_ids=(work.id,),
+                    after={"relevance": relevance.value},
+                    reason_code=relevance_reason,
+                    decided_by_type="automatic_rule",
+                    decided_at=context.now(),
+                )
+            )
+        if relevance is RelevanceState.INCLUDED:
+            report.relevance_included += 1
+        elif relevance is RelevanceState.EXCLUDED:
+            report.relevance_excluded += 1
+        else:
+            report.relevance_review += 1
+
+        title = metadata.get(Predicate.TITLE.value)
+        if isinstance(title, str) and title and work.id not in titles_by_work:
+            year = metadata.get(Predicate.YEAR.value)
+            first_author = None
+            authors = metadata.get("authors")
+            if isinstance(authors, list) and authors:
+                first = authors[0]
+                first_author = first.get("last_name") if isinstance(first, dict) else str(first)
+            titles_by_work[work.id] = (
+                work.id,
+                title,
+                int(year) if isinstance(year, int) else None,
+                first_author,
+            )
+
+
+class _IdentityIndex:
+    """The workspace's identifiers, in memory, for one reconciliation pass.
+
+    Mirrors what ``find_by_identifier`` and ``list_identifiers`` would answer,
+    and is kept current as the pass adds identifiers and works, so the pass asks
+    the database only for works it has not met yet.
+    """
+
+    def __init__(self) -> None:
+        #: (scheme, value) -> the work holding it as an active identifier.
+        self.active: dict[tuple[str, str], UUID] = {}
+        #: work -> every (scheme, value) it holds, in any status.
+        self.by_work: dict[UUID, set[tuple[str, str]]] = defaultdict(set)
+        self.works: dict[UUID, Work] = {}
+
+    @classmethod
+    async def load(cls, uow: Any, workspace_id: UUID) -> _IdentityIndex:
+        index = cls()
+        for identifier in await collect_pages(
+            lambda after, size: uow.works.list_all_identifiers(
+                workspace_id, limit=size, after_id=after
+            ),
+            page_size=5_000,
+        ):
+            index.add(identifier)
+        return index
+
+    def add(self, identifier: WorkIdentifier) -> None:
+        key = (identifier.scheme.value, identifier.value_normalized)
+        self.by_work[identifier.work_id].add(key)
+        if identifier.status == "active":
+            self.active[key] = identifier.work_id
+
+    def has(self, work_id: UUID, scheme: str, value: str) -> bool:
+        return (scheme, value) in self.by_work.get(work_id, ())
+
+    async def work(self, uow: Any, workspace_id: UUID, work_id: UUID) -> Work | None:
+        work = self.works.get(work_id)
+        if work is None:
+            work = await uow.works.get(workspace_id, work_id)
+            if work is not None:
+                self.works[work_id] = work
+        return work
+
+    async def find(self, uow: Any, workspace_id: UUID, scheme: str, value: str) -> Work | None:
+        """The active work holding this identifier, as ``find_by_identifier`` says."""
+        work_id = self.active.get((scheme, value))
+        if work_id is None:
+            return None
+        work = await self.work(uow, workspace_id, work_id)
+        return work if work is not None and work.is_active else None
+
+    async def resolved_work(
+        self, uow: Any, workspace_id: UUID, work_ids: list[UUID]
+    ) -> Work | None:
+        """The active work these assertions already point at, following merges."""
+        for work_id in sorted(set(work_ids), key=str):
+            work = await self.work(uow, workspace_id, work_id)
+            for _ in range(_MAX_MERGE_CHAIN):
+                if work is None or work.merged_into_work_id is None:
+                    break
+                work = await self.work(uow, workspace_id, work.merged_into_work_id)
+            if work is not None and work.is_active:
+                return work
+        return None
 
 
 def _identifier_assertions(

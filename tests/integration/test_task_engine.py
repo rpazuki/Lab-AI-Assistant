@@ -171,6 +171,85 @@ class TestCrashRecovery:
         assert executed == 3
 
 
+class SlowHandler(CountingHandler):
+    """Runs longer than its lease, checking from inside whether it was taken over."""
+
+    def __init__(self, harness, stage: StageName) -> None:
+        super().__init__(stage)
+        self._harness = harness
+        self.stolen = None
+
+    async def execute(self, command: StageCommand) -> StageResult:
+        import asyncio
+
+        # Far past the original lease, by the task's clock.
+        self._harness.clock.advance(600)
+        await asyncio.sleep(1.3)
+        async with self._harness.context.uow_factory() as uow:
+            self.stolen = await uow.tasks.claim_next(
+                owner="worker-b",
+                worker_class="compute",
+                now=self._harness.clock(),
+                stages=(self.stage_name,),
+                stage_concurrency={self.stage_name: 2},
+            )
+        return await super().execute(command)
+
+
+class TestLeaseRenewal:
+    async def test_a_long_stage_keeps_its_lease(self) -> None:
+        # A 3-second lease renews every second; the handler outlives it by far.
+        harness = build_harness(settings_overrides={"worker_lease_seconds": 3})
+        handler = SlowHandler(harness, StageName.RECONCILIATION)
+        harness.handlers.register(handler)
+        task = await harness.orchestrator.submit(
+            workspace_id=uuid4(),
+            actor_id=uuid4(),
+            stage=StageName.RECONCILIATION,
+            inputs={"discovery_run_id": str(uuid4())},
+        )
+        result = await harness.orchestrator.run_once(owner="worker-a", worker_class="compute")
+        assert result.succeeded == 1
+        # Without renewal the lease lapsed at the 600-second jump and worker B
+        # would have started the same reconciliation alongside.
+        assert handler.stolen is None
+        assert handler.calls == 1
+        async with harness.context.uow_factory() as uow:
+            done = await uow.tasks.get(task.workspace_id, task.id)
+        assert done.state is TaskState.SUCCEEDED
+
+    async def test_renewal_never_revives_a_task_that_is_no_longer_held(self, harness) -> None:
+        task = await harness.orchestrator.submit(
+            workspace_id=uuid4(),
+            actor_id=uuid4(),
+            stage=StageName.PARSING,
+            inputs={"asset_id": str(uuid4())},
+        )
+        async with harness.context.uow_factory() as uow:
+            claimed = await uow.tasks.claim_next(
+                owner="worker-a",
+                worker_class="compute",
+                now=harness.clock(),
+                stages=(StageName.PARSING,),
+                stage_concurrency={StageName.PARSING: 1},
+            )
+            assert claimed is not None
+            renew = {"now": harness.clock(), "lease_seconds": 60}
+            assert await uow.tasks.renew_lease(
+                task.workspace_id, task.id, owner="worker-a", **renew
+            )
+            # Another owner's lease is not this worker's to extend.
+            assert not await uow.tasks.renew_lease(
+                task.workspace_id, task.id, owner="worker-b", **renew
+            )
+            claimed.cancel(now=harness.clock())
+            await uow.tasks.update(claimed)
+            assert not await uow.tasks.renew_lease(
+                task.workspace_id, task.id, owner="worker-a", **renew
+            )
+            await uow.commit()
+
+
 class TestFailureHandling:
     async def test_retryable_failure_is_rescheduled(self, harness) -> None:
         harness.handlers.register(

@@ -391,6 +391,8 @@ source_assertions = Table(
     Column("status", Text, nullable=False, server_default=text("'active'")),
     Column("work_id", _UUID, ForeignKey("works.id", ondelete="SET NULL")),
     Index("ix_source_assertions_work", "workspace_id", "work_id"),
+    # Reconciliation reads a record's assertions by observation, once per record.
+    Index("ix_source_assertions_observation", "source_observation_id"),
     Index("ix_source_assertions_subject", "workspace_id", "subject_hint"),
     Index("ix_source_assertions_predicate", "workspace_id", "predicate"),
 )
@@ -451,6 +453,7 @@ work_identifiers = Table(
         postgresql_where=text("status = 'active'"),
         sqlite_where=text("status = 'active'"),
     ),
+    Index("ix_work_identifiers_work", "workspace_id", "work_id"),
 )
 
 work_relations = Table(

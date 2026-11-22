@@ -15,7 +15,7 @@ from types import TracebackType
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, delete, func, insert, select, update
+from sqlalchemy import and_, delete, func, insert, literal_column, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from lab_assistant.adapters.db import tables as t
@@ -672,6 +672,20 @@ class _Observations(_Base):
     async def update_assertion(self, assertion: SourceAssertion) -> None:
         await self._upsert(ASSERTIONS, assertion)
 
+    async def assign_assertions(
+        self, workspace_id: UUID, assertion_ids: Sequence[UUID], work_id: UUID
+    ) -> None:
+        if not assertion_ids:
+            return
+        await self._c.execute(
+            update(t.source_assertions)
+            .where(
+                self._scope(ASSERTIONS, workspace_id),
+                t.source_assertions.c.id.in_(list(assertion_ids)),
+            )
+            .values(work_id=work_id)
+        )
+
     async def get_cursor(self, workspace_id: UUID, *, lineage_key: str) -> str | None:
         result = await self._c.execute(
             select(t.source_cursors.c.position).where(
@@ -881,6 +895,16 @@ class _Works(_Base):
             t.work_identifiers.c.work_id == work_id,
         )
 
+    async def list_all_identifiers(
+        self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
+    ) -> list[WorkIdentifier]:
+        conditions = [self._scope(IDENTIFIERS, workspace_id)]
+        if after_id is not None:
+            conditions.append(t.work_identifiers.c.id > after_id)
+        return await self._many(
+            IDENTIFIERS, *conditions, order=t.work_identifiers.c.id, limit=limit
+        )
+
     async def find_by_identifier(
         self, workspace_id: UUID, *, scheme: str, value_normalized: str
     ) -> Work | None:
@@ -891,7 +915,11 @@ class _Works(_Base):
                 t.works.c.workspace_id == workspace_id,
                 t.work_identifiers.c.scheme == scheme,
                 t.work_identifiers.c.value_normalized == value_normalized,
-                t.work_identifiers.c.status == "active",
+                # A constant, not a bound parameter: the unique index on active
+                # identifiers is partial (``WHERE status = 'active'``), and a
+                # prepared statement's generic plan cannot prove a parameter
+                # matches that predicate, so it read the whole table instead.
+                t.work_identifiers.c.status == literal_column("'active'"),
                 t.works.c.merged_into_work_id.is_(None),
             )
         )
@@ -1313,6 +1341,21 @@ class _Tasks(_Base):
         return await self._one(
             TASKS, self._scope(TASKS, workspace_id), t.tasks.c.input_fingerprint == fingerprint
         )
+
+    async def renew_lease(
+        self, workspace_id: UUID, task_id: UUID, *, owner: str, now: datetime, lease_seconds: int
+    ) -> bool:
+        result = await self._c.execute(
+            update(t.tasks)
+            .where(
+                self._scope(TASKS, workspace_id),
+                t.tasks.c.id == task_id,
+                t.tasks.c.state == TaskState.LEASED.value,
+                t.tasks.c.lease_owner == owner,
+            )
+            .values(heartbeat_at=now, lease_expires_at=now + timedelta(seconds=lease_seconds))
+        )
+        return bool(result.rowcount)
 
     async def claim_next(
         self,

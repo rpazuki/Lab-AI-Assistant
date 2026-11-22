@@ -11,6 +11,11 @@ stage starving another queue, and it works with two deployments rather than six.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -31,6 +36,8 @@ from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.states import TaskState
 from lab_assistant.domain.tasks import Task
 from lab_assistant.provenance.fingerprints import task_fingerprint
+
+_log = logging.getLogger(__name__)
 
 __all__ = ["HandlerRegistry", "TaskOrchestrator", "WorkerLoopResult"]
 
@@ -236,7 +243,8 @@ class TaskOrchestrator:
             return StageResult.model_validate(task.result)
 
         try:
-            result = await handler.execute(command)
+            async with self._lease_kept(task):
+                result = await handler.execute(command)
         except LabAssistantError as exc:
             await self._record_failure(task, error_class=exc.error_class, detail=exc.detail)
             return StageResult(
@@ -312,6 +320,50 @@ class TaskOrchestrator:
                 run_id=task.run_id,
             )
         return result
+
+    @asynccontextmanager
+    async def _lease_kept(self, task: Task) -> AsyncIterator[None]:
+        """Renew the task's lease while its handler runs.
+
+        A lease that lapses mid-run makes the task claimable again, so a second
+        worker would start the same work while the first is still doing it. A
+        stage can take far longer than one lease (reconciling a large run does),
+        so the lease is renewed every third of its length until the handler
+        returns. A worker that dies stops renewing, and the lease lapses as before.
+        """
+        owner = task.lease_owner
+        if owner is None:
+            yield
+            return
+        lease_seconds = self._context.settings.worker_lease_seconds
+        renewer = asyncio.create_task(self._renew_lease(task, owner, lease_seconds))
+        try:
+            yield
+        finally:
+            renewer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await renewer
+
+    async def _renew_lease(self, task: Task, owner: str, lease_seconds: int) -> None:
+        context = self._context
+        while True:
+            await asyncio.sleep(max(lease_seconds / 3, 1))
+            try:
+                async with context.uow_factory() as uow:
+                    held = await uow.tasks.renew_lease(
+                        task.workspace_id,
+                        task.id,
+                        owner=owner,
+                        now=context.now(),
+                        lease_seconds=lease_seconds,
+                    )
+                    await uow.commit()
+            except Exception:  # a missed renewal is retried on the next tick
+                _log.warning("lease renewal for task %s failed", task.id, exc_info=True)
+                continue
+            if not held:
+                # Cancelled, or taken over after a lapse: nothing left to renew.
+                return
 
     async def _record_failure(self, task: Task, *, error_class: ErrorClass, detail: str) -> None:
         context = self._context

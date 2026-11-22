@@ -233,3 +233,50 @@ class TestCanonicalFieldResolution:
 
     def test_empty_input_resolves_to_nothing(self) -> None:
         assert resolve_canonical_field([], authority_order=("doi_registry",)) == (None, [])
+
+
+class TestDuplicateProposalsAtScale:
+    """The fast path finds exactly the pairs comparing every title would."""
+
+    @staticmethod
+    def _every_pair(items, threshold=0.85):
+        found = []
+        for index, (left_id, left_title, left_year, _) in enumerate(items):
+            for right_id, right_title, right_year, _ in items[index + 1 :]:
+                if left_id == right_id:
+                    continue
+                if title_similarity(left_title, right_title) < threshold:
+                    continue
+                if (
+                    left_year is not None
+                    and right_year is not None
+                    and abs(left_year - right_year) > 2
+                ):
+                    continue
+                found.append((left_id, right_id))
+        return found
+
+    def test_it_matches_an_exhaustive_comparison(self) -> None:
+        import random
+
+        rng = random.Random(7)
+        words = [f"w{n}" for n in range(40)]
+        items = []
+        for _ in range(600):
+            title = " ".join(rng.sample(words, rng.randint(1, 12)))
+            if items and rng.random() < 0.3:
+                # A near copy of an earlier title: one word dropped or added.
+                base = rng.choice(items)[1].split()
+                if len(base) > 1 and rng.random() < 0.5:
+                    base.pop(rng.randrange(len(base)))
+                else:
+                    base.append(rng.choice(words))
+                title = " ".join(base)
+            items.append((uuid4(), title, rng.choice([None, 2020, 2021, 2025]), None))
+        fast = [(p.left_work_id, p.right_work_id) for p in propose_duplicates(items)]
+        assert fast == self._every_pair(items)
+        assert fast  # the sample does contain near-duplicates
+
+    def test_a_work_is_never_its_own_duplicate(self) -> None:
+        work = uuid4()
+        assert propose_duplicates([(work, "Same title", 2024, None)] * 2) == ()

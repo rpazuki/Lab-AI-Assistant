@@ -13,8 +13,10 @@ similarity; that is the specific failure these invariants exist to prevent.
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
+from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from enum import StrEnum
@@ -380,6 +382,51 @@ class DuplicateProposal(BaseModel):
     reason_code: str = "title_author_year_similarity"
 
 
+def _title_tokens(title: str) -> frozenset[str]:
+    return frozenset(normalise_title(title).split())
+
+
+def _jaccard(left: frozenset[str], right: frozenset[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _candidate_pairs(
+    token_sets: Sequence[frozenset[str]], threshold: float
+) -> list[tuple[int, int]]:
+    """Every pair whose token Jaccard *can* reach ``threshold``, by prefix filtering.
+
+    Order each title's tokens rarest first. Two sets with Jaccard at least ``t``
+    share at least ``ceil(t * |A|)`` tokens, so they must share a token among the
+    first ``|A| - ceil(t * |A|) + 1`` of either set's ordering. Indexing only
+    those prefix tokens finds every qualifying pair without comparing all of
+    them: no pair at or above the threshold is missed, which is what makes this
+    a speed-up rather than a different answer. The prefix used here is never
+    shorter than that bound (``floor`` instead of ``ceil``), so float rounding can
+    only add candidates.
+    """
+    frequency: dict[str, int] = defaultdict(int)
+    for tokens in token_sets:
+        for token in tokens:
+            frequency[token] += 1
+    postings: dict[str, list[int]] = defaultdict(list)
+    pairs: set[tuple[int, int]] = set()
+    for index, tokens in enumerate(token_sets):
+        if not tokens:
+            continue
+        ordered = sorted(tokens, key=lambda token: (frequency[token], token))
+        prefix = ordered[: len(ordered) - math.floor(threshold * len(ordered)) + 1]
+        for token in prefix:
+            for other in postings[token]:
+                # Size filter: Jaccard is at most min/max of the two sizes.
+                smaller, larger = sorted((len(tokens), len(token_sets[other])))
+                if smaller >= threshold * larger - 1e-9:
+                    pairs.add((other, index))
+            postings[token].append(index)
+    return sorted(pairs)
+
+
 def propose_duplicates(
     candidates: Iterable[tuple[UUID, str, int | None, str | None]],
     *,
@@ -389,36 +436,45 @@ def propose_duplicates(
 
     Output feeds a review queue. ``assess_merge`` still refuses these pairs
     unless a strong identifier bridge appears, which is the point.
+
+    The pairs are the ones a comparison of every title with every other would
+    find, in the same order, without making those comparisons: a 38,000-record
+    run is 720 million pairs, hours of work for a handful of proposals. A work
+    is never proposed as a duplicate of itself.
     """
     items = list(candidates)
+    token_sets = [_title_tokens(title) for _, title, _, _ in items]
     proposals: list[DuplicateProposal] = []
-    for index, (left_id, left_title, left_year, left_author) in enumerate(items):
-        for right_id, right_title, right_year, right_author in items[index + 1 :]:
-            similarity = title_similarity(left_title, right_title)
-            if similarity < threshold:
-                continue
-            year_gap = (
-                abs(left_year - right_year)
-                if left_year is not None and right_year is not None
-                else None
+    for left_index, right_index in _candidate_pairs(token_sets, threshold):
+        left_id, _, left_year, left_author = items[left_index]
+        right_id, _, right_year, right_author = items[right_index]
+        if left_id == right_id:
+            continue
+        similarity = _jaccard(token_sets[left_index], token_sets[right_index])
+        if similarity < threshold:
+            continue
+        year_gap = (
+            abs(left_year - right_year)
+            if left_year is not None and right_year is not None
+            else None
+        )
+        if year_gap is not None and year_gap > 2:
+            continue
+        proposals.append(
+            DuplicateProposal(
+                left_work_id=left_id,
+                right_work_id=right_id,
+                similarity=round(similarity, 4),
+                features={
+                    "year_gap": year_gap,
+                    "first_author_match": (
+                        None
+                        if left_author is None or right_author is None
+                        else left_author.casefold() == right_author.casefold()
+                    ),
+                },
             )
-            if year_gap is not None and year_gap > 2:
-                continue
-            proposals.append(
-                DuplicateProposal(
-                    left_work_id=left_id,
-                    right_work_id=right_id,
-                    similarity=round(similarity, 4),
-                    features={
-                        "year_gap": year_gap,
-                        "first_author_match": (
-                            None
-                            if left_author is None or right_author is None
-                            else left_author.casefold() == right_author.casefold()
-                        ),
-                    },
-                )
-            )
+        )
     return tuple(proposals)
 
 
