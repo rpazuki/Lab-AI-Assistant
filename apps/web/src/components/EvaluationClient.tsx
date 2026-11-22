@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
+import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
   BenchmarkEditor,
@@ -22,10 +23,8 @@ import {
   requestEvaluationRun,
   setReleaseGate,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import type { Benchmark, EvaluationRun, Release, ReleaseGate } from "@/types";
-
-/** How often the page asks again while a run is queued or running. */
-const POLL_MS = 4000;
 
 /** A starting point for a benchmark file: a retrieval set naming papers by DOI. */
 export const EXAMPLE_BENCHMARK = {
@@ -100,16 +99,9 @@ export function EvaluationClient() {
     }
   }, [fail]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const pending = runs.some((run) => run.status === "queued" || run.status === "running");
-  useEffect(() => {
-    if (!pending) return;
-    const timer = window.setInterval(() => void refresh(), POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [pending, refresh]);
+  const live = useLiveRefresh(refresh, {
+    active: runs.some((run) => run.status === "queued" || run.status === "running"),
+  });
 
   const releaseLabel = useMemo(() => {
     const labels = new Map(
@@ -122,7 +114,8 @@ export function EvaluationClient() {
     setNotice(null);
     try {
       await action();
-      await refresh();
+      live.kick();
+      await live.refresh();
       setError(null);
       setNotice(done);
     } catch (caught) {
@@ -156,7 +149,8 @@ export function EvaluationClient() {
         release_id: releaseId,
       });
       setNotice(`${benchmark.key} is queued against ${releaseLabel(releaseId)}.`);
-      await refresh();
+      live.kick();
+      await live.refresh();
     } catch (caught) {
       fail(caught, "the run could not be queued");
     } finally {
@@ -232,14 +226,17 @@ export function EvaluationClient() {
         title="Runs"
         flush
         aside={
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={compare.length !== 2}
-            onClick={() => setComparing([compare[0]!, compare[1]!])}
-          >
-            Compare selected ({compare.length}/2)
-          </Button>
+          <span className="flex flex-wrap items-center gap-3">
+            <LiveStatus {...live} />
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={compare.length !== 2}
+              onClick={() => setComparing([compare[0]!, compare[1]!])}
+            >
+              Compare selected ({compare.length}/2)
+            </Button>
+          </span>
         }
       >
         {runs.length === 0 ? (
@@ -292,7 +289,7 @@ export function EvaluationClient() {
         onRegistered={async (message) => {
           setError(null);
           setNotice(message);
-          await refresh();
+          await live.refresh();
         }}
         onError={(caught) => fail(caught, "the benchmark could not be registered")}
       />

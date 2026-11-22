@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -108,6 +108,50 @@ describe("CollectionSetup", () => {
     await waitFor(() => expect(api.deleteScopeDraft).toHaveBeenCalledWith("v1"));
     expect(await screen.findByText(/v1 deleted/)).toBeInTheDocument();
     confirm.mockRestore();
+  });
+
+  it("follows a discovery run until its sources have answered", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.mocked(api.listScopes).mockResolvedValue([scope({ approval_state: "approved" })]);
+      const searching = {
+        id: "run-1",
+        status: "running",
+        started_at: null,
+        frozen_at: null,
+        degraded_reason: null,
+        metrics: {},
+        connectors: [
+          {
+            connector_id: "pubmed",
+            required: true,
+            outcome: null,
+            records_seen: 20,
+            declared_total: 90,
+            accepted_degraded: false,
+          },
+        ],
+      };
+      vi.mocked(api.listDiscoveryRuns)
+        .mockResolvedValueOnce([searching])
+        .mockResolvedValue([
+          {
+            ...searching,
+            status: "degraded",
+            connectors: [{ ...searching.connectors[0]!, outcome: "succeeded", records_seen: 90 }],
+          },
+        ]);
+      render(<CollectionSetup />);
+
+      expect(await screen.findByText("20")).toBeInTheDocument();
+      expect(screen.getByText(/Updating live/)).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(3100));
+      // Seen has caught up with declared, and the source reports its outcome.
+      expect(await screen.findByText("succeeded")).toBeInTheDocument();
+      expect(screen.getAllByText("90")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("offers Edit and Delete on unapproved versions only", async () => {

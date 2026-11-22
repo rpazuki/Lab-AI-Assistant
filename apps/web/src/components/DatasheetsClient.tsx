@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
   ApiError,
@@ -15,6 +16,7 @@ import {
   workingSheet,
   workingSheetCsvUrl,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import type { ExtractionEstimate, ExtractionRun, ExtractionTemplate, WorkingSheet } from "@/types";
 
 /** A starting point: the worked example's shape, cut down to two targets. */
@@ -43,8 +45,6 @@ targets:
     likely_sections: [Results, Table]
     required: true
 `;
-
-const POLL_MS = 5000;
 
 const textareaClass =
   "w-full rounded-control border border-border-strong bg-surface px-3 py-2 font-mono text-xs text-ink shadow-control focus:border-primary";
@@ -93,10 +93,6 @@ export function DatasheetsClient() {
     }
   }, [fail]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
   // The sheet follows the chosen template.
   useEffect(() => {
     if (!chosen) {
@@ -113,19 +109,15 @@ export function DatasheetsClient() {
     };
   }, [chosen, runs]);
 
-  const pending = runs.some((run) => !run.finished);
-  useEffect(() => {
-    if (!pending) return;
-    const timer = window.setInterval(() => void refresh(), POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [pending, refresh]);
+  const live = useLiveRefresh(refresh, { active: runs.some((run) => !run.finished) });
 
   async function act(action: () => Promise<unknown>, done: string, fallback: string) {
     setBusy(true);
     setNotice(null);
     try {
       await action();
-      await refresh();
+      live.kick();
+      await live.refresh();
       setError(null);
       setNotice(done);
     } catch (caught) {
@@ -260,7 +252,7 @@ export function DatasheetsClient() {
         )}
       </Panel>
 
-      <Panel title="Runs" flush>
+      <Panel title="Runs" flush aside={<LiveStatus {...live} />}>
         {runs.length === 0 ? (
           <div className="px-5 py-3">
             <Empty>No extraction run has been started here. Extraction after parsing runs by itself.</Empty>

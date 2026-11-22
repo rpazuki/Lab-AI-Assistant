@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 import { BulkImport } from "@/components/BulkImport";
 import { CollectionSetup } from "@/components/CollectionSetup";
+import { LiveStatus } from "@/components/ui/LiveStatus";
 import {
   Alert,
   Button,
@@ -23,7 +24,11 @@ import {
   mergeWorks,
   setRelevance,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import type { AcquisitionPlan, Candidate } from "@/types";
+
+/** Plans the worker is still fetching: nothing has answered yet. */
+const FETCHING = new Set(["unplanned", "planned"]);
 
 /**
  * Collections: scope and discovery, candidate decisions, identity conflicts, and the
@@ -61,9 +66,7 @@ export function CollectionsClient() {
     }
   }, []);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const live = useLiveRefresh(refresh, { active: plans.some((plan) => FETCHING.has(plan.status)) });
 
   return (
     <div className="space-y-4">
@@ -73,7 +76,7 @@ export function CollectionsClient() {
         </Alert>
       ) : null}
 
-      <CollectionSetup onChanged={() => void refresh()} />
+      <CollectionSetup onChanged={() => live.kick()} />
 
       <Panel title="Identity conflicts and duplicate proposals">
         {conflicts.length === 0 && proposals.length === 0 ? (
@@ -108,7 +111,7 @@ export function CollectionsClient() {
                     proposal.right_work_id,
                     "reviewer_confirmed_same_work",
                   );
-                  void refresh();
+                  live.kick();
                 }}
               >
                 Merge
@@ -118,7 +121,7 @@ export function CollectionsClient() {
         </ul>
       </Panel>
 
-      <Panel title="Candidates" flush>
+      <Panel title="Candidates" flush aside={<LiveStatus {...live} />}>
         {candidates.length === 0 ? (
           <div className="px-5 py-3">
             <Empty>No candidates yet. Run discovery first.</Empty>
@@ -162,7 +165,7 @@ export function CollectionsClient() {
                   size="sm"
                   onClick={async () => {
                     await setRelevance(candidate.work_id, "included", "steward_included");
-                    void refresh();
+                    live.kick();
                   }}
                 >
                   Include
@@ -172,7 +175,7 @@ export function CollectionsClient() {
                   size="sm"
                   onClick={async () => {
                     await setRelevance(candidate.work_id, "excluded", "out_of_scope");
-                    void refresh();
+                    live.kick();
                   }}
                 >
                   Exclude
@@ -183,7 +186,7 @@ export function CollectionsClient() {
         </ul>
       </Panel>
 
-      <Panel title="Acquisition queue" flush>
+      <Panel title="Acquisition queue" flush aside={<LiveStatus {...live} />}>
         {plans.length === 0 ? (
           <div className="px-5 py-3">
             <Empty>No acquisition plans yet.</Empty>
@@ -223,7 +226,7 @@ export function CollectionsClient() {
 
       <BulkImport
         waiting={plans.filter((plan) => plan.status === "assisted" || plan.status === "failed")}
-        onImported={() => void refresh()}
+        onImported={() => live.kick()}
       />
 
       {uploadFor ? (
@@ -231,7 +234,7 @@ export function CollectionsClient() {
           plan={uploadFor}
           onDone={() => {
             setUploadFor(null);
-            void refresh();
+            live.kick();
           }}
         />
       ) : null}

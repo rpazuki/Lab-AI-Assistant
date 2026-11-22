@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
+import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Alert, Button, Empty, Panel, StateChip } from "@/components/ui/primitives";
 import { listAuditEvents, retryTask, taskSnapshot } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import type { AuditEvent, TaskSnapshot } from "@/types";
 
 /** The task states worth a tile, in the order work moves through them. */
@@ -61,11 +63,11 @@ export function OperationsClient() {
     }
   }, []);
 
-  useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+  // The queue is always worth watching here; faster while a worker holds a task.
+  const live = useLiveRefresh(refresh, {
+    active: (snapshot?.counts.leased ?? 0) > 0,
+    idleMs: REFRESH_MS,
+  });
 
   async function retry(taskId: string) {
     setBusy(taskId);
@@ -80,7 +82,8 @@ export function OperationsClient() {
       setBusy(null);
     }
     // Reported after the reload, which clears the error banner when it succeeds.
-    await refresh();
+    live.kick();
+    await live.refresh();
     if (report.ok) setNotice(report.message);
     else setError(report.message);
   }
@@ -99,6 +102,10 @@ export function OperationsClient() {
           {notice}
         </Alert>
       ) : null}
+
+      <div className="flex justify-end">
+        <LiveStatus {...live} />
+      </div>
 
       <section aria-label="Tasks by state">
         <dl className="grid grid-cols-2 gap-3 sm:grid-cols-5">

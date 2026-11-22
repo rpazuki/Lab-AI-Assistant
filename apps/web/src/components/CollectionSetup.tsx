@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 import { QueryHelper } from "@/components/QueryHelper";
+import { LiveStatus } from "@/components/ui/LiveStatus";
 import {
   Alert,
   Button,
@@ -25,6 +26,7 @@ import {
   startDiscovery,
   updateScopeDraft,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import type { DiscoveryRun, ScopeGateReport, ScopeVersion } from "@/types";
 
 /** The sources this installation registers. Each takes its own query language. */
@@ -48,6 +50,8 @@ const lines = (text: string) =>
 
 /** A run can be frozen until it has been frozen, or has ended without results. */
 const FREEZABLE = new Set(["planned", "running", "degraded"]);
+/** A run whose sources are still being searched. */
+const SEARCHING = new Set(["planned", "running"]);
 
 /**
  * Setting a collection up: its scope, and the discovery runs that search it.
@@ -81,9 +85,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
     }
   }, []);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const live = useLiveRefresh(refresh, { active: runs.some((run) => SEARCHING.has(run.status)) });
 
   /** Run a change, reload, then report, so a refusal survives the reload. */
   async function act(action: () => Promise<unknown>, done: string) {
@@ -95,7 +97,9 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
     } catch (caught) {
       failure = caught instanceof Error ? caught.message : "the change was not made";
     }
-    await refresh();
+    // Keep following: a started run progresses, and a frozen one feeds candidates.
+    live.kick();
+    await live.refresh();
     if (failure) setError(failure);
     else setNotice(done);
   }
@@ -167,7 +171,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
               setEditing(null);
               setGates({});
               setNotice(`${message} Check its gate, then approve it.`);
-              await refresh();
+              await live.refresh();
             }}
             onError={setError}
           />
@@ -261,7 +265,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
         )}
       </Panel>
 
-      <Panel title="Discovery runs" flush>
+      <Panel title="Discovery runs" flush aside={<LiveStatus {...live} />}>
         {runs.length === 0 ? (
           <div className="px-5 py-3">
             <Empty>No discovery run yet. Start one from an approved scope.</Empty>

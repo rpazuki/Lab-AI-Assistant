@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
+import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Alert, Button, Empty, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
   ApiError,
@@ -15,7 +16,17 @@ import {
   rollbackRelease,
   validateRelease,
 } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import type { GateStatus, Release } from "@/types";
+
+/** A release the worker is still validating, indexing or publishing. */
+function inProgress(release: Release): boolean {
+  return (
+    release.status === "validating" ||
+    release.status === "publishing" ||
+    (release.status === "approved" && release.projection_ready_profiles.length === 0)
+  );
+}
 
 /**
  * Releases and exports.
@@ -61,9 +72,7 @@ export function ReleasesClient() {
     }
   }, []);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const live = useLiveRefresh(refresh, { active: releases.some(inProgress) });
 
   /**
    * Publish, and when the refusal is a required benchmark rather than the release
@@ -76,7 +85,8 @@ export function ReleasesClient() {
       await publishRelease(release.id, "current", overrideReason);
       setStatus(`${release.name}@${release.semantic_version} is now current.`);
       setError(null);
-      await refresh();
+      live.kick();
+      await live.refresh();
     } catch (caught) {
       setStatus(null);
       const blockers =
@@ -97,7 +107,8 @@ export function ReleasesClient() {
     try {
       const result = await action();
       setStatus(`${label}: ${JSON.stringify(result)}`);
-      await refresh();
+      live.kick();
+      await live.refresh();
     } catch (caught) {
       setStatus(null);
       setError(caught instanceof Error ? caught.message : `${label} failed`);
@@ -150,7 +161,9 @@ export function ReleasesClient() {
         title="Releases"
         flush
         aside={
-          <Button
+          <span className="flex flex-wrap items-center gap-3">
+            <LiveStatus {...live} />
+            <Button
             variant="ghost"
             size="sm"
             onClick={() =>
@@ -163,7 +176,8 @@ export function ReleasesClient() {
             }
           >
             Draft from approved material
-          </Button>
+            </Button>
+          </span>
         }
       >
         {releases.length === 0 ? (

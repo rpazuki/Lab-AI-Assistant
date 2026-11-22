@@ -131,6 +131,20 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         ],
       },
       {
+        id: "live-updates",
+        title: "Lists that update themselves",
+        about: [
+          "Work such as searching the sources, fetching full texts, indexing a release, extraction and evaluation runs happens in the background. Each list that shows such work has an indicator in its header.",
+          "**Updating live**, with a pulsing dot, means something in the list is still in progress, or you have just changed something: the list is read again every few seconds until the work settles. Otherwise the header says when the list was last updated. Reading pauses while the browser tab is hidden and resumes when you return.",
+        ],
+        howTos: [
+          {
+            title: "How to update a list now",
+            steps: ["Select **Refresh** next to the indicator in the list's header."],
+          },
+        ],
+      },
+      {
         id: "roles",
         title: "Roles and what they can do",
         about: [
