@@ -21,6 +21,7 @@ import type {
   ChatSession,
   CorpusStats,
   DiscoveryRun,
+  DuplicateProposal,
   EvaluationRun,
   ExtractionEstimate,
   ExtractionRun,
@@ -31,6 +32,7 @@ import type {
   Me,
   Member,
   MemberSession,
+  Page,
   ProblemDetails,
   Release,
   ReleaseGate,
@@ -314,20 +316,34 @@ export const freezeDiscovery = (runId: string, acceptDegraded = false) =>
     { method: "POST" },
   );
 
-export const listCandidates = () =>
-  request<{ items: Candidate[] }>("/candidates").then((body) => body.items);
+/** `?a=1&b=2` from the values that are set; empty when none are. */
+function queryString(params: Record<string, string | number | null | undefined>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== "") query.set(key, String(value));
+  }
+  const text = query.toString();
+  return text ? `?${text}` : "";
+}
 
-export const listConflicts = () =>
+export interface PageRequest {
+  after?: string | null;
+  limit?: number;
+}
+
+/** One page of candidates, filtered by relevance and identity state. */
+export const listCandidates = (
+  options: PageRequest & { relevance?: string; identity_status?: string } = {},
+) => request<Page<Candidate>>(`/candidates${queryString({ ...options })}`);
+
+/** How many works are in conflict, and one page of the duplicate-review queue. */
+export const listConflicts = (options: PageRequest = {}) =>
   request<{
-    conflicts: { work_id: string }[];
-    duplicate_proposals: {
-      left_work_id: string;
-      right_work_id: string;
-      similarity: number;
-      features: Record<string, unknown>;
-      reason_code: string;
-    }[];
-  }>("/candidates/conflicts");
+    conflict_total: number;
+    proposal_total: number;
+    next_cursor: string | null;
+    duplicate_proposals: DuplicateProposal[];
+  }>(`/candidates/conflicts${queryString({ ...options })}`);
 
 export const setRelevance = (workId: string, relevance: string, reasonCode: string) =>
   request<{ work_id: string; relevance: string }>(`/candidates/${workId}/relevance`, {
@@ -341,10 +357,11 @@ export const mergeWorks = (keepWorkId: string, mergeWorkId: string, reasonCode: 
     body: JSON.stringify({ keep_work_id: keepWorkId, merge_work_id: mergeWorkId, reason_code: reasonCode }),
   });
 
-export const listPlans = (status?: string) =>
-  request<{ items: AcquisitionPlan[] }>(
-    `/acquisition-plans${status ? `?status=${encodeURIComponent(status)}` : ""}`,
-  ).then((body) => body.items);
+/** One page of acquisition plans, and how many plans are in each status. */
+export const listPlans = (options: PageRequest & { status?: string } = {}) =>
+  request<Page<AcquisitionPlan> & { status_counts: Record<string, number> }>(
+    `/acquisition-plans${queryString({ ...options })}`,
+  );
 
 /**
  * Upload an authorised copy against a queued candidate.

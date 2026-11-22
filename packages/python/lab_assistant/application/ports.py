@@ -620,7 +620,15 @@ class WorkRepository(Protocol):
         #: control: a lifecycle path that must see every work pages with this until
         #: a short page comes back. See ``application/pagination.py``.
         after_id: UUID | None = None,
+        identity_status: str | None = None,
     ) -> list[Work]: ...
+    async def count_works(
+        self,
+        workspace_id: UUID,
+        *,
+        relevance: str | None = None,
+        identity_status: str | None = None,
+    ) -> int: ...
     async def list_work_visibility(
         self,
         workspace_id: UUID,
@@ -647,6 +655,18 @@ class WorkRepository(Protocol):
     async def list_decisions(
         self, workspace_id: UUID, *, work_id: UUID | None = None
     ) -> list[IdentityDecision]: ...
+    async def list_decisions_page(
+        self,
+        workspace_id: UUID,
+        *,
+        reason_code: str,
+        limit: int = 100,
+        after_id: UUID | None = None,
+    ) -> list[IdentityDecision]:
+        """Decisions with this reason, ordered by id: a keyset page."""
+        ...
+
+    async def count_decisions(self, workspace_id: UUID, *, reason_code: str) -> int: ...
 
 
 @runtime_checkable
@@ -662,8 +682,17 @@ class AssetRepository(Protocol):
     async def update_plan(self, plan: AcquisitionPlan) -> None: ...
     async def get_plan(self, workspace_id: UUID, plan_id: UUID) -> AcquisitionPlan | None: ...
     async def list_plans(
-        self, workspace_id: UUID, *, status: str | None = None
-    ) -> list[AcquisitionPlan]: ...
+        self,
+        workspace_id: UUID,
+        *,
+        status: str | None = None,
+        limit: int | None = None,
+        after_id: UUID | None = None,
+    ) -> list[AcquisitionPlan]:
+        """Plans, oldest first; with ``limit``, a keyset page ordered by id."""
+        ...
+
+    async def count_plans_by_status(self, workspace_id: UUID) -> dict[str, int]: ...
     async def add_attempt(self, attempt: AcquisitionAttempt) -> None: ...
     async def list_attempts(
         self, workspace_id: UUID, *, plan_id: UUID | None = None

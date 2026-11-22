@@ -486,6 +486,8 @@ identity_decisions = Table(
     Column("decided_by_type", Text, nullable=False),
     Column("decided_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Index("ix_identity_decisions_workspace", "workspace_id", "decided_at"),
+    # The duplicate-review queue is read a page at a time by reason.
+    Index("ix_identity_decisions_reason", "workspace_id", "reason_code"),
 )
 
 # ── manifestations, rights, assets ──────────────────────────────────────────

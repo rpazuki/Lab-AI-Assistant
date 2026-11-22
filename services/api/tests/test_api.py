@@ -1362,3 +1362,121 @@ class TestScopeLookup:
             "/api/v1/lookup/queries", json={"organism_terms": ["x"]}, headers=headers
         )
         assert response.status_code == 403
+
+
+class TestCollectionsArePaged:
+    """A large run's candidates, plans and duplicate pairs arrive a page at a time."""
+
+    async def _seed(self, api) -> None:
+        import itertools
+
+        from lab_assistant.domain.assets import AcquisitionPlan
+        from lab_assistant.domain.identity import (
+            DUPLICATE_PROPOSAL_REASON,
+            IdentityDecision,
+            IdentityDecisionType,
+            Work,
+            WorkKind,
+        )
+        from lab_assistant.domain.states import IdentityState
+        from lab_assistant.domain.states import RelevanceState as Relevance
+
+        context, ws = api["harness"].context, api["workspace"].id
+        async with context.uow_factory() as uow:
+            works = []
+            for index in range(7):
+                work = Work(
+                    id=context.new_id(),
+                    workspace_id=ws,
+                    work_kind=WorkKind.ARTICLE,
+                    relevance=Relevance.INCLUDED if index < 4 else Relevance.INCLUDED_UNCERTAIN,
+                    identity_status=(
+                        IdentityState.CONFLICT if index < 2 else IdentityState.RESOLVED
+                    ),
+                    created_at=context.now(),
+                )
+                await uow.works.add(work)
+                works.append(work)
+                await uow.assets.add_plan(
+                    AcquisitionPlan(
+                        id=context.new_id(),
+                        workspace_id=ws,
+                        work_id=work.id,
+                        status="assisted" if index < 3 else "planned",
+                    )
+                )
+            for left, right in itertools.pairwise(works):
+                await uow.works.add_decision(
+                    IdentityDecision(
+                        id=context.new_id(),
+                        workspace_id=ws,
+                        decision_type=IdentityDecisionType.REOPEN,
+                        subject_work_ids=(left.id, right.id),
+                        after={"proposal": "duplicate_review", "similarity": 0.9},
+                        reason_code=DUPLICATE_PROPOSAL_REASON,
+                        decided_by_type="automatic_rule",
+                        decided_at=context.now(),
+                    )
+                )
+            await uow.commit()
+
+    @staticmethod
+    async def _walk(client, token, path: str, key: str) -> tuple[list, list[int]]:
+        seen, totals, cursor = [], [], None
+        for _ in range(20):
+            params = {"limit": 3, **({"after": cursor} if cursor else {})}
+            body = (await client.get(path, headers=_auth(token), params=params)).json()
+            seen.extend(body[key])
+            totals.append(body.get("total", body.get("proposal_total")))
+            cursor = body["next_cursor"]
+            if cursor is None:
+                return seen, totals
+        raise AssertionError("paging never ended")
+
+    async def test_candidates_page_with_a_total_and_filters(self, api) -> None:
+        await self._seed(api)
+        token = await _login(api["client"], "steward@lab.invalid")
+        seen, totals = await self._walk(api["client"], token, "/api/v1/candidates", "items")
+        ids = [item["work_id"] for item in seen]
+        assert len(ids) == 7 and len(set(ids)) == 7
+        assert set(totals) == {7}
+
+        filtered = await api["client"].get(
+            "/api/v1/candidates",
+            headers=_auth(token),
+            params={"relevance": "included", "identity_status": "conflict"},
+        )
+        body = filtered.json()
+        assert body["total"] == 2 and len(body["items"]) == 2
+        assert {item["identity_status"] for item in body["items"]} == {"conflict"}
+        assert body["next_cursor"] is None
+
+        refused = await api["client"].get(
+            "/api/v1/candidates", headers=_auth(token), params={"relevance": "maybe"}
+        )
+        assert refused.status_code == 422
+
+    async def test_plans_and_duplicate_pairs_page_too(self, api) -> None:
+        await self._seed(api)
+        token = await _login(api["client"], "steward@lab.invalid")
+        plans, totals = await self._walk(api["client"], token, "/api/v1/acquisition-plans", "items")
+        assert len({plan["plan_id"] for plan in plans}) == 7 and set(totals) == {7}
+        counts = (
+            await api["client"].get("/api/v1/acquisition-plans", headers=_auth(token))
+        ).json()["status_counts"]
+        assert counts == {"assisted": 3, "planned": 4}
+        assisted = (
+            await api["client"].get(
+                "/api/v1/acquisition-plans", headers=_auth(token), params={"status": "assisted"}
+            )
+        ).json()
+        assert assisted["total"] == 3 and len(assisted["items"]) == 3
+
+        pairs, totals = await self._walk(
+            api["client"], token, "/api/v1/candidates/conflicts", "duplicate_proposals"
+        )
+        assert len(pairs) == 6 and set(totals) == {6}
+        first = (
+            await api["client"].get("/api/v1/candidates/conflicts", headers=_auth(token))
+        ).json()
+        assert first["conflict_total"] == 2

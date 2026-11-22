@@ -101,6 +101,22 @@ export type AskEvent =
     }
   | { type: "error"; data: { detail: string; error_class: string } };
 
+/** One keyset page of a long list. `next_cursor` is null on the last page. */
+export interface Page<T> {
+  items: T[];
+  next_cursor: string | null;
+  /** Rows that match, across every page. */
+  total: number;
+}
+
+export interface DuplicateProposal {
+  left_work_id: string;
+  right_work_id: string;
+  similarity: number;
+  features: Record<string, unknown>;
+  reason_code: string;
+}
+
 export interface Candidate {
   work_id: string;
   title: string | null;

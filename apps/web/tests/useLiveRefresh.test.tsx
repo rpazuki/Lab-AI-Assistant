@@ -103,4 +103,32 @@ describe("useLiveRefresh", () => {
     await tick(LIVE_INTERVAL_MS + 10);
     expect(load).toHaveBeenCalledTimes(2);
   });
+
+  it("loads a changed question after the one in flight, never alongside it", async () => {
+    let finishFirst = () => {};
+    const first = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishFirst = resolve;
+        }),
+    );
+    const second = vi.fn(async () => undefined);
+    let refresh: () => Promise<void> = async () => {};
+    function Paged({ load }: { load: () => Promise<void> }) {
+      const live = useLiveRefresh(load, { active: false });
+      refresh = live.refresh;
+      return null;
+    }
+    const { rerender } = render(<Paged load={first} />);
+    await tick(0);
+    expect(first).toHaveBeenCalledTimes(1);
+    // The next page is asked for while the first page is still loading.
+    rerender(<Paged load={second} />);
+    act(() => void refresh());
+    await tick(10);
+    expect(second).not.toHaveBeenCalled();
+    await act(async () => finishFirst());
+    await tick(10);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
 });

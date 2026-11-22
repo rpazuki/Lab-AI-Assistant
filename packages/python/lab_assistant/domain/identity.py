@@ -30,6 +30,7 @@ from lab_assistant.domain.states import IdentityState, RelevanceState
 
 __all__ = [
     "COMPATIBLE_WORK_KINDS",
+    "DUPLICATE_PROPOSAL_REASON",
     "DuplicateProposal",
     "IdentityDecision",
     "IdentityDecisionType",
@@ -370,6 +371,10 @@ def assess_merge(
     )
 
 
+#: The reason every automatic duplicate proposal is recorded under.
+DUPLICATE_PROPOSAL_REASON = "title_author_year_similarity"
+
+
 class DuplicateProposal(BaseModel):
     """A candidate pair for human review. Never applied automatically."""
 
@@ -379,7 +384,7 @@ class DuplicateProposal(BaseModel):
     right_work_id: UUID
     similarity: float
     features: dict[str, Any] = Field(default_factory=dict)
-    reason_code: str = "title_author_year_similarity"
+    reason_code: str = DUPLICATE_PROPOSAL_REASON
 
 
 def _title_tokens(title: str) -> frozenset[str]:

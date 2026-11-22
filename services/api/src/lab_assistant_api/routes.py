@@ -42,7 +42,7 @@ from lab_assistant.domain.chat import UsageTotals
 from lab_assistant.domain.claims import ReviewDecision
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.scope import ConnectorPlanEntry
-from lab_assistant.domain.states import RelevanceState
+from lab_assistant.domain.states import IdentityState, RelevanceState
 from lab_assistant.domain.workspace import Capability, MembershipStatus, Role
 from lab_assistant.evaluation.service import EvaluationService, benchmark_json, run_json
 from lab_assistant.evaluation.workbench import (
@@ -952,12 +952,27 @@ async def lookup_queries(
 async def list_candidates(
     actor: CurrentActor,
     container: Container,
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[UUID | None, Query(description="next_cursor from the previous page")] = None,
+    relevance: Annotated[RelevanceState | None, Query()] = None,
+    identity_status: Annotated[IdentityState | None, Query()] = None,
 ) -> dict[str, Any]:
+    """One page of candidates, with the total that match the filters.
+
+    Keyset-paged: ``next_cursor`` is null on the last page. A run of tens of
+    thousands of records is never sent to a browser in one response.
+    """
     from lab_assistant.application.reconciliation import canonical_metadata
 
     async with container.context.uow_factory() as uow:
-        works = await uow.works.list_works(actor.workspace_id, limit=limit)
+        filters = {
+            "relevance": relevance.value if relevance else None,
+            "identity_status": identity_status.value if identity_status else None,
+        }
+        works = await uow.works.list_works(
+            actor.workspace_id, limit=limit, after_id=after, **filters
+        )
+        total = await uow.works.count_works(actor.workspace_id, **filters)
         items = []
         for work in works:
             assertions = await uow.observations.list_assertions(actor.workspace_id, work_id=work.id)
@@ -981,16 +996,27 @@ async def list_candidates(
                     "provenance": metadata.get("_provenance", {}),
                 }
             )
-    return {"items": items, "next_cursor": None}
+    next_cursor = str(works[-1].id) if len(works) == limit else None
+    return {"items": items, "next_cursor": next_cursor, "total": total}
 
 
 @router.get("/candidates/conflicts")
-async def list_conflicts(actor: CurrentActor, container: Container) -> dict[str, Any]:
+async def list_conflicts(
+    actor: CurrentActor,
+    container: Container,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[UUID | None, Query(description="next_cursor from the previous page")] = None,
+) -> dict[str, Any]:
+    """How many works are in conflict, and one page of the duplicate-review queue."""
     service = IdentityService(container.context)
-    conflicts = await service.list_conflicts(actor)
-    proposals = await service.list_duplicate_proposals(actor)
+    conflict_total = await service.count_conflicts(actor)
+    proposals, next_cursor, proposal_total = await service.duplicate_proposal_page(
+        actor, limit=limit, after_id=after
+    )
     return {
-        "conflicts": [{"work_id": str(work.id)} for work in conflicts],
+        "conflict_total": conflict_total,
+        "proposal_total": proposal_total,
+        "next_cursor": str(next_cursor) if next_cursor else None,
         "duplicate_proposals": [
             {
                 "left_work_id": str(proposal.left_work_id),
@@ -1062,9 +1088,15 @@ async def list_plans(
     actor: CurrentActor,
     container: Container,
     status: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[UUID | None, Query(description="next_cursor from the previous page")] = None,
 ) -> dict[str, Any]:
+    """One page of acquisition plans, and how many plans are in each status."""
     async with container.context.uow_factory() as uow:
-        plans = await uow.assets.list_plans(actor.workspace_id, status=status)
+        plans = await uow.assets.list_plans(
+            actor.workspace_id, status=status, limit=limit, after_id=after
+        )
+        status_counts = await uow.assets.count_plans_by_status(actor.workspace_id)
         items = []
         for plan in plans:
             attempts = await uow.assets.list_attempts(actor.workspace_id, plan_id=plan.id)
@@ -1087,7 +1119,13 @@ async def list_plans(
                     ],
                 }
             )
-    return {"items": items}
+    total = status_counts.get(status, 0) if status else sum(status_counts.values())
+    return {
+        "items": items,
+        "next_cursor": str(plans[-1].id) if len(plans) == limit else None,
+        "total": total,
+        "status_counts": status_counts,
+    }
 
 
 @router.post(

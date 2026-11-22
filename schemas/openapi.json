@@ -335,6 +335,17 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "IdentityState": {
+        "enum": [
+          "unresolved",
+          "resolved",
+          "conflict",
+          "merged",
+          "split"
+        ],
+        "title": "IdentityState",
+        "type": "string"
+      },
       "InvitationRequest": {
         "properties": {
           "email": {
@@ -1023,6 +1034,7 @@
   "paths": {
     "/api/v1/acquisition-plans": {
       "get": {
+        "description": "One page of acquisition plans, and how many plans are in each status.",
         "operationId": "list_plans_api_v1_acquisition_plans_get",
         "parameters": [
           {
@@ -1039,6 +1051,37 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "next_cursor from the previous page",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "next_cursor from the previous page",
+              "title": "After"
             }
           },
           {
@@ -1886,6 +1929,7 @@
     },
     "/api/v1/candidates": {
       "get": {
+        "description": "One page of candidates, with the total that match the filters.\n\nKeyset-paged: ``next_cursor`` is null on the last page. A run of tens of\nthousands of records is never sent to a browser in one response.",
         "operationId": "list_candidates_api_v1_candidates_get",
         "parameters": [
           {
@@ -1893,11 +1937,62 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 100,
-              "maximum": 500,
+              "default": 50,
+              "maximum": 200,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "next_cursor from the previous page",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "next_cursor from the previous page",
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "relevance",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RelevanceState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Relevance"
+            }
+          },
+          {
+            "in": "query",
+            "name": "identity_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/IdentityState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Identity Status"
             }
           },
           {
@@ -1962,8 +2057,40 @@
     },
     "/api/v1/candidates/conflicts": {
       "get": {
+        "description": "How many works are in conflict, and one page of the duplicate-review queue.",
         "operationId": "list_conflicts_api_v1_candidates_conflicts_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "next_cursor from the previous page",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "next_cursor from the previous page",
+              "title": "After"
+            }
+          },
           {
             "in": "header",
             "name": "X-Workspace",

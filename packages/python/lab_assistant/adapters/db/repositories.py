@@ -774,15 +774,38 @@ class _Works(_Base):
         relevance: str | None = None,
         limit: int = 100,
         after_id: UUID | None = None,
+        identity_status: str | None = None,
     ) -> list[Work]:
-        conditions = [self._scope(WORKS, workspace_id)]
-        if relevance is not None:
-            conditions.append(t.works.c.relevance == relevance)
+        conditions = self._work_filters(workspace_id, relevance, identity_status)
         if after_id is not None:
             conditions.append(t.works.c.id > after_id)
         # Ordered by id, not by created_at: the cursor has to be total and stable,
         # and two works created in the same transaction share a timestamp.
         return await self._many(WORKS, *conditions, order=t.works.c.id, limit=limit)
+
+    def _work_filters(
+        self, workspace_id: UUID, relevance: str | None, identity_status: str | None
+    ) -> list[Any]:
+        conditions = [self._scope(WORKS, workspace_id)]
+        if relevance is not None:
+            conditions.append(t.works.c.relevance == relevance)
+        if identity_status is not None:
+            conditions.append(t.works.c.identity_status == identity_status)
+        return conditions
+
+    async def count_works(
+        self,
+        workspace_id: UUID,
+        *,
+        relevance: str | None = None,
+        identity_status: str | None = None,
+    ) -> int:
+        result = await self._c.execute(
+            select(func.count())
+            .select_from(t.works)
+            .where(*self._work_filters(workspace_id, relevance, identity_status))
+        )
+        return int(result.scalar() or 0)
 
     async def list_work_visibility(
         self,
@@ -953,6 +976,35 @@ class _Works(_Base):
             return decisions
         return [d for d in decisions if work_id in d.subject_work_ids]
 
+    async def list_decisions_page(
+        self,
+        workspace_id: UUID,
+        *,
+        reason_code: str,
+        limit: int = 100,
+        after_id: UUID | None = None,
+    ) -> list[IdentityDecision]:
+        conditions = [
+            self._scope(DECISIONS, workspace_id),
+            t.identity_decisions.c.reason_code == reason_code,
+        ]
+        if after_id is not None:
+            conditions.append(t.identity_decisions.c.id > after_id)
+        return await self._many(
+            DECISIONS, *conditions, order=t.identity_decisions.c.id, limit=limit
+        )
+
+    async def count_decisions(self, workspace_id: UUID, *, reason_code: str) -> int:
+        result = await self._c.execute(
+            select(func.count())
+            .select_from(t.identity_decisions)
+            .where(
+                self._scope(DECISIONS, workspace_id),
+                t.identity_decisions.c.reason_code == reason_code,
+            )
+        )
+        return int(result.scalar() or 0)
+
 
 class _Assets(_Base):
     async def add_manifestation(self, manifestation: Manifestation) -> None:
@@ -986,12 +1038,29 @@ class _Assets(_Base):
         )
 
     async def list_plans(
-        self, workspace_id: UUID, *, status: str | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        status: str | None = None,
+        limit: int | None = None,
+        after_id: UUID | None = None,
     ) -> list[AcquisitionPlan]:
         conditions = [self._scope(PLANS, workspace_id)]
         if status is not None:
             conditions.append(t.acquisition_plans.c.status == status)
-        return await self._many(PLANS, *conditions, order=t.acquisition_plans.c.created_at)
+        if limit is None and after_id is None:
+            return await self._many(PLANS, *conditions, order=t.acquisition_plans.c.created_at)
+        if after_id is not None:
+            conditions.append(t.acquisition_plans.c.id > after_id)
+        return await self._many(PLANS, *conditions, order=t.acquisition_plans.c.id, limit=limit)
+
+    async def count_plans_by_status(self, workspace_id: UUID) -> dict[str, int]:
+        result = await self._c.execute(
+            select(t.acquisition_plans.c.status, func.count())
+            .where(self._scope(PLANS, workspace_id))
+            .group_by(t.acquisition_plans.c.status)
+        )
+        return {str(status): int(count) for status, count in result.all()}
 
     async def add_attempt(self, attempt: AcquisitionAttempt) -> None:
         await self._upsert(ATTEMPTS, attempt)

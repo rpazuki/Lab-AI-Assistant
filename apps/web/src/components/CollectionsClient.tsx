@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { BulkImport } from "@/components/BulkImport";
 import { CollectionSetup } from "@/components/CollectionSetup";
 import { LiveStatus } from "@/components/ui/LiveStatus";
+import { Pager } from "@/components/ui/Pager";
 import {
   Alert,
   Button,
@@ -24,11 +25,50 @@ import {
   mergeWorks,
   setRelevance,
 } from "@/lib/api";
+import { statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
-import type { AcquisitionPlan, Candidate } from "@/types";
+import { usePager } from "@/lib/usePager";
+import type { AcquisitionPlan, Candidate, DuplicateProposal, Page } from "@/types";
 
 /** Plans the worker is still fetching: nothing has answered yet. */
 const FETCHING = new Set(["unplanned", "planned"]);
+
+const EMPTY_PAGE = { items: [], next_cursor: null, total: 0 };
+
+const selectClass =
+  "rounded-control border border-border-strong bg-surface px-2 py-1 text-xs text-ink";
+
+/** A filter over one status group: "All" plus every value the glossary knows. */
+function StatusFilter({
+  label,
+  kind,
+  value,
+  onChange,
+}: {
+  label: string;
+  kind: "relevance" | "identity" | "acquisition";
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-muted">
+      {label}
+      <select
+        aria-label={`Filter by ${label.toLowerCase()}`}
+        className={selectClass}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">All</option>
+        {Object.keys(statusGroup(kind).values).map((state) => (
+          <option key={state} value={state}>
+            {state}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 /**
  * Collections: scope and discovery, candidate decisions, identity conflicts, and the
@@ -40,33 +80,68 @@ const FETCHING = new Set(["unplanned", "planned"]);
  * plan resumes.
  */
 export function CollectionsClient() {
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [plans, setPlans] = useState<AcquisitionPlan[]>([]);
-  const [conflicts, setConflicts] = useState<{ work_id: string }[]>([]);
-  const [proposals, setProposals] = useState<
-    { left_work_id: string; right_work_id: string; similarity: number; reason_code: string }[]
-  >([]);
+  // Each list holds one page: a large run is tens of thousands of candidates, and
+  // the page refreshes itself while work runs.
+  const [candidates, setCandidates] = useState<Page<Candidate>>(EMPTY_PAGE);
+  const [plans, setPlans] = useState<Page<AcquisitionPlan>>(EMPTY_PAGE);
+  const [planCounts, setPlanCounts] = useState<Record<string, number>>({});
+  const [conflictTotal, setConflictTotal] = useState(0);
+  const [proposals, setProposals] = useState<Page<DuplicateProposal>>(EMPTY_PAGE);
+  const [relevance, setRelevanceFilter] = useState("");
+  const [identity, setIdentityFilter] = useState("");
+  const [planStatus, setPlanStatus] = useState("");
+  const candidatePager = usePager();
+  const planPager = usePager();
+  const proposalPager = usePager();
   const [error, setError] = useState<string | null>(null);
   const [uploadFor, setUploadFor] = useState<AcquisitionPlan | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       const [nextCandidates, nextPlans, conflictBody] = await Promise.all([
-        listCandidates(),
-        listPlans(),
-        listConflicts(),
+        listCandidates({
+          after: candidatePager.cursor,
+          limit: candidatePager.pageSize,
+          relevance,
+          identity_status: identity,
+        }),
+        listPlans({ after: planPager.cursor, limit: planPager.pageSize, status: planStatus }),
+        listConflicts({ after: proposalPager.cursor, limit: proposalPager.pageSize }),
       ]);
       setCandidates(nextCandidates);
       setPlans(nextPlans);
-      setConflicts(conflictBody.conflicts);
-      setProposals(conflictBody.duplicate_proposals);
+      setPlanCounts(nextPlans.status_counts);
+      setConflictTotal(conflictBody.conflict_total);
+      setProposals({
+        items: conflictBody.duplicate_proposals,
+        next_cursor: conflictBody.next_cursor,
+        total: conflictBody.proposal_total,
+      });
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "collections could not be loaded");
     }
-  }, []);
+  }, [
+    candidatePager.cursor,
+    candidatePager.pageSize,
+    planPager.cursor,
+    planPager.pageSize,
+    proposalPager.cursor,
+    proposalPager.pageSize,
+    relevance,
+    identity,
+    planStatus,
+  ]);
 
-  const live = useLiveRefresh(refresh, { active: plans.some((plan) => FETCHING.has(plan.status)) });
+  const fetching = Object.entries(planCounts).some(
+    ([status, count]) => FETCHING.has(status) && count > 0,
+  );
+  const live = useLiveRefresh(refresh, { active: fetching });
+  const reload = live.refresh;
+  // A new page or filter loads at once rather than at the next scheduled refresh.
+  useEffect(() => {
+    void reload();
+  }, [refresh, reload]);
 
   return (
     <div className="space-y-4">
@@ -79,17 +154,17 @@ export function CollectionsClient() {
       <CollectionSetup onChanged={() => live.kick()} />
 
       <Panel title="Identity conflicts and duplicate proposals">
-        {conflicts.length === 0 && proposals.length === 0 ? (
+        {conflictTotal === 0 && proposals.total === 0 ? (
           <Empty>No identity decisions are waiting.</Empty>
         ) : null}
-        {conflicts.length > 0 ? (
+        {conflictTotal > 0 ? (
           <Alert tone="danger" className="mb-3">
-            {conflicts.length} work{conflicts.length === 1 ? "" : "s"} hold contradictory strong
-            identifiers and cannot enter a release until resolved.
+            {conflictTotal.toLocaleString()} work{conflictTotal === 1 ? "" : "s"} hold
+            contradictory strong identifiers and cannot enter a release until resolved.
           </Alert>
         ) : null}
         <ul className="space-y-2 text-sm">
-          {proposals.map((proposal) => (
+          {proposals.items.map((proposal) => (
             <li
               key={`${proposal.left_work_id}:${proposal.right_work_id}`}
               className="flex flex-wrap items-center gap-2 rounded-control border border-border bg-surface-subtle px-3 py-2"
@@ -119,16 +194,49 @@ export function CollectionsClient() {
             </li>
           ))}
         </ul>
+        <div className="-mx-5 -mb-4 mt-3">
+          <Pager
+            pager={proposalPager}
+            shown={proposals.items.length}
+            total={proposals.total}
+            nextCursor={proposals.next_cursor}
+            label="duplicate proposals"
+          />
+        </div>
       </Panel>
 
       <Panel title="Candidates" flush aside={<LiveStatus {...live} />}>
-        {candidates.length === 0 ? (
+        <div className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-2.5">
+          <StatusFilter
+            label="Relevance"
+            kind="relevance"
+            value={relevance}
+            onChange={(value) => {
+              setRelevanceFilter(value);
+              candidatePager.reset();
+            }}
+          />
+          <StatusFilter
+            label="Identity"
+            kind="identity"
+            value={identity}
+            onChange={(value) => {
+              setIdentityFilter(value);
+              candidatePager.reset();
+            }}
+          />
+        </div>
+        {candidates.items.length === 0 ? (
           <div className="px-5 py-3">
-            <Empty>No candidates yet. Run discovery first.</Empty>
+            <Empty>
+              {relevance || identity
+                ? "No candidates match these filters."
+                : "No candidates yet. Run discovery first."}
+            </Empty>
           </div>
         ) : null}
         <ul className={`${rowList} text-sm`}>
-          {candidates.map((candidate) => (
+          {candidates.items.map((candidate) => (
             <li key={candidate.work_id} className={row}>
               <div className="flex flex-wrap items-center gap-2">
                 <strong className="text-heading">{candidate.title ?? "Untitled"}</strong>
@@ -184,16 +292,34 @@ export function CollectionsClient() {
             </li>
           ))}
         </ul>
+        <Pager
+          pager={candidatePager}
+          shown={candidates.items.length}
+          total={candidates.total}
+          nextCursor={candidates.next_cursor}
+          label="candidates"
+        />
       </Panel>
 
       <Panel title="Acquisition queue" flush aside={<LiveStatus {...live} />}>
-        {plans.length === 0 ? (
+        <div className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-2.5">
+          <StatusFilter
+            label="Status"
+            kind="acquisition"
+            value={planStatus}
+            onChange={(value) => {
+              setPlanStatus(value);
+              planPager.reset();
+            }}
+          />
+        </div>
+        {plans.items.length === 0 ? (
           <div className="px-5 py-3">
-            <Empty>No acquisition plans yet.</Empty>
+            <Empty>{planStatus ? "No plans have this status." : "No acquisition plans yet."}</Empty>
           </div>
         ) : null}
         <ul className={`${rowList} text-sm`}>
-          {plans.map((plan) => (
+          {plans.items.map((plan) => (
             <li key={plan.plan_id} className={row}>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs">{plan.work_id.slice(0, 8)}</span>
@@ -222,10 +348,18 @@ export function CollectionsClient() {
             </li>
           ))}
         </ul>
+        <Pager
+          pager={planPager}
+          shown={plans.items.length}
+          total={plans.total}
+          nextCursor={plans.next_cursor}
+          label="acquisition plans"
+        />
       </Panel>
 
       <BulkImport
-        waiting={plans.filter((plan) => plan.status === "assisted" || plan.status === "failed")}
+        // The plans on the page above: filter the queue by status to choose from more.
+        waiting={plans.items.filter((plan) => plan.status === "assisted" || plan.status === "failed")}
         onImported={() => live.kick()}
       />
 

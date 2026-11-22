@@ -32,6 +32,7 @@ from lab_assistant.contracts.stage import (
     TaskRequest,
 )
 from lab_assistant.domain.identity import (
+    DUPLICATE_PROPOSAL_REASON,
     DuplicateProposal,
     IdentityDecision,
     IdentityDecisionType,
@@ -223,7 +224,15 @@ class ReconciliationHandler:
             # run or another run, is not queued twice.
             queued = {
                 frozenset(decision.subject_work_ids)
-                for decision in await uow.works.list_decisions(workspace_id)
+                for decision in await collect_pages(
+                    lambda after, size: uow.works.list_decisions_page(
+                        workspace_id,
+                        reason_code=DUPLICATE_PROPOSAL_REASON,
+                        limit=size,
+                        after_id=after,
+                    ),
+                    page_size=5_000,
+                )
                 if (decision.after or {}).get("proposal") == "duplicate_review"
             }
             active_titles = [
@@ -618,32 +627,65 @@ class IdentityService:
         stay unresolved, and nothing in the interface says they exist.
         """
         async with self._context.uow_factory() as uow:
-            works = await collect_pages(
+            return await collect_pages(
                 lambda after, size: uow.works.list_works(
-                    actor.workspace_id, limit=size, after_id=after
+                    actor.workspace_id,
+                    identity_status=IdentityState.CONFLICT.value,
+                    limit=size,
+                    after_id=after,
                 )
             )
-        return [w for w in works if w.identity_status is IdentityState.CONFLICT]
+
+    async def count_conflicts(self, actor: ActorContext) -> int:
+        async with self._context.uow_factory() as uow:
+            return await uow.works.count_works(
+                actor.workspace_id, identity_status=IdentityState.CONFLICT.value
+            )
 
     async def list_duplicate_proposals(self, actor: ActorContext) -> list[DuplicateProposal]:
-        async with self._context.uow_factory() as uow:
-            decisions = await uow.works.list_decisions(actor.workspace_id)
+        """Every pair waiting for duplicate review."""
         proposals: list[DuplicateProposal] = []
-        for decision in decisions:
-            if decision.after.get("proposal") != "duplicate_review":
-                continue
-            if len(decision.subject_work_ids) != 2:
-                continue
-            proposals.append(
-                DuplicateProposal(
-                    left_work_id=decision.subject_work_ids[0],
-                    right_work_id=decision.subject_work_ids[1],
-                    similarity=float(decision.after.get("similarity", 0.0)),
-                    features=dict(decision.after.get("features", {})),
-                    reason_code=decision.reason_code or "title_author_year_similarity",
-                )
+        cursor: UUID | None = None
+        while True:
+            page, cursor, _total = await self.duplicate_proposal_page(
+                actor, limit=5_000, after_id=cursor
             )
-        return proposals
+            proposals.extend(page)
+            if cursor is None:
+                return proposals
+
+    async def duplicate_proposal_page(
+        self, actor: ActorContext, *, limit: int, after_id: UUID | None = None
+    ) -> tuple[list[DuplicateProposal], UUID | None, int]:
+        """One page of the duplicate-review queue, the cursor to the next, and its size.
+
+        A run of tens of thousands of records can queue thousands of pairs; the
+        collections page reads them a page at a time rather than all at once.
+        """
+        async with self._context.uow_factory() as uow:
+            decisions = await uow.works.list_decisions_page(
+                actor.workspace_id,
+                reason_code=DUPLICATE_PROPOSAL_REASON,
+                limit=limit,
+                after_id=after_id,
+            )
+            total = await uow.works.count_decisions(
+                actor.workspace_id, reason_code=DUPLICATE_PROPOSAL_REASON
+            )
+        proposals = [
+            DuplicateProposal(
+                left_work_id=decision.subject_work_ids[0],
+                right_work_id=decision.subject_work_ids[1],
+                similarity=float(decision.after.get("similarity", 0.0)),
+                features=dict(decision.after.get("features", {})),
+                reason_code=decision.reason_code or DUPLICATE_PROPOSAL_REASON,
+            )
+            for decision in decisions
+            if decision.after.get("proposal") == "duplicate_review"
+            and len(decision.subject_work_ids) == 2
+        ]
+        next_cursor = decisions[-1].id if len(decisions) == limit else None
+        return proposals, next_cursor, total
 
     async def merge(
         self,

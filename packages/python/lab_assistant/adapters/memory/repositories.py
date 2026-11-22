@@ -646,15 +646,34 @@ class _Works:
         relevance: str | None = None,
         limit: int = 100,
         after_id: UUID | None = None,
+        identity_status: str | None = None,
     ) -> list[Work]:
-        works = [w for w in self._db.works.values() if w.workspace_id == workspace_id]
-        if relevance is not None:
-            works = [w for w in works if w.relevance.value == relevance]
+        works = self._filtered_works(workspace_id, relevance, identity_status)
         ordered = sorted(works, key=lambda w: str(w.id))
         if after_id is not None:
             cursor = str(after_id)
             ordered = [w for w in ordered if str(w.id) > cursor]
         return ordered[:limit]
+
+    def _filtered_works(
+        self, workspace_id: UUID, relevance: str | None, identity_status: str | None
+    ) -> list[Work]:
+        return [
+            w
+            for w in self._db.works.values()
+            if w.workspace_id == workspace_id
+            and (relevance is None or w.relevance.value == relevance)
+            and (identity_status is None or w.identity_status.value == identity_status)
+        ]
+
+    async def count_works(
+        self,
+        workspace_id: UUID,
+        *,
+        relevance: str | None = None,
+        identity_status: str | None = None,
+    ) -> int:
+        return len(self._filtered_works(workspace_id, relevance, identity_status))
 
     async def list_work_visibility(
         self,
@@ -770,6 +789,33 @@ class _Works:
         ]
         return sorted(decisions, key=lambda d: d.decided_at or datetime.min)
 
+    async def list_decisions_page(
+        self,
+        workspace_id: UUID,
+        *,
+        reason_code: str,
+        limit: int = 100,
+        after_id: UUID | None = None,
+    ) -> list[IdentityDecision]:
+        ordered = sorted(
+            (
+                d
+                for d in self._db.identity_decisions.values()
+                if d.workspace_id == workspace_id and d.reason_code == reason_code
+            ),
+            key=lambda d: str(d.id),
+        )
+        if after_id is not None:
+            ordered = [d for d in ordered if str(d.id) > str(after_id)]
+        return ordered[:limit]
+
+    async def count_decisions(self, workspace_id: UUID, *, reason_code: str) -> int:
+        return sum(
+            1
+            for d in self._db.identity_decisions.values()
+            if d.workspace_id == workspace_id and d.reason_code == reason_code
+        )
+
 
 class _Assets:
     def __init__(self, db: MemoryDatabase) -> None:
@@ -808,12 +854,27 @@ class _Assets:
         return plan
 
     async def list_plans(
-        self, workspace_id: UUID, *, status: str | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        status: str | None = None,
+        limit: int | None = None,
+        after_id: UUID | None = None,
     ) -> list[AcquisitionPlan]:
         plans = [p for p in self._db.plans.values() if p.workspace_id == workspace_id]
         if status is not None:
             plans = [p for p in plans if p.status == status]
-        return sorted(plans, key=lambda p: str(p.id))
+        ordered = sorted(plans, key=lambda p: str(p.id))
+        if after_id is not None:
+            ordered = [p for p in ordered if str(p.id) > str(after_id)]
+        return ordered if limit is None else ordered[:limit]
+
+    async def count_plans_by_status(self, workspace_id: UUID) -> dict[str, int]:
+        counts: dict[str, int] = defaultdict(int)
+        for plan in self._db.plans.values():
+            if plan.workspace_id == workspace_id:
+                counts[plan.status] += 1
+        return dict(counts)
 
     async def add_attempt(self, attempt: AcquisitionAttempt) -> None:
         self._db.attempts[attempt.id] = attempt

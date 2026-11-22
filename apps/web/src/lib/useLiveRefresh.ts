@@ -53,17 +53,28 @@ export function useLiveRefresh(
   const loadRef = useRef(load);
   loadRef.current = load;
   const inFlight = useRef<Promise<void> | null>(null);
+  const running = useRef<(() => Promise<void>) | null>(null);
 
   const refresh = useCallback(() => {
-    if (inFlight.current) return inFlight.current;
+    // A load already running answers the same question, so it is shared; one for
+    // a question that has since changed (the next page, another filter) is not,
+    // and the new one runs as soon as it finishes, so loads never overlap.
+    const load = loadRef.current;
+    if (inFlight.current && running.current === load) return inFlight.current;
+    const previous = inFlight.current;
+    running.current = load;
     const run = (async () => {
       try {
-        await loadRef.current();
+        if (previous) await previous;
+        await load();
         setUpdatedAt(new Date());
       } catch {
         // The load reports its own failure; the schedule simply tries again.
       } finally {
-        inFlight.current = null;
+        if (running.current === load) {
+          inFlight.current = null;
+          running.current = null;
+        }
       }
     })();
     inFlight.current = run;
