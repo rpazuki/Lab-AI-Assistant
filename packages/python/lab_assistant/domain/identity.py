@@ -41,6 +41,7 @@ __all__ = [
     "WorkKind",
     "WorkRelation",
     "assess_merge",
+    "kinds_compatible",
     "normalise_identifier",
     "normalise_title",
     "propose_duplicates",
@@ -272,6 +273,11 @@ def _kinds_compatible(left: WorkKind, right: WorkKind) -> bool:
     if left is right:
         return True
     return any({left, right} <= group for group in COMPATIBLE_WORK_KINDS)
+
+
+def kinds_compatible(left: WorkKind, right: WorkKind) -> bool:
+    """Whether two kinds of work can be the same work (an article and its preprint can)."""
+    return _kinds_compatible(left, right)
 
 
 def assess_merge(

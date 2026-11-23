@@ -74,6 +74,13 @@ def _parser() -> argparse.ArgumentParser:
         help="set someone's password and sign them out everywhere",
     )
     set_password.add_argument("--email", required=True)
+    backfill_review = database_sub.add_parser(
+        "backfill-review",
+        help="build the candidate filter index and the duplicate-review queue (idempotent)",
+    )
+    backfill_review.add_argument(
+        "--workspace", default=None, help="workspace slug (default: every workspace)"
+    )
 
     storage = subparsers.add_parser("storage", help="object store and registry operations")
     storage_sub = storage.add_subparsers(dest="storage_command", required=True)
@@ -573,6 +580,8 @@ async def _db(args: argparse.Namespace, settings: Settings) -> int:
 
     if args.db_command == "set-password":
         return await _set_password(args, settings)
+    if args.db_command == "backfill-review":
+        return await _backfill_review(args, settings)
     if args.db_command in ("create-admin", "verify-audit", "verify-restore", "revoke-sessions"):
         return await _db_service_command(args, settings)
 
@@ -723,6 +732,46 @@ async def _set_password(
         print(f"password set for {email}; every earlier sign-in has ended")
         if not user.is_active:
             print("the account is deactivated, so it still cannot sign in", file=sys.stderr)
+        return 0
+    finally:
+        if owned:
+            for hook in container.shutdown:
+                await hook()
+
+
+async def _backfill_review(
+    args: argparse.Namespace, settings: Settings, *, container: Any | None = None
+) -> int:
+    """Fill the tables bulk review reads, for works and proposals that predate them.
+
+    Safe to run any number of times: a work that already has a summary and a
+    proposal already in the queue are left alone. The deploy script runs it after
+    every migration, so it is normally a no-op that takes a second.
+    """
+    from lab_assistant.application.bulk_review import BulkReviewService
+
+    owned = container is None
+    if container is None:
+        from lab_assistant_api.deps import build_container
+
+        container = build_container(settings)
+    try:
+        if args.workspace:
+            workspace_id = await _workspace_id(container, args.workspace)
+            if workspace_id is None:
+                print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+                return 1
+            workspaces = [(args.workspace, workspace_id)]
+        else:
+            async with container.context.uow_factory() as uow:
+                workspaces = [(w.slug, w.id) for w in await uow.workspaces.list_workspaces()]
+        service = BulkReviewService(container.context)
+        for slug, workspace_id in workspaces:
+            done = await service.backfill(workspace_id)
+            print(
+                f"{slug}: {done['summarised']} summaries built, "
+                f"{done['queued']} duplicate pairs queued"
+            )
         return 0
     finally:
         if owned:

@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { BulkImport } from "@/components/BulkImport";
+import { CandidateReview } from "@/components/CandidateReview";
 import { CollectionSetup } from "@/components/CollectionSetup";
+import { DuplicateReview } from "@/components/DuplicateReview";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Pager } from "@/components/ui/Pager";
 import {
@@ -17,18 +19,11 @@ import {
   row,
   rowList,
 } from "@/components/ui/primitives";
-import {
-  assistedUpload,
-  listCandidates,
-  listConflicts,
-  listPlans,
-  mergeWorks,
-  setRelevance,
-} from "@/lib/api";
+import { assistedUpload, listPlans } from "@/lib/api";
 import { statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { usePager } from "@/lib/usePager";
-import type { AcquisitionPlan, Candidate, DuplicateProposal, Page } from "@/types";
+import type { AcquisitionPlan, Page } from "@/types";
 
 /** Plans the worker is still fetching: nothing has answered yet. */
 const FETCHING = new Set(["unplanned", "planned"]);
@@ -71,67 +66,37 @@ function StatusFilter({
 }
 
 /**
- * Collections: scope and discovery, candidate decisions, identity conflicts, and the
+ * Collections: scope and discovery, duplicates, candidate decisions, and the
  * acquisition queue, in the order a collection is built.
  *
- * One candidate row shows every source assertion behind its canonical fields, so a
- * steward can see *why* a title says what it says before deciding anything. The
- * acquisition queue closes the assisted loop in place: upload here and the original
- * plan resumes.
+ * Duplicates and candidates are reviewed by rule first (DuplicateReview,
+ * CandidateReview) and one by one for what the rules leave. The acquisition queue
+ * closes the assisted loop in place: upload here and the original plan resumes.
  */
 export function CollectionsClient() {
   // Each list holds one page: a large run is tens of thousands of candidates, and
   // the page refreshes itself while work runs.
-  const [candidates, setCandidates] = useState<Page<Candidate>>(EMPTY_PAGE);
   const [plans, setPlans] = useState<Page<AcquisitionPlan>>(EMPTY_PAGE);
   const [planCounts, setPlanCounts] = useState<Record<string, number>>({});
-  const [conflictTotal, setConflictTotal] = useState(0);
-  const [proposals, setProposals] = useState<Page<DuplicateProposal>>(EMPTY_PAGE);
-  const [relevance, setRelevanceFilter] = useState("");
-  const [identity, setIdentityFilter] = useState("");
   const [planStatus, setPlanStatus] = useState("");
-  const candidatePager = usePager();
   const planPager = usePager();
-  const proposalPager = usePager();
   const [error, setError] = useState<string | null>(null);
   const [uploadFor, setUploadFor] = useState<AcquisitionPlan | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [nextCandidates, nextPlans, conflictBody] = await Promise.all([
-        listCandidates({
-          after: candidatePager.cursor,
-          limit: candidatePager.pageSize,
-          relevance,
-          identity_status: identity,
-        }),
-        listPlans({ after: planPager.cursor, limit: planPager.pageSize, status: planStatus }),
-        listConflicts({ after: proposalPager.cursor, limit: proposalPager.pageSize }),
-      ]);
-      setCandidates(nextCandidates);
+      const nextPlans = await listPlans({
+        after: planPager.cursor,
+        limit: planPager.pageSize,
+        status: planStatus,
+      });
       setPlans(nextPlans);
       setPlanCounts(nextPlans.status_counts);
-      setConflictTotal(conflictBody.conflict_total);
-      setProposals({
-        items: conflictBody.duplicate_proposals,
-        next_cursor: conflictBody.next_cursor,
-        total: conflictBody.proposal_total,
-      });
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "collections could not be loaded");
     }
-  }, [
-    candidatePager.cursor,
-    candidatePager.pageSize,
-    planPager.cursor,
-    planPager.pageSize,
-    proposalPager.cursor,
-    proposalPager.pageSize,
-    relevance,
-    identity,
-    planStatus,
-  ]);
+  }, [planPager.cursor, planPager.pageSize, planStatus]);
 
   const fetching = Object.entries(planCounts).some(
     ([status, count]) => FETCHING.has(status) && count > 0,
@@ -153,153 +118,9 @@ export function CollectionsClient() {
 
       <CollectionSetup onChanged={() => live.kick()} />
 
-      <Panel title="Identity conflicts and duplicate proposals">
-        {conflictTotal === 0 && proposals.total === 0 ? (
-          <Empty>No identity decisions are waiting.</Empty>
-        ) : null}
-        {conflictTotal > 0 ? (
-          <Alert tone="danger" className="mb-3">
-            {conflictTotal.toLocaleString()} work{conflictTotal === 1 ? "" : "s"} hold
-            contradictory strong identifiers and cannot enter a release until resolved.
-          </Alert>
-        ) : null}
-        <ul className="space-y-2 text-sm">
-          {proposals.items.map((proposal) => (
-            <li
-              key={`${proposal.left_work_id}:${proposal.right_work_id}`}
-              className="flex flex-wrap items-center gap-2 rounded-control border border-border bg-surface-subtle px-3 py-2"
-            >
-              <span className="font-mono text-xs">
-                {proposal.left_work_id.slice(0, 8)} ↔ {proposal.right_work_id.slice(0, 8)}
-              </span>
-              <StateChip state={proposal.reason_code} kind="duplicate_reason" />
-              <span className="text-xs text-muted">
-                similarity {proposal.similarity.toFixed(2)} — title similarity alone never merges
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="ml-auto"
-                onClick={async () => {
-                  await mergeWorks(
-                    proposal.left_work_id,
-                    proposal.right_work_id,
-                    "reviewer_confirmed_same_work",
-                  );
-                  live.kick();
-                }}
-              >
-                Merge
-              </Button>
-            </li>
-          ))}
-        </ul>
-        <div className="-mx-5 -mb-4 mt-3">
-          <Pager
-            pager={proposalPager}
-            shown={proposals.items.length}
-            total={proposals.total}
-            nextCursor={proposals.next_cursor}
-            label="duplicate proposals"
-          />
-        </div>
-      </Panel>
+      <DuplicateReview live={live.live} onChanged={() => live.kick()} />
 
-      <Panel title="Candidates" flush aside={<LiveStatus {...live} />}>
-        <div className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-2.5">
-          <StatusFilter
-            label="Relevance"
-            kind="relevance"
-            value={relevance}
-            onChange={(value) => {
-              setRelevanceFilter(value);
-              candidatePager.reset();
-            }}
-          />
-          <StatusFilter
-            label="Identity"
-            kind="identity"
-            value={identity}
-            onChange={(value) => {
-              setIdentityFilter(value);
-              candidatePager.reset();
-            }}
-          />
-        </div>
-        {candidates.items.length === 0 ? (
-          <div className="px-5 py-3">
-            <Empty>
-              {relevance || identity
-                ? "No candidates match these filters."
-                : "No candidates yet. Run discovery first."}
-            </Empty>
-          </div>
-        ) : null}
-        <ul className={`${rowList} text-sm`}>
-          {candidates.items.map((candidate) => (
-            <li key={candidate.work_id} className={row}>
-              <div className="flex flex-wrap items-center gap-2">
-                <strong className="text-heading">{candidate.title ?? "Untitled"}</strong>
-                <StateChip state={candidate.relevance} kind="relevance" />
-                <StateChip state={candidate.identity_status} kind="identity" />
-                {candidate.retraction_status !== "none" ? (
-                  <StateChip state={candidate.retraction_status} kind="retraction" />
-                ) : null}
-              </div>
-              <p className="mt-1 text-xs text-muted">
-                {[candidate.journal, candidate.year, candidate.work_kind]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </p>
-              <p className="mt-1 font-mono text-xs text-neutral-strong">
-                {candidate.identifiers.map((id) => `${id.scheme}:${id.value}`).join("  ")}
-              </p>
-              <details className="mt-2 text-xs">
-                <summary className="cursor-pointer text-link hover:underline">
-                  which sources asserted these fields
-                </summary>
-                <ul className="mt-2 space-y-0.5 rounded-control bg-surface-subtle px-3 py-2">
-                  {Object.entries(candidate.provenance).map(([field, assertionIds]) => (
-                    <li key={field}>
-                      <span className="font-mono">{field}</span>: {assertionIds.length} assertion
-                      {assertionIds.length === 1 ? "" : "s"}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-              <div className="mt-3 flex gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={async () => {
-                    await setRelevance(candidate.work_id, "included", "steward_included");
-                    live.kick();
-                  }}
-                >
-                  Include
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={async () => {
-                    await setRelevance(candidate.work_id, "excluded", "out_of_scope");
-                    live.kick();
-                  }}
-                >
-                  Exclude
-                </Button>
-              </div>
-            </li>
-          ))}
-        </ul>
-        <Pager
-          pager={candidatePager}
-          shown={candidates.items.length}
-          total={candidates.total}
-          nextCursor={candidates.next_cursor}
-          label="candidates"
-        />
-      </Panel>
+      <CandidateReview live={live.live} />
 
       <Panel title="Acquisition queue" flush aside={<LiveStatus {...live} />}>
         <div className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-2.5">

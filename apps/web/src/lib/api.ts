@@ -16,7 +16,10 @@ import type {
   AnswerReview,
   AuditEvent,
   Benchmark,
+  BulkRelevanceResult,
   Candidate,
+  CandidateFacets,
+  CandidateFilters,
   ChatMessage,
   ChatSession,
   CorpusStats,
@@ -32,6 +35,8 @@ import type {
   Me,
   Member,
   MemberSession,
+  MergePlan,
+  MergeRule,
   Page,
   ProblemDetails,
   Release,
@@ -331,19 +336,68 @@ export interface PageRequest {
   limit?: number;
 }
 
-/** One page of candidates, filtered by relevance and identity state. */
-export const listCandidates = (
-  options: PageRequest & { relevance?: string; identity_status?: string } = {},
-) => request<Page<Candidate>>(`/candidates${queryString({ ...options })}`);
+function filterQuery(filters: CandidateFilters): Record<string, string | number | null | undefined> {
+  const { has_abstract, ...rest } = filters;
+  return { ...rest, has_abstract: has_abstract === null || has_abstract === undefined ? null : String(has_abstract) };
+}
 
-/** How many works are in conflict, and one page of the duplicate-review queue. */
-export const listConflicts = (options: PageRequest = {}) =>
+/** One page of candidates matching the filters. */
+export const listCandidates = (options: PageRequest & CandidateFilters = {}) => {
+  const { after, limit, ...filters } = options;
+  return request<Page<Candidate>>(
+    `/candidates${queryString({ after, limit, ...filterQuery(filters) })}`,
+  );
+};
+
+/** The values the candidate filters can take, and how complete the filter index is. */
+export const candidateFacets = () => request<CandidateFacets>("/candidates/facets");
+
+/**
+ * Include or exclude every candidate the filters match. `apply: false` is a preview
+ * that changes nothing; an apply changes up to 1,000 and says how many remain.
+ */
+export const bulkRelevance = (
+  filters: CandidateFilters,
+  body: { relevance: string; only_unreviewed: boolean; apply: boolean },
+) =>
+  request<BulkRelevanceResult>(`/candidates/relevance/bulk${queryString(filterQuery(filters))}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+/** How many works are in conflict, and one page of open duplicate pairs, most similar first. */
+export const listConflicts = (options: PageRequest & { min_similarity?: number | null } = {}) =>
   request<{
     conflict_total: number;
     proposal_total: number;
     next_cursor: string | null;
     duplicate_proposals: DuplicateProposal[];
   }>(`/candidates/conflicts${queryString({ ...options })}`);
+
+/** Merge one open pair; the paper with more identifiers is kept. */
+export const mergeDuplicate = (pairId: string) =>
+  request<{ decision_id: string; kept_work_id: string; merged_work_id: string }>(
+    `/duplicates/${pairId}/merge`,
+    { method: "POST" },
+  );
+
+/** Two different papers: the pair leaves the queue and no rule will merge it. */
+export const dismissDuplicate = (pairId: string) =>
+  request<{ id: string; status: string }>(`/duplicates/${pairId}/dismiss`, { method: "POST" });
+
+/** What a merge rule would merge now, and why it skips the rest. Changes nothing. */
+export const previewMergeRule = (rule: MergeRule) =>
+  request<MergePlan>("/duplicates/merge-rule/preview", {
+    method: "POST",
+    body: JSON.stringify(rule),
+  });
+
+/** Merge up to 200 groups the rule accepts; repeat until `remaining_groups` is 0. */
+export const applyMergeRule = (rule: MergeRule) =>
+  request<{ groups_merged: number; works_merged: number; remaining_groups: number }>(
+    "/duplicates/merge-rule/apply",
+    { method: "POST", body: JSON.stringify(rule) },
+  );
 
 export const setRelevance = (workId: string, relevance: string, reasonCode: string) =>
   request<{ work_id: string; relevance: string }>(`/candidates/${workId}/relevance`, {

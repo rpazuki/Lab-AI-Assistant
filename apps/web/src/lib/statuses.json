@@ -76,6 +76,16 @@
       "correction_issued": "A correction has been published for this paper."
     }
   },
+  "duplicate_status": {
+    "title": "Duplicate review",
+    "enum": "lab_assistant.domain.review.DuplicateStatus",
+    "values": {
+      "open": "Waiting for a decision: the two records may be the same paper.",
+      "merged": "Merged: the two records are now one paper.",
+      "dismissed": "A reviewer decided these are two different papers.",
+      "superseded": "No longer a question: another merge already joined or replaced one side."
+    }
+  },
   "acquisition": {
     "title": "Acquisition plans",
     "enum": "lab_assistant.domain.states.AcquisitionState",
@@ -297,6 +307,9 @@
       "degraded_source_accepted": "A run was frozen although a source fell short, and the gap was accepted.",
       "identity_decided": "A person decided whether records are the same paper.",
       "relevance_decided": "A candidate was included or excluded.",
+      "relevance_bulk_decided": "A steward included or excluded every candidate matching a filter, in one step.",
+      "identities_bulk_merged": "A steward merged every duplicate pair a merge rule accepted, in one step.",
+      "duplicate_dismissed": "A reviewer marked a proposed duplicate pair as two different papers.",
       "rights_decided": "What may be done with a paper's content was decided.",
       "acquisition_attempted": "A route was tried to fetch a paper's full text.",
       "asset_registered": "A full-text file was stored.",

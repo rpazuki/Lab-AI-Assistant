@@ -19,6 +19,14 @@ vi.mock("@/lib/api", async (importOriginal) => {
       next_cursor: null,
       duplicate_proposals: [],
     })),
+    candidateFacets: vi.fn(async () => ({
+      kinds: { article: 51 },
+      sources: { pubmed: 51 },
+      year_min: 2000,
+      year_max: 2026,
+      summarised: 51,
+      works: 51,
+    })),
   };
 });
 

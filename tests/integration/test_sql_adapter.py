@@ -1287,6 +1287,55 @@ class TestReconciliationOverSql:
         assert len(state["proposals"]) == bridged
         assert all(len(set(p.subject_work_ids)) == 2 for p in state["proposals"])
 
+    async def test_reconciliation_builds_the_review_index_and_backfill_rebuilds_it(
+        self, sql_stack, monkeypatch
+    ) -> None:
+        from sqlalchemy import delete
+
+        from lab_assistant.adapters.db import tables as t
+        from lab_assistant.application import reconciliation
+        from lab_assistant.application.bulk_review import BulkReviewService
+        from lab_assistant.domain.review import CandidateFilter
+
+        monkeypatch.setattr(reconciliation, "RECONCILIATION_BATCH_SIZE", 100)
+        run = await self._run(sql_stack)
+        context, ws = sql_stack["context"], run["workspace_id"]
+        await sql_stack["handlers"].get(StageName.RECONCILIATION).execute(self._command(run))
+        bridged = len(range(0, self.PAPERS, 3))
+
+        async def index() -> tuple[int, int, int]:
+            async with context.uow_factory() as uow:
+                facets = await uow.works.summary_facets(ws)
+                queued = await uow.works.count_duplicate_candidates(ws, status="open")
+                yarrowia = await uow.works.count_filtered(
+                    ws, CandidateFilter(title_words=["yarrowia"])
+                )
+            return facets["summarised"], queued, yarrowia
+
+        works = self.PAPERS + bridged + self.TITLE_ONLY
+        built = await index()
+        assert built == (works, bridged, self.PAPERS + bridged)
+        async with context.uow_factory() as uow:
+            facets = await uow.works.summary_facets(ws)
+            decisions = await uow.works.list_decisions(ws)
+        # Every record was seen by the one connector the fixture's request names.
+        assert facets["sources"] == {"pubmed": works}
+        # One relevance decision per work that changed, not one per record: a work
+        # seen by three sources used to be "decided" three times over.
+        relevance = [d for d in decisions if d.decision_type.value == "set_relevance"]
+        assert len(relevance) == len({d.subject_work_ids[0] for d in relevance})
+        assert len(relevance) < run["records"]
+
+        # A database from before the index: summaries and queue rows gone.
+        async with sql_stack["engine"].begin() as connection:
+            await connection.execute(delete(t.duplicate_candidates))
+            await connection.execute(delete(t.work_summaries))
+        assert await index() == (0, 0, 0)
+        done = await BulkReviewService(context).backfill(ws)
+        assert done == {"summarised": works, "queued": bridged}
+        assert await index() == built
+        assert await BulkReviewService(context).backfill(ws) == {"summarised": 0, "queued": 0}
+
     async def test_a_retry_after_a_crash_resumes_without_duplicating(
         self, sql_stack, monkeypatch
     ) -> None:

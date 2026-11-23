@@ -305,6 +305,12 @@ main() {
         -c 'chown -R 10001:10001 /var/lib/lab-assistant/objects'
     note 'Applying pending migrations.'
     compose run --rm --no-deps -w /app/database api alembic upgrade head
+    if [[ $role != reader ]]; then
+        # Fills the candidate filter index and the duplicate-review queue for
+        # anything that predates them; a no-op once they are complete.
+        note 'Building the review index.'
+        compose run --rm --no-deps api lab db backfill-review
+    fi
 
     compose up -d --wait --wait-timeout 900
     verify_cpu_cap

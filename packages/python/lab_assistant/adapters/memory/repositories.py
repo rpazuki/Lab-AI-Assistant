@@ -49,6 +49,7 @@ from lab_assistant.domain.observation import (
 )
 from lab_assistant.domain.release import CorpusRelease, ReleaseItem, SearchAlias
 from lab_assistant.domain.renditions import EvidenceSpan, ParseRun, Rendition
+from lab_assistant.domain.review import CandidateFilter, DuplicateCandidate, WorkSummary
 from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
 from lab_assistant.domain.states import TaskState
 from lab_assistant.domain.tasks import RateBudget, Task
@@ -95,6 +96,8 @@ class MemoryDatabase:
     identifiers: dict[UUID, WorkIdentifier] = field(default_factory=dict)
     relations: dict[UUID, WorkRelation] = field(default_factory=dict)
     identity_decisions: dict[UUID, IdentityDecision] = field(default_factory=dict)
+    summaries: dict[UUID, WorkSummary] = field(default_factory=dict)
+    duplicate_candidates: dict[UUID, DuplicateCandidate] = field(default_factory=dict)
     manifestations: dict[UUID, Manifestation] = field(default_factory=dict)
     plans: dict[UUID, AcquisitionPlan] = field(default_factory=dict)
     attempts: dict[UUID, AcquisitionAttempt] = field(default_factory=dict)
@@ -622,6 +625,24 @@ class _Observations:
         del self._db.discovery_runs[run_id]
 
 
+def _facets(summaries: list[WorkSummary], *, works: int) -> dict[str, Any]:
+    kinds: dict[str, int] = defaultdict(int)
+    sources: dict[str, int] = defaultdict(int)
+    years = [s.year for s in summaries if s.year is not None]
+    for summary in summaries:
+        kinds[summary.resource_kind or ""] += 1
+        for source in summary.sources.split():
+            sources[source] += 1
+    return {
+        "kinds": dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
+        "sources": dict(sorted(sources.items(), key=lambda kv: -kv[1])),
+        "year_min": min(years) if years else None,
+        "year_max": max(years) if years else None,
+        "summarised": len(summaries),
+        "works": works,
+    }
+
+
 class _Works:
     def __init__(self, db: MemoryDatabase) -> None:
         self._db = db
@@ -774,6 +795,141 @@ class _Works:
             if relation.workspace_id == workspace_id
             and work_id in (relation.from_work_id, relation.to_work_id)
         ]
+
+    # ── review by rule ──
+    async def upsert_summaries(self, summaries: Sequence[WorkSummary]) -> None:
+        for summary in summaries:
+            self._db.summaries[summary.work_id] = summary
+
+    async def get_summaries(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, WorkSummary]:
+        return {
+            work_id: summary
+            for work_id in work_ids
+            if (summary := self._db.summaries.get(work_id)) is not None
+            and summary.workspace_id == workspace_id
+        }
+
+    async def summary_inputs(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[list[SourceAssertion], set[str]]]:
+        wanted = set(work_ids)
+        out: dict[UUID, tuple[list[SourceAssertion], set[str]]] = {
+            work_id: ([], set()) for work_id in wanted
+        }
+        for assertion in self._db.assertions.values():
+            if assertion.workspace_id != workspace_id or assertion.work_id not in wanted:
+                continue
+            out[assertion.work_id][0].append(assertion)
+            observation = self._db.observations.get(assertion.source_observation_id)
+            request = (
+                self._db.source_requests.get(observation.source_request_id) if observation else None
+            )
+            if request is not None:
+                out[assertion.work_id][1].add(request.connector_id)
+        return out
+
+    async def works_without_summary(self, workspace_id: UUID, *, limit: int) -> list[UUID]:
+        missing = sorted(
+            (
+                w.id
+                for w in self._db.works.values()
+                if w.workspace_id == workspace_id and w.id not in self._db.summaries
+            ),
+            key=str,
+        )
+        return missing[:limit]
+
+    def _filtered(self, workspace_id: UUID, rule: CandidateFilter) -> list[Work]:
+        return sorted(
+            (
+                w
+                for w in self._db.works.values()
+                if w.workspace_id == workspace_id and rule.matches(w, self._db.summaries.get(w.id))
+            ),
+            key=lambda w: str(w.id),
+        )
+
+    async def filter_works(
+        self,
+        workspace_id: UUID,
+        rule: CandidateFilter,
+        *,
+        limit: int = 100,
+        after_id: UUID | None = None,
+    ) -> list[Work]:
+        works = self._filtered(workspace_id, rule)
+        if after_id is not None:
+            works = [w for w in works if str(w.id) > str(after_id)]
+        return works[:limit]
+
+    async def count_filtered(self, workspace_id: UUID, rule: CandidateFilter) -> int:
+        return len(self._filtered(workspace_id, rule))
+
+    async def summary_facets(self, workspace_id: UUID) -> dict[str, Any]:
+        summaries = [s for s in self._db.summaries.values() if s.workspace_id == workspace_id]
+        return _facets(
+            summaries,
+            works=sum(1 for w in self._db.works.values() if w.workspace_id == workspace_id),
+        )
+
+    async def add_duplicate_candidates(self, rows: Sequence[DuplicateCandidate]) -> None:
+        for row in rows:
+            self._db.duplicate_candidates[row.id] = row
+
+    async def update_duplicate_candidates(self, rows: Sequence[DuplicateCandidate]) -> None:
+        for row in rows:
+            self._db.duplicate_candidates[row.id] = row
+
+    async def get_duplicate_candidate(
+        self, workspace_id: UUID, candidate_id: UUID
+    ) -> DuplicateCandidate | None:
+        row = self._db.duplicate_candidates.get(candidate_id)
+        return row if row is not None and row.workspace_id == workspace_id else None
+
+    def _candidates(
+        self,
+        workspace_id: UUID,
+        status: str | None,
+        min_similarity: float | None,
+        work_id: UUID | None = None,
+    ) -> list[DuplicateCandidate]:
+        rows = [
+            row
+            for row in self._db.duplicate_candidates.values()
+            if row.workspace_id == workspace_id
+            and (status is None or row.status.value == status)
+            and (min_similarity is None or row.similarity >= min_similarity)
+            and (work_id is None or work_id in (row.left_work_id, row.right_work_id))
+        ]
+        return sorted(rows, key=lambda row: (-row.similarity, str(row.id)))
+
+    async def list_duplicate_candidates(
+        self,
+        workspace_id: UUID,
+        *,
+        status: str | None = None,
+        min_similarity: float | None = None,
+        work_id: UUID | None = None,
+        limit: int | None = None,
+        after: tuple[float, UUID] | None = None,
+    ) -> list[DuplicateCandidate]:
+        rows = self._candidates(workspace_id, status, min_similarity, work_id)
+        if after is not None:
+            similarity, last = after
+            rows = [
+                r
+                for r in rows
+                if r.similarity < similarity
+                or (r.similarity == similarity and str(r.id) > str(last))
+            ]
+        return rows if limit is None else rows[:limit]
+
+    async def count_duplicate_candidates(
+        self, workspace_id: UUID, *, status: str | None = None, min_similarity: float | None = None
+    ) -> int:
+        return len(self._candidates(workspace_id, status, min_similarity))
 
     async def add_decision(self, decision: IdentityDecision) -> None:
         self._db.identity_decisions[decision.id] = decision

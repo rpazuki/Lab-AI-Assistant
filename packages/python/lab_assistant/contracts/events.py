@@ -61,6 +61,12 @@ class AuditAction(StrEnum):
     DEGRADED_SOURCE_ACCEPTED = "degraded_source_accepted"
     IDENTITY_DECIDED = "identity_decided"
     RELEVANCE_DECIDED = "relevance_decided"
+    #: A steward applied an include or exclude rule to every matching candidate.
+    RELEVANCE_BULK_DECIDED = "relevance_bulk_decided"
+    #: A steward merged every duplicate pair a merge rule accepted.
+    IDENTITIES_BULK_MERGED = "identities_bulk_merged"
+    #: A reviewer marked a proposed duplicate pair as two different papers.
+    DUPLICATE_DISMISSED = "duplicate_dismissed"
     # rights and acquisition
     RIGHTS_DECIDED = "rights_decided"
     ACQUISITION_ATTEMPTED = "acquisition_attempted"

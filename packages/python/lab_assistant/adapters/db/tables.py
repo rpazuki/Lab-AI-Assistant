@@ -490,6 +490,51 @@ identity_decisions = Table(
     Index("ix_identity_decisions_reason", "workspace_id", "reason_code"),
 )
 
+# ── review by rule ──────────────────────────────────────────────────────────
+#: Per work, the fields a candidate filter reads (domain/review.py). Derived from
+#: the assertions, rebuilt when they change, and safe to rebuild from scratch.
+work_summaries = Table(
+    "work_summaries",
+    METADATA,
+    Column("work_id", _UUID, ForeignKey("works.id", ondelete="CASCADE"), primary_key=True),
+    Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    Column("title", Text),
+    Column("title_search", Text, nullable=False, server_default=text("''")),
+    Column("year", Integer),
+    Column("journal", Text),
+    Column("resource_kind", Text),
+    Column("licence", Text),
+    Column("first_author", Text),
+    Column("has_abstract", Boolean, nullable=False, server_default=text("false")),
+    Column("subject_terms", Text, nullable=False, server_default=text("''")),
+    Column("sources", Text, nullable=False, server_default=text("''")),
+    Column("source_count", Integer, nullable=False, server_default=text("0")),
+    Column("updated_at", DateTime(timezone=True)),
+    Index("ix_work_summaries_year", "workspace_id", "year"),
+    Index("ix_work_summaries_kind", "workspace_id", "resource_kind"),
+)
+
+#: The duplicate-review queue: one row per proposal, with its review state. The
+#: proposal stays an identity decision; this is what makes a handled pair leave.
+duplicate_candidates = Table(
+    "duplicate_candidates",
+    METADATA,
+    Column("id", _UUID, primary_key=True),
+    Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    Column("left_work_id", _UUID, ForeignKey("works.id", ondelete="CASCADE"), nullable=False),
+    Column("right_work_id", _UUID, ForeignKey("works.id", ondelete="CASCADE"), nullable=False),
+    Column("similarity", Float, nullable=False),
+    Column("year_gap", Integer),
+    Column("first_author_match", Boolean),
+    Column("status", Text, nullable=False, server_default=text("'open'")),
+    Column("resolved_by", _UUID),
+    Column("resolved_at", DateTime(timezone=True)),
+    Column("created_at", DateTime(timezone=True)),
+    Index("ix_duplicate_candidates_queue", "workspace_id", "status", "similarity"),
+    Index("ix_duplicate_candidates_left", "workspace_id", "left_work_id"),
+    Index("ix_duplicate_candidates_right", "workspace_id", "right_work_id"),
+)
+
 # ── manifestations, rights, assets ──────────────────────────────────────────
 manifestations = Table(
     "manifestations",

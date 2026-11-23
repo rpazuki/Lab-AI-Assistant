@@ -26,6 +26,12 @@ from lab_assistant.adapters.connectors.seed_lookup import SeedLookupService, bui
 from lab_assistant.application.accounts import MemberView, invitation_state
 from lab_assistant.application.acquisition import AcquisitionService
 from lab_assistant.application.analytics import AnalyticsService
+from lab_assistant.application.bulk_review import (
+    SKIP_REASONS,
+    BulkReviewService,
+    MergePlan,
+    paper,
+)
 from lab_assistant.application.chat import ChatService
 from lab_assistant.application.datasheets import DatasheetService
 from lab_assistant.application.discovery import DiscoveryService
@@ -37,10 +43,11 @@ from lab_assistant.application.retrieval import RetrievalService
 from lab_assistant.application.review import ReviewService
 from lab_assistant.application.scopes import ScopeService
 from lab_assistant.application.usage import UsageService
-from lab_assistant.contracts.errors import NotFound, PolicyDenied
+from lab_assistant.contracts.errors import NotFound, PolicyDenied, ValidationFailure
 from lab_assistant.domain.chat import UsageTotals
 from lab_assistant.domain.claims import ReviewDecision
 from lab_assistant.domain.installation import InstallationCapability
+from lab_assistant.domain.review import CandidateFilter, MergeRule
 from lab_assistant.domain.scope import ConnectorPlanEntry
 from lab_assistant.domain.states import IdentityState, RelevanceState
 from lab_assistant.domain.workspace import Capability, MembershipStatus, Role
@@ -948,31 +955,61 @@ async def lookup_queries(
 
 
 # ── collections: identity decisions ─────────────────────────────────────────
+def _candidate_filter(
+    relevance: Annotated[RelevanceState | None, Query()] = None,
+    identity_status: Annotated[IdentityState | None, Query()] = None,
+    title: Annotated[
+        str | None, Query(description="words that must all appear in the title, comma-separated")
+    ] = None,
+    exclude: Annotated[
+        str | None, Query(description="words none of which may appear in the title")
+    ] = None,
+    subject: Annotated[
+        str | None, Query(description="subject terms, any one of which must appear")
+    ] = None,
+    year_from: Annotated[int | None, Query(ge=1000, le=3000)] = None,
+    year_to: Annotated[int | None, Query(ge=1000, le=3000)] = None,
+    kind: Annotated[str | None, Query(description="resource kinds, comma-separated")] = None,
+    journal: Annotated[str | None, Query(description="text the journal name contains")] = None,
+    source: Annotated[str | None, Query(description="a connector that found the paper")] = None,
+    has_abstract: Annotated[bool | None, Query()] = None,
+) -> CandidateFilter:
+    """The candidate filter, from query parameters; the same filter a bulk decision takes."""
+    return CandidateFilter(
+        relevance=relevance,
+        identity_status=identity_status,
+        title_words=title,
+        exclude_words=exclude,
+        subject_terms=subject,
+        year_from=year_from,
+        year_to=year_to,
+        resource_kinds=kind,
+        journal=journal,
+        source=source,
+        has_abstract=has_abstract,
+    )
+
+
 @router.get("/candidates")
 async def list_candidates(
     actor: CurrentActor,
     container: Container,
+    rule: Annotated[CandidateFilter, Depends(_candidate_filter)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     after: Annotated[UUID | None, Query(description="next_cursor from the previous page")] = None,
-    relevance: Annotated[RelevanceState | None, Query()] = None,
-    identity_status: Annotated[IdentityState | None, Query()] = None,
 ) -> dict[str, Any]:
-    """One page of candidates, with the total that match the filters.
+    """One page of candidates matching the filter, with how many match in all.
 
     Keyset-paged: ``next_cursor`` is null on the last page. A run of tens of
-    thousands of records is never sent to a browser in one response.
+    thousands of records is never sent to a browser in one response. Merged works
+    are left out unless ``identity_status=merged`` asks for them.
     """
     from lab_assistant.application.reconciliation import canonical_metadata
 
+    works, total = await BulkReviewService(container.context).candidates(
+        actor, rule, limit=limit, after_id=after
+    )
     async with container.context.uow_factory() as uow:
-        filters = {
-            "relevance": relevance.value if relevance else None,
-            "identity_status": identity_status.value if identity_status else None,
-        }
-        works = await uow.works.list_works(
-            actor.workspace_id, limit=limit, after_id=after, **filters
-        )
-        total = await uow.works.count_works(actor.workspace_id, **filters)
         items = []
         for work in works:
             assertions = await uow.observations.list_assertions(actor.workspace_id, work_id=work.id)
@@ -1000,34 +1037,184 @@ async def list_candidates(
     return {"items": items, "next_cursor": next_cursor, "total": total}
 
 
+@router.get("/candidates/facets")
+async def candidate_facets(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """The values filters can take: kinds and sources with counts, and the year range.
+
+    ``summarised`` below ``works`` means the filter index is still being built
+    (``lab db backfill-review``): filters on title, year and the like see only the
+    summarised works until it finishes.
+    """
+    return await BulkReviewService(container.context).facets(actor)
+
+
+class BulkRelevanceRequest(BaseModel):
+    relevance: RelevanceState
+    #: Leave candidates someone has already decided as they are.
+    only_unreviewed: bool = True
+    #: False: a preview that changes nothing.
+    apply: bool = False
+
+
+@router.post(
+    "/candidates/relevance/bulk",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def bulk_relevance(
+    actor: CurrentActor,
+    container: Container,
+    rule: Annotated[CandidateFilter, Depends(_candidate_filter)],
+    payload: BulkRelevanceRequest = Body(...),
+) -> dict[str, Any]:
+    """Include or exclude every candidate the filter (query parameters) matches.
+
+    Preview first (``apply`` false): how many match and ten of them. An apply
+    changes up to 1,000 and returns ``remaining``; repeat it until that is 0.
+    """
+    return await BulkReviewService(container.context).bulk_relevance(
+        actor,
+        rule,
+        relevance=payload.relevance,
+        only_unreviewed=payload.only_unreviewed,
+        apply=payload.apply,
+    )
+
+
+def _queue_cursor(value: str | None) -> tuple[float, UUID] | None:
+    if not value:
+        return None
+    try:
+        similarity, last = value.split("|", 1)
+        return float(similarity), UUID(last)
+    except ValueError as error:
+        raise ValidationFailure("after must be a next_cursor this endpoint returned") from error
+
+
 @router.get("/candidates/conflicts")
 async def list_conflicts(
     actor: CurrentActor,
     container: Container,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    after: Annotated[UUID | None, Query(description="next_cursor from the previous page")] = None,
+    after: Annotated[str | None, Query(description="next_cursor from the previous page")] = None,
+    min_similarity: Annotated[float | None, Query(ge=0, le=1)] = None,
 ) -> dict[str, Any]:
-    """How many works are in conflict, and one page of the duplicate-review queue."""
-    service = IdentityService(container.context)
-    conflict_total = await service.count_conflicts(actor)
-    proposals, next_cursor, proposal_total = await service.duplicate_proposal_page(
-        actor, limit=limit, after_id=after
+    """How many works are in conflict, and one page of open duplicate pairs.
+
+    Most similar first. A pair someone merged or dismissed is no longer open, so
+    it leaves this list; each pair carries both papers so it can be judged here.
+    """
+    conflict_total = await IdentityService(container.context).count_conflicts(actor)
+    rows, total, summaries = await BulkReviewService(container.context).duplicate_queue(
+        actor, min_similarity=min_similarity, limit=limit, after=_queue_cursor(after)
     )
+    last = rows[-1] if len(rows) == limit else None
     return {
         "conflict_total": conflict_total,
-        "proposal_total": proposal_total,
-        "next_cursor": str(next_cursor) if next_cursor else None,
+        "proposal_total": total,
+        "next_cursor": f"{last.similarity!r}|{last.id}" if last else None,
         "duplicate_proposals": [
             {
-                "left_work_id": str(proposal.left_work_id),
-                "right_work_id": str(proposal.right_work_id),
-                "similarity": proposal.similarity,
-                "features": proposal.features,
-                "reason_code": proposal.reason_code,
+                "id": str(row.id),
+                "left_work_id": str(row.left_work_id),
+                "right_work_id": str(row.right_work_id),
+                "similarity": row.similarity,
+                "year_gap": row.year_gap,
+                "first_author_match": row.first_author_match,
+                "left": paper(row.left_work_id, summaries.get(row.left_work_id)),
+                "right": paper(row.right_work_id, summaries.get(row.right_work_id)),
             }
-            for proposal in proposals
+            for row in rows
         ],
     }
+
+
+@router.post(
+    "/duplicates/{candidate_id}/merge",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def merge_duplicate(
+    candidate_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Merge one open pair; the work with more identifiers is kept. 409 once handled."""
+    decision = await BulkReviewService(container.context).merge_pair(actor, candidate_id)
+    return {
+        "decision_id": str(decision.id),
+        "kept_work_id": str(decision.subject_work_ids[0]),
+        "merged_work_id": str(decision.subject_work_ids[1]),
+    }
+
+
+@router.post(
+    "/duplicates/{candidate_id}/dismiss",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def dismiss_duplicate(
+    candidate_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Two different papers: the pair leaves the queue and is never merged by a rule."""
+    row = await BulkReviewService(container.context).dismiss(actor, candidate_id)
+    return {"id": str(row.id), "status": row.status.value}
+
+
+def _plan_view(plan: MergePlan, summaries: dict[UUID, Any]) -> dict[str, Any]:
+    return {
+        "considered": plan.considered,
+        "accepted_pairs": plan.accepted_pairs,
+        "groups": len(plan.groups),
+        "works_merged": plan.works_merged,
+        "skipped": [
+            {
+                "reason": reason,
+                "description": SKIP_REASONS.get(reason, reason),
+                "count": count,
+                "examples": [
+                    {
+                        "similarity": row.similarity,
+                        "left": paper(row.left_work_id, summaries.get(row.left_work_id)),
+                        "right": paper(row.right_work_id, summaries.get(row.right_work_id)),
+                    }
+                    for row in plan.skipped_examples.get(reason, [])
+                ],
+            }
+            for reason, count in sorted(plan.skipped.items(), key=lambda item: -item[1])
+        ],
+        "sample_groups": [
+            {
+                "similarity": max(row.similarity for row in rows),
+                "papers": [paper(work_id, summaries.get(work_id)) for work_id in group],
+            }
+            for group, rows in zip(plan.groups[:12], plan.group_pairs[:12], strict=True)
+        ],
+    }
+
+
+@router.post(
+    "/duplicates/merge-rule/preview",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def preview_merge_rule(
+    actor: CurrentActor, container: Container, rule: MergeRule = Body(...)
+) -> dict[str, Any]:
+    """What the rule would merge now, and how many pairs each guard would skip. Changes nothing."""
+    service = BulkReviewService(container.context)
+    plan = await service.plan_merge(actor, rule)
+    ids = {w for group in plan.groups[:12] for w in group}
+    for rows in plan.skipped_examples.values():
+        ids.update(w for row in rows for w in (row.left_work_id, row.right_work_id))
+    async with container.context.uow_factory() as uow:
+        summaries = await uow.works.get_summaries(actor.workspace_id, list(ids))
+    return _plan_view(plan, summaries)
+
+
+@router.post(
+    "/duplicates/merge-rule/apply",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def apply_merge_rule(
+    actor: CurrentActor, container: Container, rule: MergeRule = Body(...)
+) -> dict[str, Any]:
+    """Merge up to 200 groups the rule accepts; repeat until ``remaining_groups`` is 0."""
+    return await BulkReviewService(container.context).apply_merge(actor, rule)
 
 
 @router.post(

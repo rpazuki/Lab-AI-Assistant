@@ -8,6 +8,7 @@ offline suite runs one worker at a time.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -15,7 +16,7 @@ from types import TracebackType
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, delete, func, insert, literal_column, select, update
+from sqlalchemy import and_, delete, func, insert, literal_column, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from lab_assistant.adapters.db import tables as t
@@ -51,6 +52,7 @@ from lab_assistant.domain.observation import (
 )
 from lab_assistant.domain.release import CorpusRelease, ReleaseItem, SearchAlias
 from lab_assistant.domain.renditions import EvidenceSpan, ParseRun, Rendition
+from lab_assistant.domain.review import CandidateFilter, DuplicateCandidate, WorkSummary
 from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
 from lab_assistant.domain.states import TaskState
 from lab_assistant.domain.tasks import RateBudget, Task
@@ -139,6 +141,8 @@ PLANS = Mapper(
     },
 )
 ATTEMPTS = Mapper(t.acquisition_attempts, AcquisitionAttempt)
+SUMMARIES = Mapper(t.work_summaries, WorkSummary)
+DUPLICATES = Mapper(t.duplicate_candidates, DuplicateCandidate)
 ASSETS = Mapper(t.assets, Asset, renames={"metadata": "metadata_json"})
 PARSE_RUNS = Mapper(t.parse_runs, ParseRun)
 RENDITIONS = Mapper(t.renditions, Rendition)
@@ -185,6 +189,20 @@ MESSAGES = Mapper(
 )
 FEEDBACK = Mapper(t.feedback, Feedback, loaders={"flagged_citation_handles": _str_tuple})
 GRANTS = Mapper(t.resource_grants, GrantSpec)
+
+
+def _chunks(items: list[Any], size: int = 500) -> list[list[Any]]:
+    """IN lists a bounded size: SQLite caps bound parameters per statement."""
+    return [items[start : start + size] for start in range(0, len(items), size)] or [[]]
+
+
+def _escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _contains(text: str) -> str:
+    """A LIKE pattern matching ``text`` anywhere, with its own % and _ taken literally."""
+    return f"%{_escape(text)}%"
 
 
 class _Base:
@@ -960,6 +978,241 @@ class _Works(_Base):
             (t.work_relations.c.from_work_id == work_id)
             | (t.work_relations.c.to_work_id == work_id),
         )
+
+    # ── review by rule ──
+    async def upsert_summaries(self, summaries: Sequence[WorkSummary]) -> None:
+        if not summaries:
+            return
+        ids = [summary.work_id for summary in summaries]
+        await self._c.execute(delete(t.work_summaries).where(t.work_summaries.c.work_id.in_(ids)))
+        await self._c.execute(
+            insert(t.work_summaries),
+            [SUMMARIES.upsert_values(summary)[0] for summary in summaries],
+        )
+
+    async def get_summaries(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, WorkSummary]:
+        out: dict[UUID, WorkSummary] = {}
+        for chunk in _chunks(list(work_ids)):
+            for summary in await self._many(
+                SUMMARIES,
+                self._scope(SUMMARIES, workspace_id),
+                t.work_summaries.c.work_id.in_(chunk),
+            ):
+                out[summary.work_id] = summary
+        return out
+
+    async def summary_inputs(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[list[SourceAssertion], set[str]]]:
+        out: dict[UUID, tuple[list[SourceAssertion], set[str]]] = {
+            work_id: ([], set()) for work_id in work_ids
+        }
+        a, o, r = t.source_assertions, t.source_observations, t.source_requests
+        for chunk in _chunks(list(work_ids)):
+            result = await self._c.execute(
+                select(a, r.c.connector_id.label("_connector_id"))
+                .select_from(
+                    a.join(o, o.c.id == a.c.source_observation_id).join(
+                        r, r.c.id == o.c.source_request_id
+                    )
+                )
+                .where(a.c.workspace_id == workspace_id, a.c.work_id.in_(chunk))
+            )
+            for row in result.mappings().all():
+                values = dict(row)
+                connector = values.pop("_connector_id")
+                assertion = ASSERTIONS.from_row(values)
+                entry = out.setdefault(assertion.work_id, ([], set()))
+                entry[0].append(assertion)
+                entry[1].add(connector)
+        return out
+
+    async def works_without_summary(self, workspace_id: UUID, *, limit: int) -> list[UUID]:
+        result = await self._c.execute(
+            select(t.works.c.id)
+            .select_from(
+                t.works.outerjoin(t.work_summaries, t.work_summaries.c.work_id == t.works.c.id)
+            )
+            .where(t.works.c.workspace_id == workspace_id, t.work_summaries.c.work_id.is_(None))
+            .order_by(t.works.c.id)
+            .limit(limit)
+        )
+        return [row[0] for row in result.all()]
+
+    def _filter_statement(self, workspace_id: UUID, rule: CandidateFilter, columns: Any) -> Any:
+        w, s = t.works, t.work_summaries
+        conditions: list[Any] = [w.c.workspace_id == workspace_id]
+        if rule.identity_status is None:
+            conditions.append(w.c.merged_into_work_id.is_(None))
+        else:
+            conditions.append(w.c.identity_status == rule.identity_status.value)
+        if rule.relevance is not None:
+            conditions.append(w.c.relevance == rule.relevance.value)
+        if rule.relevance_not is not None:
+            conditions.append(w.c.relevance != rule.relevance_not.value)
+        source = w
+        if rule.needs_summary:
+            source = w.join(s, s.c.work_id == w.c.id)
+            for word in rule.title_words:
+                conditions.append(s.c.title_search.like(_contains(word), escape="\\"))
+            for word in rule.exclude_words:
+                conditions.append(~s.c.title_search.like(_contains(word), escape="\\"))
+            if rule.subject_terms:
+                conditions.append(
+                    or_(
+                        *(
+                            s.c.subject_terms.like(_contains(term), escape="\\")
+                            for term in rule.subject_terms
+                        )
+                    )
+                )
+            if rule.year_from is not None:
+                conditions.append(s.c.year >= rule.year_from)
+            if rule.year_to is not None:
+                conditions.append(s.c.year <= rule.year_to)
+            if rule.resource_kinds:
+                conditions.append(
+                    func.lower(func.coalesce(s.c.resource_kind, "")).in_(rule.resource_kinds)
+                )
+            if rule.journal:
+                conditions.append(
+                    func.lower(func.coalesce(s.c.journal, "")).like(
+                        _contains(rule.journal), escape="\\"
+                    )
+                )
+            if rule.source:
+                conditions.append(s.c.sources.like(f"% {_escape(rule.source)} %", escape="\\"))
+            if rule.has_abstract is not None:
+                conditions.append(s.c.has_abstract.is_(rule.has_abstract))
+        return select(columns).select_from(source).where(*conditions)
+
+    async def filter_works(
+        self,
+        workspace_id: UUID,
+        rule: CandidateFilter,
+        *,
+        limit: int = 100,
+        after_id: UUID | None = None,
+    ) -> list[Work]:
+        statement = self._filter_statement(workspace_id, rule, t.works)
+        if after_id is not None:
+            statement = statement.where(t.works.c.id > after_id)
+        result = await self._c.execute(statement.order_by(t.works.c.id).limit(limit))
+        return WORKS.from_rows(result.mappings().all())
+
+    async def count_filtered(self, workspace_id: UUID, rule: CandidateFilter) -> int:
+        result = await self._c.execute(self._filter_statement(workspace_id, rule, func.count()))
+        return int(result.scalar() or 0)
+
+    async def summary_facets(self, workspace_id: UUID) -> dict[str, Any]:
+        s = t.work_summaries
+        kinds = await self._c.execute(
+            select(s.c.resource_kind, func.count())
+            .where(s.c.workspace_id == workspace_id)
+            .group_by(s.c.resource_kind)
+        )
+        sources: dict[str, int] = defaultdict(int)
+        for (value,) in (
+            await self._c.execute(select(s.c.sources).where(s.c.workspace_id == workspace_id))
+        ).all():
+            for source in (value or "").split():
+                sources[source] += 1
+        span = (
+            await self._c.execute(
+                select(func.min(s.c.year), func.max(s.c.year), func.count()).where(
+                    s.c.workspace_id == workspace_id
+                )
+            )
+        ).one()
+        works = (
+            await self._c.execute(
+                select(func.count())
+                .select_from(t.works)
+                .where(t.works.c.workspace_id == workspace_id)
+            )
+        ).scalar()
+        return {
+            "kinds": dict(
+                sorted(((k or "", int(n)) for k, n in kinds.all()), key=lambda kv: -kv[1])
+            ),
+            "sources": dict(sorted(sources.items(), key=lambda kv: -kv[1])),
+            "year_min": span[0],
+            "year_max": span[1],
+            "summarised": int(span[2] or 0),
+            "works": int(works or 0),
+        }
+
+    async def add_duplicate_candidates(self, rows: Sequence[DuplicateCandidate]) -> None:
+        if rows:
+            await self._c.execute(
+                insert(t.duplicate_candidates),
+                [DUPLICATES.upsert_values(row)[0] for row in rows],
+            )
+
+    async def update_duplicate_candidates(self, rows: Sequence[DuplicateCandidate]) -> None:
+        for row in rows:
+            await self._upsert(DUPLICATES, row)
+
+    async def get_duplicate_candidate(
+        self, workspace_id: UUID, candidate_id: UUID
+    ) -> DuplicateCandidate | None:
+        return await self._one(
+            DUPLICATES,
+            self._scope(DUPLICATES, workspace_id),
+            t.duplicate_candidates.c.id == candidate_id,
+        )
+
+    def _candidate_conditions(
+        self,
+        workspace_id: UUID,
+        status: str | None,
+        min_similarity: float | None,
+        work_id: UUID | None = None,
+    ) -> list[Any]:
+        d = t.duplicate_candidates
+        conditions: list[Any] = [d.c.workspace_id == workspace_id]
+        if status is not None:
+            conditions.append(d.c.status == status)
+        if min_similarity is not None:
+            conditions.append(d.c.similarity >= min_similarity)
+        if work_id is not None:
+            conditions.append((d.c.left_work_id == work_id) | (d.c.right_work_id == work_id))
+        return conditions
+
+    async def list_duplicate_candidates(
+        self,
+        workspace_id: UUID,
+        *,
+        status: str | None = None,
+        min_similarity: float | None = None,
+        work_id: UUID | None = None,
+        limit: int | None = None,
+        after: tuple[float, UUID] | None = None,
+    ) -> list[DuplicateCandidate]:
+        d = t.duplicate_candidates
+        conditions = self._candidate_conditions(workspace_id, status, min_similarity, work_id)
+        if after is not None:
+            similarity, last = after
+            conditions.append(
+                (d.c.similarity < similarity) | ((d.c.similarity == similarity) & (d.c.id > last))
+            )
+        statement = select(d).where(*conditions).order_by(d.c.similarity.desc(), d.c.id)
+        if limit is not None:
+            statement = statement.limit(limit)
+        result = await self._c.execute(statement)
+        return DUPLICATES.from_rows(result.mappings().all())
+
+    async def count_duplicate_candidates(
+        self, workspace_id: UUID, *, status: str | None = None, min_similarity: float | None = None
+    ) -> int:
+        result = await self._c.execute(
+            select(func.count())
+            .select_from(t.duplicate_candidates)
+            .where(*self._candidate_conditions(workspace_id, status, min_similarity))
+        )
+        return int(result.scalar() or 0)
 
     async def add_decision(self, decision: IdentityDecision) -> None:
         await self._upsert(DECISIONS, decision)

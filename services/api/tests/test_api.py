@@ -1419,6 +1419,10 @@ class TestCollectionsArePaged:
                     )
                 )
             await uow.commit()
+        # Proposals stored before the review queue existed reach it by backfill.
+        from lab_assistant.application.bulk_review import BulkReviewService
+
+        await BulkReviewService(context).backfill(ws)
 
     @staticmethod
     async def _walk(client, token, path: str, key: str) -> tuple[list, list[int]]:

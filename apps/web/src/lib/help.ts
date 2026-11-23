@@ -505,19 +505,31 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
       },
       {
         id: "identity",
-        statuses: ["duplicate_reason", "identity"],
-        title: "Identity conflicts and duplicate proposals",
+        statuses: ["duplicate_reason", "duplicate_status", "identity"],
+        title: "Duplicates and identity conflicts",
         about: [
-          "Different sources often describe the same paper. They are merged automatically only on strong identifiers (DOI, PMID, PMCID). When two records look like the same paper by title alone, they are proposed here for a person to decide, because titles alone are not reliable.",
-          "Papers whose identifiers contradict each other are listed as conflicts and cannot enter a release until resolved.",
+          "Different sources often describe the same paper. They are merged automatically only on strong identifiers (DOI, PMID, PMCID). Records that only look alike, by title, year and first author, are proposed as pairs for a person to decide, because titles alone are not reliable. A pair leaves the queue once it is merged or marked as two different papers.",
+          "Most pairs are clear-cut, so merge them by rule first and review the rest by hand. Papers whose identifiers contradict each other are listed as conflicts and cannot enter a release until resolved.",
         ],
         howTos: [
           {
-            title: "How to merge two records of the same paper",
+            title: "How to merge many duplicates at once",
+            needs: STEWARD,
+            steps: [
+              "Under **Merge by rule**, set **Title similarity at least**. Start at 1.00: identical titles.",
+              "Keep the guards on unless you have a reason: **Same year**, **First authors do not differ**, **Not two different DOIs** (a preprint and its article, or an article and its dataset, are related publications, not duplicates), and **Skip titles in more than 3 pairs** (titles such as Editorial or Correction pair with everything).",
+              "Select **Preview**. It says how many papers the rule merges, and how many pairs each guard skips, with examples. Open the examples and adjust the rule until the skipped pairs look right to skip.",
+              "Select **Merge N papers** and confirm. Each merge keeps the paper with more identifiers and is recorded with the rule.",
+              "Lower the threshold a step, preview again, and repeat while the previews still look right.",
+            ],
+            note: "A merge is not undone automatically. Previews change nothing, so preview as often as you like.",
+          },
+          {
+            title: "How to decide one pair",
             needs: "Reviewers, data stewards and admins.",
             steps: [
-              "Read the proposal under **Identity conflicts and duplicate proposals**: its similarity and reason.",
-              "If they are the same paper, select **Merge**.",
+              "Under **Pairs to review**, compare the two papers side by side. Narrow the list with **Similarity at least**.",
+              "Select **Merge** if they are the same paper, or **Not the same** if they are not. Either way the pair leaves the queue, and no rule will merge a pair marked **Not the same**.",
             ],
           },
         ],
@@ -528,8 +540,20 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "Candidates",
         about: [
           "Candidates are the papers discovery found, each with the fields the sources agreed on. Including a candidate puts it in the collection and plans the acquisition of its full text; excluding it records that it is out of scope.",
+          "The filters narrow the list, and they are also what **Include all**, **Mark uncertain all** and **Exclude all** act on: what the list shows is exactly what a bulk decision changes.",
         ],
         howTos: [
+          {
+            title: "How to include or exclude many candidates at once",
+            needs: STEWARD,
+            steps: [
+              "Under **Candidates**, set the filters: words the title must have or must not have, subject terms, journal, years, kind, the source that found it, and whether it has an abstract. Select **Apply filters**.",
+              "Check the count and page through a few results.",
+              "Select **Include all**, **Mark uncertain all** or **Exclude all**. The confirmation shows how many will change and some of them.",
+              "Confirm. Each decision is recorded with the filter that made it.",
+            ],
+            note: "**Leave candidates already decided as they are** is on by default, so a broad rule never overrides a decision someone made one by one. Turn it off only to correct an earlier rule.",
+          },
           {
             title: "How to decide whether a paper belongs",
             needs: STEWARD,

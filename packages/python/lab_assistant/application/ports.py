@@ -53,6 +53,7 @@ from lab_assistant.domain.observation import (
 )
 from lab_assistant.domain.release import CorpusRelease, ReleaseItem, SearchAlias
 from lab_assistant.domain.renditions import EvidenceSpan, ParseRun, Rendition
+from lab_assistant.domain.review import CandidateFilter, DuplicateCandidate, WorkSummary
 from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
 from lab_assistant.domain.tasks import RateBudget, Task
 from lab_assistant.domain.workspace import (
@@ -651,6 +652,56 @@ class WorkRepository(Protocol):
     ) -> Work | None: ...
     async def add_relation(self, relation: WorkRelation) -> None: ...
     async def list_relations(self, workspace_id: UUID, work_id: UUID) -> list[WorkRelation]: ...
+
+    # ── review by rule (domain/review.py) ──
+    async def upsert_summaries(self, summaries: Sequence[WorkSummary]) -> None: ...
+    async def get_summaries(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, WorkSummary]: ...
+    async def summary_inputs(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[list[SourceAssertion], set[str]]]:
+        """Each work's assertions, and the connectors whose records made them."""
+        ...
+
+    async def works_without_summary(self, workspace_id: UUID, *, limit: int) -> list[UUID]: ...
+    async def filter_works(
+        self,
+        workspace_id: UUID,
+        rule: CandidateFilter,
+        *,
+        limit: int = 100,
+        after_id: UUID | None = None,
+    ) -> list[Work]:
+        """Works matching the filter, ordered by id: a keyset page."""
+        ...
+
+    async def count_filtered(self, workspace_id: UUID, rule: CandidateFilter) -> int: ...
+    async def summary_facets(self, workspace_id: UUID) -> dict[str, Any]:
+        """Kinds and sources with counts, the year range, and how many works have a summary."""
+        ...
+
+    async def add_duplicate_candidates(self, rows: Sequence[DuplicateCandidate]) -> None: ...
+    async def update_duplicate_candidates(self, rows: Sequence[DuplicateCandidate]) -> None: ...
+    async def get_duplicate_candidate(
+        self, workspace_id: UUID, candidate_id: UUID
+    ) -> DuplicateCandidate | None: ...
+    async def list_duplicate_candidates(
+        self,
+        workspace_id: UUID,
+        *,
+        status: str | None = None,
+        min_similarity: float | None = None,
+        work_id: UUID | None = None,
+        limit: int | None = None,
+        after: tuple[float, UUID] | None = None,
+    ) -> list[DuplicateCandidate]:
+        """Most similar first, then by id; ``after`` is the last row's (similarity, id)."""
+        ...
+
+    async def count_duplicate_candidates(
+        self, workspace_id: UUID, *, status: str | None = None, min_similarity: float | None = None
+    ) -> int: ...
     async def add_decision(self, decision: IdentityDecision) -> None: ...
     async def list_decisions(
         self, workspace_id: UUID, *, work_id: UUID | None = None

@@ -15,14 +15,16 @@ automatic_rule``, so "why are these one work" is always answerable.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.pagination import collect_pages
 from lab_assistant.contracts.connector import IdentifierScheme
-from lab_assistant.contracts.errors import NotFound, ValidationFailure
+from lab_assistant.contracts.errors import NotFound, StateTransitionError, ValidationFailure
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.contracts.stage import (
     StageCommand,
@@ -48,6 +50,7 @@ from lab_assistant.domain.identity import (
 )
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.observation import Predicate, SourceAssertion
+from lab_assistant.domain.review import DuplicateCandidate, DuplicateStatus, summarise_work
 from lab_assistant.domain.states import IdentityState, RelevanceState
 from lab_assistant.domain.workspace import Capability
 from lab_assistant.provenance.fingerprints import task_fingerprint
@@ -160,6 +163,22 @@ def canonical_metadata(assertions: list[SourceAssertion]) -> dict[str, Any]:
     return resolved
 
 
+async def refresh_summaries(
+    uow: Any, workspace_id: UUID, work_ids: Iterable[UUID], *, now: datetime
+) -> None:
+    """Rebuild the filter summaries of these works from their current assertions."""
+    ids = list(dict.fromkeys(work_ids))
+    if not ids:
+        return
+    inputs = await uow.works.summary_inputs(workspace_id, ids)
+    await uow.works.upsert_summaries(
+        [
+            summarise_work(work_id, workspace_id, canonical_metadata(assertions), sources, now=now)
+            for work_id, (assertions, sources) in inputs.items()
+        ]
+    )
+
+
 class ReconciliationHandler:
     """Stage handler: build works from a frozen or running run's assertions."""
 
@@ -213,27 +232,21 @@ class ReconciliationHandler:
         groups = [assertions for _, assertions in sorted(assertions_by_subject.items())]
         for start in range(0, len(groups), RECONCILIATION_BATCH_SIZE):
             async with context.uow_factory() as uow:
+                touched: list[UUID] = []
                 for assertions in groups[start : start + RECONCILIATION_BATCH_SIZE]:
                     await self._reconcile_record(
                         uow, workspace_id, assertions, scope, index, report, titles_by_work
                     )
+                    touched.extend(a.work_id for a in assertions if a.work_id is not None)
+                await refresh_summaries(uow, workspace_id, touched, now=context.now())
                 await uow.commit()
 
         async with context.uow_factory() as uow:
             # A pair already in the review queue, from an earlier pass over this
             # run or another run, is not queued twice.
             queued = {
-                frozenset(decision.subject_work_ids)
-                for decision in await collect_pages(
-                    lambda after, size: uow.works.list_decisions_page(
-                        workspace_id,
-                        reason_code=DUPLICATE_PROPOSAL_REASON,
-                        limit=size,
-                        after_id=after,
-                    ),
-                    page_size=5_000,
-                )
-                if (decision.after or {}).get("proposal") == "duplicate_review"
+                frozenset((row.left_work_id, row.right_work_id))
+                for row in await uow.works.list_duplicate_candidates(workspace_id)
             }
             active_titles = [
                 entry
@@ -246,23 +259,25 @@ class ReconciliationHandler:
                 if frozenset((proposal.left_work_id, proposal.right_work_id)) not in queued
             ]
             report.duplicate_proposals = len(proposals)
+            queue: list[DuplicateCandidate] = []
             for proposal in proposals:
-                await uow.works.add_decision(
-                    IdentityDecision(
-                        id=context.new_id(),
-                        workspace_id=workspace_id,
-                        decision_type=IdentityDecisionType.REOPEN,
-                        subject_work_ids=(proposal.left_work_id, proposal.right_work_id),
-                        after={
-                            "proposal": "duplicate_review",
-                            "similarity": proposal.similarity,
-                            "features": proposal.features,
-                        },
-                        reason_code=proposal.reason_code,
-                        decided_by_type="automatic_rule",
-                        decided_at=context.now(),
-                    )
+                decision = IdentityDecision(
+                    id=context.new_id(),
+                    workspace_id=workspace_id,
+                    decision_type=IdentityDecisionType.REOPEN,
+                    subject_work_ids=(proposal.left_work_id, proposal.right_work_id),
+                    after={
+                        "proposal": "duplicate_review",
+                        "similarity": proposal.similarity,
+                        "features": proposal.features,
+                    },
+                    reason_code=proposal.reason_code,
+                    decided_by_type="automatic_rule",
+                    decided_at=context.now(),
                 )
+                await uow.works.add_decision(decision)
+                queue.append(duplicate_row(decision))
+            await uow.works.add_duplicate_candidates(queue)
 
             await uow.audit.append(
                 context.audit.build(
@@ -420,7 +435,9 @@ class ReconciliationHandler:
                 assertion.work_id = work.id
 
         relevance, relevance_reason = _score_relevance(metadata, scope)
-        if work.relevance is RelevanceState.UNREVIEWED:
+        # Only a change is a decision: recording "still unreviewed" once per
+        # record, on every pass, filled the log with tens of thousands of rows.
+        if work.relevance is RelevanceState.UNREVIEWED and relevance is not work.relevance:
             work.relevance = relevance
             work.canonical_metadata_version += 1
             await uow.works.update(work)
@@ -524,6 +541,25 @@ class _IdentityIndex:
             if work is not None and work.is_active:
                 return work
         return None
+
+
+def duplicate_row(
+    decision: IdentityDecision, *, status: DuplicateStatus | None = None
+) -> DuplicateCandidate:
+    """The review-queue row for a duplicate proposal decision."""
+    features = dict((decision.after or {}).get("features") or {})
+    left, right = decision.subject_work_ids[0], decision.subject_work_ids[1]
+    return DuplicateCandidate(
+        id=decision.id,
+        workspace_id=decision.workspace_id,
+        left_work_id=left,
+        right_work_id=right,
+        similarity=float((decision.after or {}).get("similarity", 0.0)),
+        year_gap=features.get("year_gap"),
+        first_author_match=features.get("first_author_match"),
+        status=status or DuplicateStatus.OPEN,
+        created_at=decision.decided_at,
+    )
 
 
 def _identifier_assertions(
@@ -705,42 +741,9 @@ class IdentityService:
             merge = await uow.works.get(actor.workspace_id, merge_work_id)
             if keep is None or merge is None:
                 raise NotFound("both works must exist in this workspace")
-            assessment = assess_merge(
-                left=keep,
-                right=merge,
-                left_identifiers=await uow.works.list_identifiers(actor.workspace_id, keep.id),
-                right_identifiers=await uow.works.list_identifiers(actor.workspace_id, merge.id),
+            decision = await self.merge_in(
+                uow, actor, keep=keep, merge=merge, reason_code=reason_code, note=note
             )
-            merge.identity_status = IdentityState.MERGED
-            merge.merged_into_work_id = keep.id
-            keep.identity_status = IdentityState.RESOLVED
-            await uow.works.update(merge)
-            await uow.works.update(keep)
-            for identifier in await uow.works.list_identifiers(actor.workspace_id, merge.id):
-                identifier.work_id = keep.id
-                await uow.works.update_identifier(identifier)
-            for assertion in await uow.observations.list_assertions(
-                actor.workspace_id, work_id=merge.id
-            ):
-                assertion.work_id = keep.id
-                await uow.observations.update_assertion(assertion)
-            decision = IdentityDecision(
-                id=context.new_id(),
-                workspace_id=actor.workspace_id,
-                decision_type=IdentityDecisionType.MERGE,
-                subject_work_ids=(keep.id, merge.id),
-                before={"keep": str(keep.id), "merged": str(merge.id)},
-                after={
-                    "automatic_assessment": assessment.as_decision_payload(),
-                    "human_override": not assessment.allowed,
-                },
-                reason_code=reason_code,
-                note=note,
-                decided_by=actor.user_id,
-                decided_by_type="human",
-                decided_at=context.now(),
-            )
-            await uow.works.add_decision(decision)
             await uow.audit.append(
                 context.audit.build(
                     workspace_id=actor.workspace_id,
@@ -754,11 +757,92 @@ class IdentityService:
                     metadata={
                         "decision": "merge",
                         "merged_work_id": str(merge.id),
-                        "override": not assessment.allowed,
+                        "override": bool(decision.after.get("human_override")),
                     },
                 )
             )
             await uow.commit()
+        return decision
+
+    async def merge_in(
+        self,
+        uow: Any,
+        actor: ActorContext,
+        *,
+        keep: Work,
+        merge: Work,
+        reason_code: str,
+        note: str | None = None,
+        rule: dict[str, Any] | None = None,
+    ) -> IdentityDecision:
+        """Merge ``merge`` into ``keep`` inside the caller's transaction; no audit row.
+
+        Identifiers and assertions move to the kept work, the duplicate-review
+        queue follows them (the pair itself is resolved; any other pair that named
+        the merged work now names the kept one), and the kept work's summary is
+        rebuilt. A work already merged cannot be merged again.
+        """
+        context = self._context
+        if keep.id == merge.id:
+            raise ValidationFailure("a work cannot be merged into itself")
+        for work in (keep, merge):
+            if not work.is_active:
+                raise StateTransitionError(
+                    f"work {work.id} was already merged into {work.merged_into_work_id}"
+                )
+        keep_ids = await uow.works.list_identifiers(actor.workspace_id, keep.id)
+        merge_ids = await uow.works.list_identifiers(actor.workspace_id, merge.id)
+        assessment = assess_merge(
+            left=keep, right=merge, left_identifiers=keep_ids, right_identifiers=merge_ids
+        )
+        merge.identity_status = IdentityState.MERGED
+        merge.merged_into_work_id = keep.id
+        keep.identity_status = IdentityState.RESOLVED
+        await uow.works.update(merge)
+        await uow.works.update(keep)
+        for identifier in merge_ids:
+            identifier.work_id = keep.id
+            await uow.works.update_identifier(identifier)
+        moved = await uow.observations.list_assertions(actor.workspace_id, work_id=merge.id)
+        await uow.observations.assign_assertions(actor.workspace_id, [a.id for a in moved], keep.id)
+        now = context.now()
+        changed = []
+        for row in await uow.works.list_duplicate_candidates(actor.workspace_id, work_id=merge.id):
+            pair = {row.left_work_id, row.right_work_id}
+            if row.left_work_id == merge.id:
+                row.left_work_id = keep.id
+            if row.right_work_id == merge.id:
+                row.right_work_id = keep.id
+            if row.left_work_id == row.right_work_id and row.status is DuplicateStatus.OPEN:
+                # This pair, or one that only joined these two works, is answered.
+                row.status = (
+                    DuplicateStatus.MERGED
+                    if pair == {keep.id, merge.id}
+                    else DuplicateStatus.SUPERSEDED
+                )
+                row.resolved_by = actor.user_id
+                row.resolved_at = now
+            changed.append(row)
+        await uow.works.update_duplicate_candidates(changed)
+        decision = IdentityDecision(
+            id=context.new_id(),
+            workspace_id=actor.workspace_id,
+            decision_type=IdentityDecisionType.MERGE,
+            subject_work_ids=(keep.id, merge.id),
+            before={"keep": str(keep.id), "merged": str(merge.id)},
+            after={
+                "automatic_assessment": assessment.as_decision_payload(),
+                "human_override": not assessment.allowed,
+                **({"rule": rule} if rule else {}),
+            },
+            reason_code=reason_code,
+            note=note,
+            decided_by=actor.user_id,
+            decided_by_type="human",
+            decided_at=now,
+        )
+        await uow.works.add_decision(decision)
+        await refresh_summaries(uow, actor.workspace_id, [keep.id], now=now)
         return decision
 
     async def link_versions(

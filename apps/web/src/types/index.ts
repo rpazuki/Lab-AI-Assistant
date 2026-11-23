@@ -109,12 +109,88 @@ export interface Page<T> {
   total: number;
 }
 
+/** Enough of a paper to recognise it: what the review queues and previews show. */
+export interface PaperSummary {
+  work_id: string;
+  title: string | null;
+  year: number | null;
+  journal: string | null;
+  resource_kind: string | null;
+  first_author: string | null;
+  sources: string[];
+  relevance?: string;
+  identity_status?: string;
+}
+
+/** An open pair in the duplicate-review queue, with both papers. */
 export interface DuplicateProposal {
+  id: string;
   left_work_id: string;
   right_work_id: string;
   similarity: number;
-  features: Record<string, unknown>;
-  reason_code: string;
+  year_gap: number | null;
+  first_author_match: boolean | null;
+  left: PaperSummary;
+  right: PaperSummary;
+}
+
+/** What the candidate list shows and what a bulk decision applies to. Every condition must hold. */
+export interface CandidateFilters {
+  relevance?: string;
+  identity_status?: string;
+  /** Words that must all appear in the title, comma-separated. */
+  title?: string;
+  /** Words none of which may appear in the title. */
+  exclude?: string;
+  /** Subject terms, any one of which must appear. */
+  subject?: string;
+  year_from?: number | null;
+  year_to?: number | null;
+  kind?: string;
+  journal?: string;
+  source?: string;
+  has_abstract?: boolean | null;
+}
+
+export interface CandidateFacets {
+  kinds: Record<string, number>;
+  sources: Record<string, number>;
+  year_min: number | null;
+  year_max: number | null;
+  /** Works the filter index covers; below `works` while it is still being built. */
+  summarised: number;
+  works: number;
+}
+
+export interface BulkRelevanceResult {
+  matched: number;
+  sample: PaperSummary[];
+  applied: number;
+  remaining: number;
+}
+
+export interface MergeRule {
+  min_similarity: number;
+  require_same_year: boolean;
+  skip_different_authors: boolean;
+  require_known_authors: boolean;
+  skip_different_dois: boolean;
+  max_pairs_per_work: number;
+  max_group_size: number;
+}
+
+export interface MergePlan {
+  considered: number;
+  accepted_pairs: number;
+  groups: number;
+  works_merged: number;
+  skipped: {
+    reason: string;
+    description: string;
+    count: number;
+    examples: { similarity: number; left: PaperSummary; right: PaperSummary }[];
+  }[];
+  sample_groups: { similarity: number; papers: PaperSummary[] }[];
 }
 
 export interface Candidate {

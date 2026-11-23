@@ -232,6 +232,28 @@
         "title": "Body_start_discovery_api_v1_discovery_runs_post",
         "type": "object"
       },
+      "BulkRelevanceRequest": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "only_unreviewed": {
+            "default": true,
+            "title": "Only Unreviewed",
+            "type": "boolean"
+          },
+          "relevance": {
+            "$ref": "#/components/schemas/RelevanceState"
+          }
+        },
+        "required": [
+          "relevance"
+        ],
+        "title": "BulkRelevanceRequest",
+        "type": "object"
+      },
       "EvaluationRunRequest": {
         "properties": {
           "benchmark_id": {
@@ -539,6 +561,54 @@
           "reason_code"
         ],
         "title": "MergeRequest",
+        "type": "object"
+      },
+      "MergeRule": {
+        "description": "Which open duplicate pairs a bulk merge takes. Each guard is a reason to skip.\n\nThe defaults are the cautious ones: a title match alone is not enough, the\nyear must agree, authors must not disagree, both must be the same kind of\nwork, two different DOIs mean two publications, and a title that pairs with\nmany others (\"Editorial\", \"Correction\") is not evidence of anything.",
+        "properties": {
+          "max_group_size": {
+            "default": 3,
+            "maximum": 20.0,
+            "minimum": 2.0,
+            "title": "Max Group Size",
+            "type": "integer"
+          },
+          "max_pairs_per_work": {
+            "default": 3,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Max Pairs Per Work",
+            "type": "integer"
+          },
+          "min_similarity": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.5,
+            "title": "Min Similarity",
+            "type": "number"
+          },
+          "require_known_authors": {
+            "default": false,
+            "title": "Require Known Authors",
+            "type": "boolean"
+          },
+          "require_same_year": {
+            "default": true,
+            "title": "Require Same Year",
+            "type": "boolean"
+          },
+          "skip_different_authors": {
+            "default": true,
+            "title": "Skip Different Authors",
+            "type": "boolean"
+          },
+          "skip_different_dois": {
+            "default": true,
+            "title": "Skip Different Dois",
+            "type": "boolean"
+          }
+        },
+        "title": "MergeRule",
         "type": "object"
       },
       "QueryTermsRequest": {
@@ -1929,7 +1999,7 @@
     },
     "/api/v1/candidates": {
       "get": {
-        "description": "One page of candidates, with the total that match the filters.\n\nKeyset-paged: ``next_cursor`` is null on the last page. A run of tens of\nthousands of records is never sent to a browser in one response.",
+        "description": "One page of candidates matching the filter, with how many match in all.\n\nKeyset-paged: ``next_cursor`` is null on the last page. A run of tens of\nthousands of records is never sent to a browser in one response. Merged works\nare left out unless ``identity_status=merged`` asks for them.",
         "operationId": "list_candidates_api_v1_candidates_get",
         "parameters": [
           {
@@ -1996,6 +2066,166 @@
             }
           },
           {
+            "description": "words that must all appear in the title, comma-separated",
+            "in": "query",
+            "name": "title",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in the title, comma-separated",
+              "title": "Title"
+            }
+          },
+          {
+            "description": "words none of which may appear in the title",
+            "in": "query",
+            "name": "exclude",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words none of which may appear in the title",
+              "title": "Exclude"
+            }
+          },
+          {
+            "description": "subject terms, any one of which must appear",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "subject terms, any one of which must appear",
+              "title": "Subject"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 3000,
+                  "minimum": 1000,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 3000,
+                  "minimum": 1000,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year To"
+            }
+          },
+          {
+            "description": "resource kinds, comma-separated",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "resource kinds, comma-separated",
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "text the journal name contains",
+            "in": "query",
+            "name": "journal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "text the journal name contains",
+              "title": "Journal"
+            }
+          },
+          {
+            "description": "a connector that found the paper",
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "a connector that found the paper",
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "has_abstract",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Has Abstract"
+            }
+          },
+          {
             "in": "header",
             "name": "X-Workspace",
             "required": false,
@@ -2057,7 +2287,7 @@
     },
     "/api/v1/candidates/conflicts": {
       "get": {
-        "description": "How many works are in conflict, and one page of the duplicate-review queue.",
+        "description": "How many works are in conflict, and one page of open duplicate pairs.\n\nMost similar first. A pair someone merged or dismissed is no longer open, so\nit leaves this list; each pair carries both papers so it can be judged here.",
         "operationId": "list_conflicts_api_v1_candidates_conflicts_get",
         "parameters": [
           {
@@ -2080,7 +2310,6 @@
             "schema": {
               "anyOf": [
                 {
-                  "format": "uuid",
                   "type": "string"
                 },
                 {
@@ -2089,6 +2318,24 @@
               ],
               "description": "next_cursor from the previous page",
               "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_similarity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Similarity"
             }
           },
           {
@@ -2149,6 +2396,338 @@
           }
         },
         "summary": "List Conflicts"
+      }
+    },
+    "/api/v1/candidates/facets": {
+      "get": {
+        "description": "The values filters can take: kinds and sources with counts, and the year range.\n\n``summarised`` below ``works`` means the filter index is still being built\n(``lab db backfill-review``): filters on title, year and the like see only the\nsummarised works until it finishes.",
+        "operationId": "candidate_facets_api_v1_candidates_facets_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Candidate Facets Api V1 Candidates Facets Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Candidate Facets"
+      }
+    },
+    "/api/v1/candidates/relevance/bulk": {
+      "post": {
+        "description": "Include or exclude every candidate the filter (query parameters) matches.\n\nPreview first (``apply`` false): how many match and ten of them. An apply\nchanges up to 1,000 and returns ``remaining``; repeat it until that is 0.",
+        "operationId": "bulk_relevance_api_v1_candidates_relevance_bulk_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "relevance",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RelevanceState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Relevance"
+            }
+          },
+          {
+            "in": "query",
+            "name": "identity_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/IdentityState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Identity Status"
+            }
+          },
+          {
+            "description": "words that must all appear in the title, comma-separated",
+            "in": "query",
+            "name": "title",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in the title, comma-separated",
+              "title": "Title"
+            }
+          },
+          {
+            "description": "words none of which may appear in the title",
+            "in": "query",
+            "name": "exclude",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words none of which may appear in the title",
+              "title": "Exclude"
+            }
+          },
+          {
+            "description": "subject terms, any one of which must appear",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "subject terms, any one of which must appear",
+              "title": "Subject"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 3000,
+                  "minimum": 1000,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 3000,
+                  "minimum": 1000,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year To"
+            }
+          },
+          {
+            "description": "resource kinds, comma-separated",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "resource kinds, comma-separated",
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "text the journal name contains",
+            "in": "query",
+            "name": "journal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "text the journal name contains",
+              "title": "Journal"
+            }
+          },
+          {
+            "description": "a connector that found the paper",
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "a connector that found the paper",
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "has_abstract",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Has Abstract"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkRelevanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Bulk Relevance Api V1 Candidates Relevance Bulk Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bulk Relevance"
       }
     },
     "/api/v1/candidates/{work_id}/relevance": {
@@ -3958,6 +4537,306 @@
           }
         },
         "summary": "Freeze Discovery"
+      }
+    },
+    "/api/v1/duplicates/merge-rule/apply": {
+      "post": {
+        "description": "Merge up to 200 groups the rule accepts; repeat until ``remaining_groups`` is 0.",
+        "operationId": "apply_merge_rule_api_v1_duplicates_merge_rule_apply_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeRule"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apply Merge Rule Api V1 Duplicates Merge Rule Apply Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Merge Rule"
+      }
+    },
+    "/api/v1/duplicates/merge-rule/preview": {
+      "post": {
+        "description": "What the rule would merge now, and how many pairs each guard would skip. Changes nothing.",
+        "operationId": "preview_merge_rule_api_v1_duplicates_merge_rule_preview_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeRule"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preview Merge Rule Api V1 Duplicates Merge Rule Preview Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Merge Rule"
+      }
+    },
+    "/api/v1/duplicates/{candidate_id}/dismiss": {
+      "post": {
+        "description": "Two different papers: the pair leaves the queue and is never merged by a rule.",
+        "operationId": "dismiss_duplicate_api_v1_duplicates__candidate_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dismiss Duplicate Api V1 Duplicates  Candidate Id  Dismiss Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss Duplicate"
+      }
+    },
+    "/api/v1/duplicates/{candidate_id}/merge": {
+      "post": {
+        "description": "Merge one open pair; the work with more identifiers is kept. 409 once handled.",
+        "operationId": "merge_duplicate_api_v1_duplicates__candidate_id__merge_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Merge Duplicate Api V1 Duplicates  Candidate Id  Merge Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Merge Duplicate"
       }
     },
     "/api/v1/evaluation/benchmarks": {
