@@ -744,8 +744,9 @@ async def _backfill_review(
 ) -> int:
     """Fill the tables bulk review reads, for works and proposals that predate them.
 
-    Safe to run any number of times: a work that already has a summary and a
-    proposal already in the queue are left alone. The deploy script runs it after
+    Safe to run any number of times: a work that already has a summary, a
+    proposal already in the queue, and a workspace that already has a review
+    history are left alone. The deploy script runs it after
     every migration, so it is normally a no-op that takes a second.
     """
     from lab_assistant.application.bulk_review import BulkReviewService
@@ -770,7 +771,8 @@ async def _backfill_review(
             done = await service.backfill(workspace_id)
             print(
                 f"{slug}: {done['summarised']} summaries built, "
-                f"{done['queued']} duplicate pairs queued"
+                f"{done['queued']} duplicate pairs queued, "
+                f"{done['history']} earlier review steps recorded"
             )
         return 0
     finally:

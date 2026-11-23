@@ -242,7 +242,8 @@ class IdentityDecision(BaseModel):
     reason_code: str = ""
     note: str | None = None
     decided_by: UUID | None = None
-    decided_by_type: str = "human"  # human | automatic_rule
+    #: human | automatic_rule | scope_rule (a scope's rules, applied by a person)
+    decided_by_type: str = "human"
     decided_at: datetime | None = None
 
 

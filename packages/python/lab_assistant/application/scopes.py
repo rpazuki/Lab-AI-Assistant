@@ -17,10 +17,12 @@ from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.ports import UnitOfWork
+from lab_assistant.application.review_history import record_step
 from lab_assistant.contracts.connector import ConnectorOperation
 from lab_assistant.contracts.errors import NotFound, StateTransitionError, ValidationFailure
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.domain.installation import InstallationCapability
+from lab_assistant.domain.review import ReviewStepKind
 from lab_assistant.domain.scope import ApprovalState, ConnectorPlanEntry, ScopeVersion
 from lab_assistant.domain.workspace import Capability
 
@@ -275,5 +277,15 @@ class ScopeService:
                 },
             )
             await uow.audit.append(event)
+            await record_step(
+                uow,
+                context,
+                workspace_id=actor.workspace_id,
+                kind=ReviewStepKind.SCOPE_APPROVED,
+                actor_id=actor.user_id,
+                scope_version_id=approved.id,
+                subject_id=approved.id,
+                rule={"name": approved.name, "version": approved.version},
+            )
             await uow.commit()
         return approved

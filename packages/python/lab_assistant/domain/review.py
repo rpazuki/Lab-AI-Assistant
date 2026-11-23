@@ -24,6 +24,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 from lab_assistant.domain.identity import normalise_title
+from lab_assistant.domain.screening import has_abstract, plain_text, relevance_text
 from lab_assistant.domain.states import IdentityState, RelevanceState
 
 __all__ = [
@@ -31,6 +32,8 @@ __all__ = [
     "DuplicateCandidate",
     "DuplicateStatus",
     "MergeRule",
+    "ReviewStep",
+    "ReviewStepKind",
     "WorkSummary",
     "summarise_work",
 ]
@@ -42,6 +45,55 @@ class DuplicateStatus(StrEnum):
     DISMISSED = "dismissed"
     #: One side was merged into the other by another decision.
     SUPERSEDED = "superseded"
+
+
+class ReviewStepKind(StrEnum):
+    """What one step in a collection's review history did."""
+
+    SCOPE_APPROVED = "scope_approved"
+    DISCOVERY_FROZEN = "discovery_frozen"
+    RECONCILED = "reconciled"
+    SCOPE_RULES_APPLIED = "scope_rules_applied"
+    RELEVANCE_BY_FILTER = "relevance_by_filter"
+    MERGE_BY_RULE = "merge_by_rule"
+    RELEVANCE_SET = "relevance_set"
+    MERGED = "merged"
+    DISMISSED = "dismissed"
+
+
+class ReviewStep(BaseModel):
+    """One step of review, as a person would describe it, under the scope then in force.
+
+    A bulk action applied in several chunks is still one step: each chunk adds its
+    counts to the step the first one opened. The decisions themselves stay in
+    ``identity_decisions`` and the audit chain; this is the readable history.
+    """
+
+    model_config = {"validate_assignment": True}
+
+    id: UUID
+    workspace_id: UUID
+    kind: ReviewStepKind
+    #: The scope version in force: the one applied, approved or searched, or for a
+    #: review decision the workspace's most recently approved version.
+    scope_version_id: UUID | None = None
+    actor_id: UUID | None = None
+    #: The filter, merge rule or scope rules the step applied.
+    rule: dict[str, Any] = Field(default_factory=dict)
+    #: What it changed: {"included": 120, "excluded": 4000} and the like.
+    counts: dict[str, int] = Field(default_factory=dict)
+    #: For a step about one or two papers: which.
+    work_ids: tuple[UUID, ...] = ()
+    subject_id: UUID | None = None
+    note: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+
+    def add_counts(self, counts: dict[str, int]) -> None:
+        merged = dict(self.counts)
+        for key, value in counts.items():
+            merged[key] = merged.get(key, 0) + int(value)
+        self.counts = merged
 
 
 class WorkSummary(BaseModel):
@@ -64,19 +116,13 @@ class WorkSummary(BaseModel):
     #: Connector ids, space-wrapped (" crossref pubmed "), for the same reason.
     sources: str = ""
     source_count: int = 0
+    #: What a scope's screening rules read (``domain/screening.py``). None on a
+    #: summary written before the rules read summaries; the backfill rebuilds it.
+    relevance_text: str | None = None
     updated_at: datetime | None = None
 
 
-def _text(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        for key in ("name", "value", "label", "title"):
-            if isinstance(value.get(key), str):
-                return value[key]
-        return None
-    text = str(value).strip()
-    return text or None
+_text = plain_text
 
 
 def summarise_work(
@@ -113,10 +159,11 @@ def summarise_work(
         resource_kind=_text(metadata.get("resource_kind")),
         licence=_text(metadata.get("licence")),
         first_author=first_author,
-        has_abstract=bool(_text(metadata.get("abstract"))),
+        has_abstract=has_abstract(metadata),
         subject_terms=f"\n{chr(10).join(terms)}\n" if terms else "",
         sources=f" {' '.join(connectors)} " if connectors else "",
         source_count=len(connectors),
+        relevance_text=relevance_text(metadata),
         updated_at=now,
     )
 

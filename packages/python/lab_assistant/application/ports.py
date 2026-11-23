@@ -53,7 +53,12 @@ from lab_assistant.domain.observation import (
 )
 from lab_assistant.domain.release import CorpusRelease, ReleaseItem, SearchAlias
 from lab_assistant.domain.renditions import EvidenceSpan, ParseRun, Rendition
-from lab_assistant.domain.review import CandidateFilter, DuplicateCandidate, WorkSummary
+from lab_assistant.domain.review import (
+    CandidateFilter,
+    DuplicateCandidate,
+    ReviewStep,
+    WorkSummary,
+)
 from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
 from lab_assistant.domain.tasks import RateBudget, Task
 from lab_assistant.domain.workspace import (
@@ -664,7 +669,36 @@ class WorkRepository(Protocol):
         """Each work's assertions, and the connectors whose records made them."""
         ...
 
-    async def works_without_summary(self, workspace_id: UUID, *, limit: int) -> list[UUID]: ...
+    async def works_without_summary(self, workspace_id: UUID, *, limit: int) -> list[UUID]:
+        """Works with no summary, or one written before ``relevance_text`` existed."""
+        ...
+
+    async def human_relevance_work_ids(self, workspace_id: UUID) -> set[UUID]:
+        """Works whose relevance a person has set, one by one or by a filter."""
+        ...
+
+    async def add_review_step(self, step: ReviewStep) -> None: ...
+    async def update_review_step(self, step: ReviewStep) -> None: ...
+    async def get_review_step(self, workspace_id: UUID, step_id: UUID) -> ReviewStep | None: ...
+    async def list_review_steps(
+        self,
+        workspace_id: UUID,
+        *,
+        scope_version_id: UUID | None = None,
+        kinds: Sequence[str] | None = None,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[ReviewStep]:
+        """Newest first; ``before`` is the last row's (started_at, id)."""
+        ...
+
+    async def count_review_steps(
+        self,
+        workspace_id: UUID,
+        *,
+        scope_version_id: UUID | None = None,
+        kinds: Sequence[str] | None = None,
+    ) -> int: ...
     async def filter_works(
         self,
         workspace_id: UUID,

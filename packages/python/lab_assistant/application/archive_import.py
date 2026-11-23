@@ -429,6 +429,7 @@ class SnapshotImporter:
                             inclusion_criteria=record.inclusion_criteria,
                             exclusion_criteria=record.exclusion_criteria,
                             concepts=record.concepts,
+                            exclusion_terms=record.exclusion_terms,
                             connector_plan=record.connector_plan,
                             approval_state=ApprovalState(record.approval_state or "approved"),
                             frozen_at=record.frozen_at,

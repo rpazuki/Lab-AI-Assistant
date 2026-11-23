@@ -815,6 +815,62 @@ class TestCollections:
         )
         assert regate.json()["passed"] is True
 
+    async def test_screening_rules_round_trip_and_an_approved_version_applies_them(
+        self, api
+    ) -> None:
+        """Concepts, exclusion terms and thresholds are saved, listed, and applied."""
+        token = await _login(api["client"], "steward@lab.invalid")
+        body = {
+            "name": "Yarrowia",
+            "scientific_objective": "Yarrowia literature",
+            "inclusion_criteria": ["Y. lipolytica is a studied organism"],
+            "intended_uses": ["literature search"],
+            "concepts": ["yarrowia | y. lipolytica", " "],
+            "exclusion_terms": ["plant"],
+            "include_threshold": 0.5,
+            "exclude_threshold": 0.0,
+            "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
+        }
+        bad = await api["client"].post(
+            "/api/v1/scopes",
+            headers=_auth(token),
+            json={**body, "include_threshold": 0.2, "exclude_threshold": 0.3},
+        )
+        assert bad.status_code == 422
+        created = await api["client"].post("/api/v1/scopes", headers=_auth(token), json=body)
+        scope_id = created.json()["id"]
+        listed = await api["client"].get("/api/v1/scopes", headers=_auth(token))
+        scope = next(item for item in listed.json()["items"] if item["id"] == scope_id)
+        assert scope["concepts"] == ["yarrowia | y. lipolytica"]
+        assert scope["exclusion_terms"] == ["plant"]
+        assert scope["relevance_policy"] == {"include_threshold": 0.5, "exclude_threshold": 0.0}
+        assert scope["frozen_at"] is None
+
+        draft_preview = await api["client"].post(
+            f"/api/v1/scopes/{scope_id}/rules/preview", headers=_auth(token)
+        )
+        assert draft_preview.status_code == 409
+        await api["client"].post(f"/api/v1/scopes/{scope_id}/approve", headers=_auth(token))
+        preview = await api["client"].post(
+            f"/api/v1/scopes/{scope_id}/rules/preview", headers=_auth(token)
+        )
+        assert preview.status_code == 200
+        assert preview.json()["scope"]["exclusion_terms"] == ["plant"]
+        applied = await api["client"].post(
+            f"/api/v1/scopes/{scope_id}/rules/apply", headers=_auth(token), json={}
+        )
+        assert applied.json()["remaining"] == 0
+
+        history = await api["client"].get(
+            "/api/v1/review/history",
+            headers=_auth(token),
+            params={"scope_version_id": scope_id},
+        )
+        kinds = [item["kind"] for item in history.json()["items"]]
+        assert kinds == ["scope_rules_applied", "scope_approved"]
+        assert history.json()["items"][1]["actor"]
+        assert history.json()["next_cursor"] is None
+
     async def test_a_draft_is_corrected_in_place_keeping_its_version(self, api) -> None:
         token = await _login(api["client"], "steward@lab.invalid")
         created = await api["client"].post(

@@ -420,6 +420,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "On **Collections**, select **New scope**.",
               "Enter a **Name** and the **Scientific objective**.",
               "List the **Inclusion criteria** and, optionally, the **Exclusion criteria**, one per line.",
+              "Under **Screening rules**, list the **Concepts** a relevant paper mentions and any **Exclusion terms** (see Screening rules and review history, below).",
               "Under **Intended uses**, say what the collection is for, one per line (for example literature search).",
               "Under sources, tick each source to search and type its query (or write them with the organism lookup, below).",
               "Select **Save as draft**.",
@@ -435,7 +436,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Select **Save changes** to correct this version, or **Save as v2** (the next version number) to keep it unchanged and add a new draft.",
               "Select **Check gate** again, then **Approve**.",
             ],
-            note: "Only unapproved versions can be edited. An approved scope is the record of what was searched: change it by editing and saving a new version from a draft.",
+            note: "Only unapproved versions can be edited. An approved scope is the record of what was searched: to change it, select **New version** on it.",
           },
           {
             title: "How to delete a draft scope",
@@ -450,6 +451,44 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Select **Check gate** on the scope. A passing gate says how many sources compiled; a failing one lists what is missing.",
               "When it passes, select **Approve**.",
             ],
+          },
+        ],
+      },
+      {
+        id: "scope-rules",
+        statuses: ["review_step"],
+        title: "Screening rules and review history",
+        about: [
+          "A scope's **Concepts** and **Exclusion terms** decide candidates automatically. A paper's score is the share of concepts its title, abstract or subject terms mention; a concept can list alternatives separated by | (yarrowia | y. lipolytica). An exclusion term excludes outright. A paper with no abstract is never excluded for missing a concept: its title alone is no evidence, so it is left for review.",
+          "An approved scope is frozen, so changing its rules means a new version. **Apply rules** then re-decides the candidates with that version, but never a candidate a person decided. Every step under a scope (its approval, frozen runs, rules applied, filters, merges, single decisions) is kept in its **History**.",
+        ],
+        howTos: [
+          {
+            title: "How to see what a frozen scope contains",
+            steps: [
+              "On **Collections**, select **View** on the approved scope.",
+              "Its criteria, screening rules and source queries show read-only. Select **View** again to close it.",
+            ],
+          },
+          {
+            title: "How to change a frozen scope's rules and apply them",
+            needs: STEWARD,
+            steps: [
+              "Select **New version** on the approved scope. The form opens with its values; the approved version stays as it is.",
+              "Under **Screening rules**, add or change the **Concepts** and **Exclusion terms**, and the percentages if needed.",
+              "Select **Save as v2** (the next version number), then **Check gate** and **Approve** on the new draft.",
+              "Select **Apply rules** on the new version. The preview says how many candidates would change, why, and how many were decided by a person and are left alone.",
+              "Select **Change N candidates** and confirm.",
+            ],
+            note: "The preview changes nothing. Each change is recorded with the version and the reason, and the whole application is one step in that version's history.",
+          },
+          {
+            title: "How to see what was done under a scope",
+            steps: [
+              "Select **History** on an approved scope.",
+              "Each step says what was done, by whom and when, newest first. Page through with **Next**.",
+            ],
+            note: "A decision made by hand is listed under the scope version approved most recently at the time.",
           },
         ],
       },

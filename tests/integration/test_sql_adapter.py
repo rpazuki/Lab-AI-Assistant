@@ -1290,7 +1290,7 @@ class TestReconciliationOverSql:
     async def test_reconciliation_builds_the_review_index_and_backfill_rebuilds_it(
         self, sql_stack, monkeypatch
     ) -> None:
-        from sqlalchemy import delete
+        from sqlalchemy import delete, update
 
         from lab_assistant.adapters.db import tables as t
         from lab_assistant.application import reconciliation
@@ -1332,9 +1332,41 @@ class TestReconciliationOverSql:
             await connection.execute(delete(t.work_summaries))
         assert await index() == (0, 0, 0)
         done = await BulkReviewService(context).backfill(ws)
-        assert done == {"summarised": works, "queued": bridged}
+        # Reconciliation recorded its step, so the history needs no backfill.
+        assert done == {"summarised": works, "queued": bridged, "history": 0}
         assert await index() == built
-        assert await BulkReviewService(context).backfill(ws) == {"summarised": 0, "queued": 0}
+        assert await BulkReviewService(context).backfill(ws) == {
+            "summarised": 0,
+            "queued": 0,
+            "history": 0,
+        }
+
+        # The deploy runs it as `lab db backfill-review`, over every workspace.
+        import argparse
+        from types import SimpleNamespace
+
+        from lab_assistant.cli.main import _backfill_review
+
+        async with sql_stack["engine"].begin() as connection:
+            await connection.execute(delete(t.duplicate_candidates))
+            await connection.execute(delete(t.work_summaries))
+        container = SimpleNamespace(context=context, shutdown=[])
+        code = await _backfill_review(
+            argparse.Namespace(workspace=None), context.settings, container=container
+        )
+        assert code == 0
+        assert await index() == built
+
+        # A summary written before the rules read summaries is rebuilt.
+        async with sql_stack["engine"].begin() as connection:
+            await connection.execute(update(t.work_summaries).values(relevance_text=None))
+        done = await BulkReviewService(context).backfill(ws)
+        assert done["summarised"] == works
+        async with context.uow_factory() as uow:
+            page = await uow.works.list_works(ws, limit=50)
+            summaries = await uow.works.get_summaries(ws, [w.id for w in page])
+        assert all(s.relevance_text is not None for s in summaries.values())
+        assert any("yarrowia" in (s.relevance_text or "") for s in summaries.values())
 
     async def test_a_retry_after_a_crash_resumes_without_duplicating(
         self, sql_stack, monkeypatch

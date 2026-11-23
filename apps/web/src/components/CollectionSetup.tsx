@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 
 import { QueryHelper } from "@/components/QueryHelper";
+import { ReviewHistory, ScopeRules } from "@/components/ScopeReview";
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { SortHeader } from "@/components/ui/table";
@@ -89,6 +90,12 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ScopeVersion | null>(null);
+  /** What is open under each scope row: its read-only view, its rules, its history. */
+  const [open, setOpen] = useState<{ id: string; what: "view" | "rules" | "history" } | null>(null);
+
+  function toggle(scope: ScopeVersion, what: "view" | "rules" | "history") {
+    setOpen((current) => (current?.id === scope.id && current.what === what ? null : { id: scope.id, what }));
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -181,6 +188,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
           <ScopeForm
             key={editing?.id ?? "new"}
             initial={editing}
+            mode={!editing ? "create" : editing.approval_state === "draft" || editing.approval_state === "in_review" ? "edit" : "next"}
             nextVersion={editing ? (latest.get(editing.scope_id) ?? editing.version) + 1 : 1}
             onSaved={async (message) => {
               setCreating(false);
@@ -202,14 +210,66 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
               const report = gates[scope.id];
               const approved = scope.approval_state === "approved";
               const editable = !approved && scope.approval_state !== "retired";
+              const shown = open?.id === scope.id ? open.what : null;
               return (
                 <li key={scope.id} className={row}>
                   <div className="flex flex-wrap items-center gap-2">
                     <strong className="text-sm text-heading">{scope.name}</strong>
                     <span className="font-mono text-xs text-muted">v{scope.version}</span>
                     <StateChip state={scope.approval_state} kind="approval" />
-                    <span className="text-xs text-muted">{scope.connectors.join(", ")}</span>
-                    <div className="ml-auto flex gap-2">
+                    <span className="text-xs text-muted">
+                      {scope.connectors.join(", ")}
+                      {scope.frozen_at ? ` · frozen ${new Date(scope.frozen_at).toLocaleString()}` : ""}
+                    </span>
+                    <div className="ml-auto flex flex-wrap gap-2">
+                      {!editable ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-pressed={shown === "view"}
+                          aria-label={`View ${scope.name} v${scope.version}`}
+                          onClick={() => toggle(scope, "view")}
+                        >
+                          View
+                        </Button>
+                      ) : null}
+                      {!editable ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-pressed={shown === "history"}
+                          aria-label={`History of ${scope.name} v${scope.version}`}
+                          onClick={() => toggle(scope, "history")}
+                        >
+                          History
+                        </Button>
+                      ) : null}
+                      {!editable ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`New version of ${scope.name} from v${scope.version}`}
+                          onClick={() => {
+                            setCreating(false);
+                            setOpen(null);
+                            setEditing(scope);
+                            setNotice(null);
+                          }}
+                        >
+                          New version
+                        </Button>
+                      ) : null}
+                      {approved ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-pressed={shown === "rules"}
+                          aria-label={`Apply the rules of ${scope.name} v${scope.version}`}
+                          onClick={() => toggle(scope, "rules")}
+                        >
+                          Apply rules
+                        </Button>
+                      ) : null}
                       {editable ? (
                         <Button
                           variant="ghost"
@@ -255,6 +315,11 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                       ) : null}
                     </div>
                   </div>
+                  {shown === "view" ? (
+                    <ScopeForm initial={scope} mode="view" nextVersion={scope.version} onSaved={() => undefined} onError={setError} />
+                  ) : null}
+                  {shown === "rules" ? <ScopeRules scope={scope} onChanged={onChanged} /> : null}
+                  {shown === "history" ? <ReviewHistory scope={scope} /> : null}
                   {report ? (
                     <div className="mt-2">
                       {report.passed ? (
@@ -402,21 +467,42 @@ function SourceTable({ connectors }: { connectors: DiscoveryRun["connectors"] })
   );
 }
 
+/**
+ * A scope's document, in one of four modes:
+ *
+ * - `create`: a new scope.
+ * - `edit`: an unapproved version, saved in place or as the next version.
+ * - `next`: an approved or retired version opened as the basis of the next one;
+ *   it can only be saved as a new draft, and the version opened stays as it is.
+ * - `view`: read-only. An approved version is frozen: discovery runs, releases and
+ *   decisions name it, so it is shown and never changed.
+ */
 function ScopeForm({
   initial,
+  mode,
   nextVersion,
   onSaved,
   onError,
 }: {
   initial?: ScopeVersion | null;
+  mode: "create" | "edit" | "next" | "view";
   nextVersion: number;
   onSaved: (message: string) => void | Promise<void>;
   onError: (message: string) => void;
 }) {
+  const readOnly = mode === "view";
   const [name, setName] = useState(initial?.name ?? "");
   const [objective, setObjective] = useState(initial?.scientific_objective ?? "");
   const [inclusion, setInclusion] = useState((initial?.inclusion_criteria ?? []).join("\n"));
   const [exclusion, setExclusion] = useState((initial?.exclusion_criteria ?? []).join("\n"));
+  const [concepts, setConcepts] = useState((initial?.concepts ?? []).join("\n"));
+  const [exclusionTerms, setExclusionTerms] = useState((initial?.exclusion_terms ?? []).join("\n"));
+  const [includeAt, setIncludeAt] = useState(
+    String(Math.round((initial?.relevance_policy?.include_threshold ?? 0.75) * 100)),
+  );
+  const [excludeAt, setExcludeAt] = useState(
+    String(Math.round((initial?.relevance_policy?.exclude_threshold ?? 0.25) * 100)),
+  );
   const [uses, setUses] = useState((initial?.intended_uses ?? []).join("\n"));
   const [queries, setQueries] = useState<Record<string, string>>(() =>
     Object.fromEntries((initial?.connector_plan ?? []).map((entry) => [entry.connector_id, entry.query])),
@@ -426,7 +512,7 @@ function ScopeForm({
   const chosen = CONNECTORS.filter((connector) => connector.id in queries);
 
   /** "in-place" corrects the opened version; "new" saves the next version. */
-  async function save(mode: "in-place" | "new") {
+  async function save(target: "in-place" | "new") {
     setBusy(true);
     try {
       const fields = {
@@ -434,9 +520,11 @@ function ScopeForm({
         scientific_objective: objective.trim(),
         inclusion_criteria: lines(inclusion),
         exclusion_criteria: lines(exclusion),
+        concepts: lines(concepts),
+        exclusion_terms: lines(exclusionTerms),
+        include_threshold: Number(includeAt) / 100,
+        exclude_threshold: Number(excludeAt) / 100,
         intended_uses: lines(uses),
-        // Not on the form, so carried forward rather than dropped by an edit.
-        concepts: initial?.concepts ?? [],
         connectors: chosen.map((connector) => ({
           connector_id: connector.id,
           query: (queries[connector.id] ?? "").trim(),
@@ -445,7 +533,7 @@ function ScopeForm({
             true,
         })),
       };
-      if (initial && mode === "in-place") {
+      if (initial && target === "in-place") {
         await updateScopeDraft(initial.id, fields);
         await onSaved(`“${fields.name}” v${initial.version} corrected.`);
       } else {
@@ -459,9 +547,16 @@ function ScopeForm({
     }
   }
 
+  const thresholdsValid =
+    includeAt.trim() !== "" &&
+    excludeAt.trim() !== "" &&
+    Number(excludeAt) >= 0 &&
+    Number(includeAt) <= 100 &&
+    Number(excludeAt) < Number(includeAt);
   const complete =
     name.trim() &&
     objective.trim() &&
+    thresholdsValid &&
     chosen.length > 0 &&
     chosen.every((connector) => (queries[connector.id] ?? "").trim());
 
@@ -469,114 +564,191 @@ function ScopeForm({
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        void save("in-place");
+        if (!readOnly) void save(mode === "edit" ? "in-place" : "new");
       }}
-      aria-label={initial ? `Edit ${initial.name}` : "New scope"}
-      className="space-y-3 border-b border-border bg-surface-subtle px-5 py-4"
+      aria-label={
+        readOnly
+          ? `${initial?.name} v${initial?.version}, read-only`
+          : initial
+            ? `${mode === "next" ? "New version of" : "Edit"} ${initial.name}`
+            : "New scope"
+      }
+      className={
+        readOnly
+          ? "mt-2 space-y-3 rounded-control border border-border bg-surface-subtle px-4 py-3"
+          : "space-y-3 border-b border-border bg-surface-subtle px-5 py-4"
+      }
     >
-      {initial ? (
+      {readOnly && initial ? (
+        <p className="text-sm text-muted">
+          v{initial.version} is {initial.approval_state === "approved" ? "approved and frozen" : initial.approval_state}
+          {initial.frozen_at ? ` since ${new Date(initial.frozen_at).toLocaleString()}` : ""}: nothing can change
+          it. To change its rules, select <strong>New version</strong>; this one stays as it is.
+        </p>
+      ) : mode === "next" && initial ? (
+        <p className="text-sm text-muted">
+          Starting from v{initial.version}, which stays frozen. <strong>Save as v{nextVersion}</strong> adds a
+          draft; approve it, then use <strong>Apply rules</strong> to re-decide the candidates with it.
+        </p>
+      ) : initial ? (
         <p className="text-sm text-muted">
           Editing v{initial.version}. <strong>Save changes</strong> corrects v{initial.version}
           itself; <strong>Save as v{nextVersion}</strong> keeps v{initial.version} unchanged and adds
           a new draft.
         </p>
       ) : null}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Name">
-          <Input required value={name} onChange={(event) => setName(event.target.value)} />
-        </Field>
-        <Field label="Scientific objective">
-          <Input required value={objective} onChange={(event) => setObjective(event.target.value)} />
-        </Field>
-        <Field label="Inclusion criteria (one per line)">
-          <textarea
-            rows={3}
-            className={textareaClass}
-            value={inclusion}
-            onChange={(event) => setInclusion(event.target.value)}
+      <fieldset disabled={readOnly} className="space-y-3">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Name">
+            <Input required value={name} onChange={(event) => setName(event.target.value)} />
+          </Field>
+          <Field label="Scientific objective">
+            <Input required value={objective} onChange={(event) => setObjective(event.target.value)} />
+          </Field>
+          <Field label="Inclusion criteria (one per line)">
+            <textarea
+              rows={3}
+              className={textareaClass}
+              value={inclusion}
+              onChange={(event) => setInclusion(event.target.value)}
+            />
+          </Field>
+          <Field label="Exclusion criteria (one per line)">
+            <textarea
+              rows={3}
+              className={textareaClass}
+              value={exclusion}
+              onChange={(event) => setExclusion(event.target.value)}
+            />
+          </Field>
+          <Field label="Intended uses (one per line)">
+            <textarea
+              rows={2}
+              className={textareaClass}
+              placeholder="literature search"
+              value={uses}
+              onChange={(event) => setUses(event.target.value)}
+            />
+          </Field>
+        </div>
+        <fieldset className="space-y-2 rounded-control border border-border px-3 py-2">
+          <legend className="px-1 text-sm font-medium text-ink">Screening rules</legend>
+          <p className="text-xs text-muted">
+            What decides a candidate automatically. The criteria above are for people; these are
+            matched against each paper&apos;s title, abstract and subject terms.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Concepts (one per line; alternatives separated by |)">
+              <textarea
+                rows={3}
+                className={textareaClass}
+                placeholder={"yarrowia | y. lipolytica\nlipid | oleaginous"}
+                value={concepts}
+                onChange={(event) => setConcepts(event.target.value)}
+              />
+            </Field>
+            <Field label="Exclusion terms (one per line)">
+              <textarea
+                rows={3}
+                className={textareaClass}
+                placeholder={"plant\nmammalian cell"}
+                value={exclusionTerms}
+                onChange={(event) => setExclusionTerms(event.target.value)}
+              />
+            </Field>
+            <Field label="Include when at least this % of concepts appear">
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                value={includeAt}
+                onChange={(event) => setIncludeAt(event.target.value)}
+              />
+            </Field>
+            <Field label="Exclude when at most this % appear (papers with an abstract)">
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                value={excludeAt}
+                onChange={(event) => setExcludeAt(event.target.value)}
+              />
+            </Field>
+          </div>
+          {!thresholdsValid ? (
+            <p className="text-xs text-danger-strong" role="alert">
+              The exclude percentage must be below the include percentage.
+            </p>
+          ) : null}
+        </fieldset>
+        {readOnly ? null : (
+          <QueryHelper
+            onQueries={(written) =>
+              setQueries(
+                Object.fromEntries(
+                  CONNECTORS.filter((connector) => connector.id in written).map((connector) => [
+                    connector.id,
+                    written[connector.id] ?? "",
+                  ]),
+                ),
+              )
+            }
           />
-        </Field>
-        <Field label="Exclusion criteria (one per line)">
-          <textarea
-            rows={3}
-            className={textareaClass}
-            value={exclusion}
-            onChange={(event) => setExclusion(event.target.value)}
-          />
-        </Field>
-        <Field label="Intended uses (one per line)">
-          <textarea
-            rows={2}
-            className={textareaClass}
-            placeholder="literature search"
-            value={uses}
-            onChange={(event) => setUses(event.target.value)}
-          />
-        </Field>
-      </div>
-      <QueryHelper
-        onQueries={(written) =>
-          setQueries(
-            Object.fromEntries(
-              CONNECTORS.filter((connector) => connector.id in written).map((connector) => [
-                connector.id,
-                written[connector.id] ?? "",
-              ]),
-            ),
-          )
-        }
-      />
-      <fieldset className="space-y-2">
-        <legend className="mb-1 text-sm font-medium text-ink">
-          Sources, each with a query in its own syntax
-        </legend>
-        {CONNECTORS.map((connector) => {
-          const on = connector.id in queries;
-          return (
-            <div key={connector.id} className="grid items-center gap-2 sm:grid-cols-[9rem_1fr]">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={on}
-                  onChange={() =>
-                    setQueries((current) => {
-                      const next = { ...current };
-                      if (on) delete next[connector.id];
-                      else next[connector.id] = "";
-                      return next;
-                    })
+        )}
+        <fieldset className="space-y-2">
+          <legend className="mb-1 text-sm font-medium text-ink">
+            Sources, each with a query in its own syntax
+          </legend>
+          {CONNECTORS.filter((connector) => !readOnly || connector.id in queries).map((connector) => {
+            const on = connector.id in queries;
+            return (
+              <div key={connector.id} className="grid items-center gap-2 sm:grid-cols-[9rem_1fr]">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() =>
+                      setQueries((current) => {
+                        const next = { ...current };
+                        if (on) delete next[connector.id];
+                        else next[connector.id] = "";
+                        return next;
+                      })
+                    }
+                  />
+                  {connector.label}
+                </label>
+                <Input
+                  aria-label={`${connector.label} query`}
+                  disabled={!on}
+                  placeholder={on ? connector.example : ""}
+                  value={queries[connector.id] ?? ""}
+                  onChange={(event) =>
+                    setQueries((current) => ({ ...current, [connector.id]: event.target.value }))
                   }
                 />
-                {connector.label}
-              </label>
-              <Input
-                aria-label={`${connector.label} query`}
-                disabled={!on}
-                placeholder={on ? connector.example : ""}
-                value={queries[connector.id] ?? ""}
-                onChange={(event) =>
-                  setQueries((current) => ({ ...current, [connector.id]: event.target.value }))
-                }
-              />
-            </div>
-          );
-        })}
+              </div>
+            );
+          })}
+        </fieldset>
       </fieldset>
-      <div className="flex flex-wrap gap-2">
-        <Button type="submit" disabled={busy || !complete}>
-          {initial ? "Save changes" : "Save as draft"}
-        </Button>
-        {initial ? (
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={busy || !complete}
-            onClick={() => void save("new")}
-          >
-            Save as v{nextVersion}
+      {readOnly ? null : (
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" disabled={busy || !complete}>
+            {mode === "edit" ? "Save changes" : mode === "next" ? `Save as v${nextVersion}` : "Save as draft"}
           </Button>
-        ) : null}
-      </div>
+          {mode === "edit" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={busy || !complete}
+              onClick={() => void save("new")}
+            >
+              Save as v{nextVersion}
+            </Button>
+          ) : null}
+        </div>
+      )}
     </form>
   );
 }

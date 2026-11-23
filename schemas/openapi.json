@@ -35,6 +35,24 @@
         "title": "AcceptInvitationRequest",
         "type": "object"
       },
+      "ApplyRulesRequest": {
+        "properties": {
+          "step_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
+          }
+        },
+        "title": "ApplyRulesRequest",
+        "type": "object"
+      },
       "AskRequest": {
         "properties": {
           "alias": {
@@ -246,6 +264,18 @@
           },
           "relevance": {
             "$ref": "#/components/schemas/RelevanceState"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
           }
         },
         "required": [
@@ -839,6 +869,22 @@
         "title": "ReviewRequest",
         "type": "object"
       },
+      "ReviewStepKind": {
+        "description": "What one step in a collection's review history did.",
+        "enum": [
+          "scope_approved",
+          "discovery_frozen",
+          "reconciled",
+          "scope_rules_applied",
+          "relevance_by_filter",
+          "merge_by_rule",
+          "relevance_set",
+          "merged",
+          "dismissed"
+        ],
+        "title": "ReviewStepKind",
+        "type": "string"
+      },
       "ReviewSubmission": {
         "properties": {
           "comment": {
@@ -927,12 +973,45 @@
             "title": "Connectors",
             "type": "array"
           },
+          "exclude_threshold": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclude Threshold"
+          },
           "exclusion_criteria": {
             "items": {
               "type": "string"
             },
             "title": "Exclusion Criteria",
             "type": "array"
+          },
+          "exclusion_terms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclusion Terms",
+            "type": "array"
+          },
+          "include_threshold": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Threshold"
           },
           "inclusion_criteria": {
             "items": {
@@ -4541,9 +4620,26 @@
     },
     "/api/v1/duplicates/merge-rule/apply": {
       "post": {
-        "description": "Merge up to 200 groups the rule accepts; repeat until ``remaining_groups`` is 0.",
+        "description": "Merge up to 200 groups the rule accepts; repeat until ``remaining_groups`` is 0.\n\nPass the ``step_id`` the first call returned to every later one, so the whole\napplication is one step in the review history.",
         "operationId": "apply_merge_rule_api_v1_duplicates_merge_rule_apply_post",
         "parameters": [
+          {
+            "in": "query",
+            "name": "step_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Step Id"
+            }
+          },
           {
             "in": "header",
             "name": "X-Workspace",
@@ -8427,6 +8523,135 @@
         "summary": "Record Retraction"
       }
     },
+    "/api/v1/review/history": {
+      "get": {
+        "description": "The collection's review steps, newest first, optionally under one scope version.",
+        "operationId": "review_history_api_v1_review_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "scope_version_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope Version Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewStepKind"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Review History Api V1 Review History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review History"
+      }
+    },
     "/api/v1/reviews/correction-rate": {
       "get": {
         "operationId": "correction_rate_api_v1_reviews_correction_rate_get",
@@ -9039,6 +9264,165 @@
           }
         },
         "summary": "Scope Gate"
+      }
+    },
+    "/api/v1/scopes/{scope_version_id}/rules/apply": {
+      "post": {
+        "description": "Make up to 1,000 of the preview's changes; repeat until ``remaining`` is 0.",
+        "operationId": "apply_scope_rules_api_v1_scopes__scope_version_id__rules_apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scope_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scope Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyRulesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apply Scope Rules Api V1 Scopes  Scope Version Id  Rules Apply Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Scope Rules"
+      }
+    },
+    "/api/v1/scopes/{scope_version_id}/rules/preview": {
+      "post": {
+        "description": "What applying this approved version's concepts and exclusion terms would change.\n\nChanges nothing. Candidates a person decided, and merged records, are never\nchanged and are counted apart.",
+        "operationId": "preview_scope_rules_api_v1_scopes__scope_version_id__rules_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scope_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scope Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preview Scope Rules Api V1 Scopes  Scope Version Id  Rules Preview Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Scope Rules"
       }
     },
     "/api/v1/search": {

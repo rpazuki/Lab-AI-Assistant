@@ -42,7 +42,13 @@ from lab_assistant.domain.assets import (
 )
 from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback, MessageRole, UsageTotals
 from lab_assistant.domain.claims import Claim, ClaimRevision, Entity, Experiment, Review
-from lab_assistant.domain.identity import IdentityDecision, Work, WorkIdentifier, WorkRelation
+from lab_assistant.domain.identity import (
+    IdentityDecision,
+    IdentityDecisionType,
+    Work,
+    WorkIdentifier,
+    WorkRelation,
+)
 from lab_assistant.domain.objects import ObjectRecord
 from lab_assistant.domain.observation import (
     DiscoveryRun,
@@ -52,7 +58,12 @@ from lab_assistant.domain.observation import (
 )
 from lab_assistant.domain.release import CorpusRelease, ReleaseItem, SearchAlias
 from lab_assistant.domain.renditions import EvidenceSpan, ParseRun, Rendition
-from lab_assistant.domain.review import CandidateFilter, DuplicateCandidate, WorkSummary
+from lab_assistant.domain.review import (
+    CandidateFilter,
+    DuplicateCandidate,
+    ReviewStep,
+    WorkSummary,
+)
 from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
 from lab_assistant.domain.states import TaskState
 from lab_assistant.domain.tasks import RateBudget, Task
@@ -143,6 +154,12 @@ PLANS = Mapper(
 ATTEMPTS = Mapper(t.acquisition_attempts, AcquisitionAttempt)
 SUMMARIES = Mapper(t.work_summaries, WorkSummary)
 DUPLICATES = Mapper(t.duplicate_candidates, DuplicateCandidate)
+STEPS = Mapper(
+    t.review_steps,
+    ReviewStep,
+    renames={"rule": "rule_json", "counts": "counts_json"},
+    loaders={"work_ids": uuid_list},
+)
 ASSETS = Mapper(t.assets, Asset, renames={"metadata": "metadata_json"})
 PARSE_RUNS = Mapper(t.parse_runs, ParseRun)
 RENDITIONS = Mapper(t.renditions, Rendition)
@@ -1035,11 +1052,81 @@ class _Works(_Base):
             .select_from(
                 t.works.outerjoin(t.work_summaries, t.work_summaries.c.work_id == t.works.c.id)
             )
-            .where(t.works.c.workspace_id == workspace_id, t.work_summaries.c.work_id.is_(None))
+            .where(
+                t.works.c.workspace_id == workspace_id,
+                t.work_summaries.c.work_id.is_(None) | t.work_summaries.c.relevance_text.is_(None),
+            )
             .order_by(t.works.c.id)
             .limit(limit)
         )
         return [row[0] for row in result.all()]
+
+    async def human_relevance_work_ids(self, workspace_id: UUID) -> set[UUID]:
+        d = t.identity_decisions
+        result = await self._c.execute(
+            select(d.c.subject_work_ids).where(
+                d.c.workspace_id == workspace_id,
+                d.c.decision_type == IdentityDecisionType.SET_RELEVANCE.value,
+                d.c.decided_by_type == "human",
+            )
+        )
+        return {work_id for row in result.all() for work_id in uuid_list(row[0])}
+
+    async def add_review_step(self, step: ReviewStep) -> None:
+        await self._upsert(STEPS, step)
+
+    async def update_review_step(self, step: ReviewStep) -> None:
+        await self._upsert(STEPS, step)
+
+    async def get_review_step(self, workspace_id: UUID, step_id: UUID) -> ReviewStep | None:
+        return await self._one(
+            STEPS, self._scope(STEPS, workspace_id), t.review_steps.c.id == step_id
+        )
+
+    @staticmethod
+    def _step_conditions(
+        workspace_id: UUID, scope_version_id: UUID | None, kinds: Sequence[str] | None
+    ) -> list[Any]:
+        r = t.review_steps
+        conditions: list[Any] = [r.c.workspace_id == workspace_id]
+        if scope_version_id is not None:
+            conditions.append(r.c.scope_version_id == scope_version_id)
+        if kinds:
+            conditions.append(r.c.kind.in_(list(kinds)))
+        return conditions
+
+    async def list_review_steps(
+        self,
+        workspace_id: UUID,
+        *,
+        scope_version_id: UUID | None = None,
+        kinds: Sequence[str] | None = None,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[ReviewStep]:
+        r = t.review_steps
+        conditions = self._step_conditions(workspace_id, scope_version_id, kinds)
+        if before is not None:
+            at, last = before
+            conditions.append((r.c.started_at < at) | ((r.c.started_at == at) & (r.c.id < last)))
+        result = await self._c.execute(
+            select(r).where(*conditions).order_by(r.c.started_at.desc(), r.c.id.desc()).limit(limit)
+        )
+        return STEPS.from_rows(result.mappings().all())
+
+    async def count_review_steps(
+        self,
+        workspace_id: UUID,
+        *,
+        scope_version_id: UUID | None = None,
+        kinds: Sequence[str] | None = None,
+    ) -> int:
+        result = await self._c.execute(
+            select(func.count())
+            .select_from(t.review_steps)
+            .where(*self._step_conditions(workspace_id, scope_version_id, kinds))
+        )
+        return int(result.scalar() or 0)
 
     def _filter_statement(self, workspace_id: UUID, rule: CandidateFilter, columns: Any) -> Any:
         w, s = t.works, t.work_summaries

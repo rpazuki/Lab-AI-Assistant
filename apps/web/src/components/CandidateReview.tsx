@@ -112,8 +112,11 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
       let remaining = preview.matched;
       setBusy(`${choice.verb}: 0 of ${preview.matched.toLocaleString()}`);
       // The server changes a bounded number per call and says how many remain.
+      // Every round extends the history step the first one opened.
+      let stepId: string | null = null;
       for (let round = 0; remaining > 0 && round < 200; round++) {
-        const step = await bulkRelevance(filters, { ...body, apply: true });
+        const step = await bulkRelevance(filters, { ...body, apply: true, step_id: stepId });
+        stepId = step.step_id ?? stepId;
         changed += step.applied;
         remaining = step.remaining;
         setBusy(`${choice.verb}: ${changed.toLocaleString()} of ${preview.matched.toLocaleString()}`);

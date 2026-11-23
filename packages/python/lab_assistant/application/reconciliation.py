@@ -23,6 +23,7 @@ from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.pagination import collect_pages
+from lab_assistant.application.review_history import record_step
 from lab_assistant.contracts.connector import IdentifierScheme
 from lab_assistant.contracts.errors import NotFound, StateTransitionError, ValidationFailure
 from lab_assistant.contracts.events import ActorType, AuditAction
@@ -50,7 +51,13 @@ from lab_assistant.domain.identity import (
 )
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.observation import Predicate, SourceAssertion
-from lab_assistant.domain.review import DuplicateCandidate, DuplicateStatus, summarise_work
+from lab_assistant.domain.review import (
+    DuplicateCandidate,
+    DuplicateStatus,
+    ReviewStepKind,
+    summarise_work,
+)
+from lab_assistant.domain.screening import has_abstract, relevance_text, score_for_scope
 from lab_assistant.domain.states import IdentityState, RelevanceState
 from lab_assistant.domain.workspace import Capability
 from lab_assistant.provenance.fingerprints import task_fingerprint
@@ -292,6 +299,16 @@ class ReconciliationHandler:
                     reason_code="reconciliation_pass",
                     metadata=report.as_metrics(),
                 )
+            )
+            await record_step(
+                uow,
+                context,
+                workspace_id=workspace_id,
+                kind=ReviewStepKind.RECONCILED,
+                actor_id=None,
+                scope_version_id=run.scope_version_id,
+                subject_id=run_id,
+                counts=report.as_metrics(),
             )
             await uow.commit()
 
@@ -617,37 +634,12 @@ def _work_kind(
 
 
 def _score_relevance(metadata: dict[str, Any], scope: Any) -> tuple[RelevanceState, str]:
-    """Transparent relevance features: concept coverage over title and abstract.
+    """The scope's screening rules applied to one record (``domain/screening.py``).
 
     Deliberately explainable rather than a black box, and it never resolves
     "uncertain" to "included" on its own (audit finding H-3).
     """
-    policy = scope.relevance_policy
-    haystack = " ".join(
-        str(metadata.get(field_name, "") or "")
-        for field_name in (Predicate.TITLE.value, Predicate.ABSTRACT.value)
-    ).casefold()
-    subject_terms = metadata.get("subject_terms") or []
-    haystack = " ".join([haystack, *[str(term).casefold() for term in subject_terms]])
-
-    concepts = [concept.casefold() for concept in (scope.concepts or ())]
-    if not concepts:
-        return (
-            RelevanceState.UNREVIEWED,
-            "no_scope_concepts_defined",
-        )
-    hits = sum(1 for concept in concepts if concept in haystack)
-    score = hits / len(concepts)
-    for criterion in scope.exclusion_criteria or ():
-        if criterion.casefold() in haystack:
-            return RelevanceState.EXCLUDED, f"exclusion_criterion:{criterion}"
-    if score >= policy.include_threshold:
-        return RelevanceState.INCLUDED, f"concept_score:{score:.2f}"
-    if score <= policy.exclude_threshold:
-        return RelevanceState.EXCLUDED, f"concept_score:{score:.2f}"
-    if policy.allow_included_uncertain:
-        return RelevanceState.INCLUDED_UNCERTAIN, f"concept_score:{score:.2f}"
-    return RelevanceState.UNREVIEWED, f"uncertain_concept_score:{score:.2f}"
+    return score_for_scope(relevance_text(metadata), scope, has_abstract=has_abstract(metadata))
 
 
 class IdentityService:
@@ -760,6 +752,17 @@ class IdentityService:
                         "override": bool(decision.after.get("human_override")),
                     },
                 )
+            )
+            await record_step(
+                uow,
+                context,
+                workspace_id=actor.workspace_id,
+                kind=ReviewStepKind.MERGED,
+                actor_id=actor.user_id,
+                work_ids=(keep.id, merge.id),
+                subject_id=decision.id,
+                rule={"reason": reason_code},
+                note=note,
             )
             await uow.commit()
         return decision
@@ -935,6 +938,16 @@ class IdentityService:
                     reason_code=reason_code,
                     metadata={"from": before.value, "to": relevance.value},
                 )
+            )
+            await record_step(
+                uow,
+                context,
+                workspace_id=actor.workspace_id,
+                kind=ReviewStepKind.RELEVANCE_SET,
+                actor_id=actor.user_id,
+                work_ids=(work.id,),
+                rule={"reason": reason_code, "from": before.value, "relevance": relevance.value},
+                note=note,
             )
             await uow.commit()
         return work

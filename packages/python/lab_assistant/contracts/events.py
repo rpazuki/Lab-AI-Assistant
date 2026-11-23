@@ -67,6 +67,8 @@ class AuditAction(StrEnum):
     IDENTITIES_BULK_MERGED = "identities_bulk_merged"
     #: A reviewer marked a proposed duplicate pair as two different papers.
     DUPLICATE_DISMISSED = "duplicate_dismissed"
+    #: A steward re-applied an approved scope version's screening rules.
+    SCOPE_RULES_APPLIED = "scope_rules_applied"
     # rights and acquisition
     RIGHTS_DECIDED = "rights_decided"
     ACQUISITION_ATTEMPTED = "acquisition_attempted"

@@ -24,6 +24,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
     approveScope: vi.fn(),
     startDiscovery: vi.fn(),
     freezeDiscovery: vi.fn(),
+    previewScopeRules: vi.fn(),
+    applyScopeRules: vi.fn(),
+    listReviewHistory: vi.fn(),
   };
 });
 
@@ -41,8 +44,12 @@ function scope(overrides: Partial<ScopeVersion> = {}): ScopeVersion {
     inclusion_criteria: ["Y. lipolytica is studied"],
     exclusion_criteria: [],
     concepts: ["lipids"],
+    exclusion_terms: [],
+    relevance_policy: { include_threshold: 0.75, exclude_threshold: 0.25 },
     intended_uses: [],
     connector_plan: [{ connector_id: "pubmed", query: '"Yarrowia lipolytica"', required: false }],
+    created_at: null,
+    frozen_at: null,
     ...overrides,
   };
 }
@@ -59,6 +66,9 @@ describe("CollectionSetup", () => {
     exclusion_criteria: [],
     intended_uses: ["literature search"],
     concepts: ["lipids"],
+    exclusion_terms: [],
+    include_threshold: 0.75,
+    exclude_threshold: 0.25,
     connectors: [{ connector_id: "pubmed", query: '"Yarrowia lipolytica"', required: false }],
   };
 
@@ -166,5 +176,151 @@ describe("CollectionSetup", () => {
     await screen.findByText("Approved");
     expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "Delete" })).toHaveLength(2);
+  });
+
+  const frozen = () =>
+    scope({
+      approval_state: "approved",
+      concepts: ["yarrowia | y. lipolytica"],
+      exclusion_terms: ["plant"],
+      frozen_at: "2026-11-22T12:03:39Z",
+    });
+
+  it("shows a frozen version read-only, with no way to save it", async () => {
+    vi.mocked(api.listScopes).mockResolvedValue([frozen()]);
+    const user = userEvent.setup();
+    render(<CollectionSetup />);
+    await user.click(await screen.findByRole("button", { name: "View Yarrowia lipolytica v1" }));
+
+    const form = screen.getByRole("form", { name: "Yarrowia lipolytica v1, read-only" });
+    expect(within(form).getByText(/approved and frozen/)).toBeInTheDocument();
+    const concepts = within(form).getByLabelText(/^Concepts/);
+    expect(concepts).toHaveValue("yarrowia | y. lipolytica");
+    expect(concepts).toBeDisabled();
+    expect(within(form).getByLabelText("Exclusion terms (one per line)")).toHaveValue("plant");
+    expect(within(form).getByLabelText("PubMed query")).toBeDisabled();
+    expect(within(form).queryByRole("button")).toBeNull();
+  });
+
+  it("starts the next version from a frozen one, which stays as it is", async () => {
+    vi.mocked(api.listScopes).mockResolvedValue([frozen()]);
+    const user = userEvent.setup();
+    render(<CollectionSetup />);
+    await user.click(
+      await screen.findByRole("button", { name: "New version of Yarrowia lipolytica from v1" }),
+    );
+    const form = screen.getByRole("form", { name: "New version of Yarrowia lipolytica" });
+    expect(within(form).queryByRole("button", { name: "Save changes" })).toBeNull();
+    await user.type(within(form).getByLabelText("Exclusion terms (one per line)"), "\nmammalian");
+    await user.type(within(form).getByLabelText("Intended uses (one per line)"), "literature search");
+    await user.click(within(form).getByRole("button", { name: "Save as v2" }));
+
+    await waitFor(() =>
+      expect(api.createScope).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope_id: "s1",
+          concepts: ["yarrowia | y. lipolytica"],
+          exclusion_terms: ["plant", "mammalian"],
+        }),
+      ),
+    );
+    expect(api.updateScopeDraft).not.toHaveBeenCalled();
+  });
+
+  it("previews a frozen version's rules, then applies them as one step", async () => {
+    vi.mocked(api.listScopes).mockResolvedValue([frozen()]);
+    vi.mocked(api.previewScopeRules).mockResolvedValue({
+      scope: {
+        scope_version_id: "v1",
+        name: "Yarrowia lipolytica",
+        version: 1,
+        concepts: ["yarrowia | y. lipolytica"],
+        exclusion_terms: ["plant"],
+        include_threshold: 0.75,
+        exclude_threshold: 0.25,
+      },
+      considered: 28362,
+      decided_by_person: 12,
+      not_indexed: 0,
+      unchanged: 3000,
+      changes: 1500,
+      outcome: { included: 1400, excluded: 100 },
+      transitions: { "unreviewed>included": 1400, "unreviewed>excluded": 100 },
+      reasons: [
+        {
+          relevance: "excluded",
+          reason: "exclusion_term:plant",
+          description: "mentions the exclusion term “plant”",
+          count: 100,
+        },
+      ],
+      samples: {},
+      no_concepts: false,
+    });
+    vi.mocked(api.applyScopeRules)
+      .mockResolvedValueOnce({ applied: 1000, remaining: 500, step_id: "step-1" })
+      .mockResolvedValueOnce({ applied: 500, remaining: 0, step_id: "step-1" });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<CollectionSetup />);
+    await user.click(
+      await screen.findByRole("button", { name: "Apply the rules of Yarrowia lipolytica v1" }),
+    );
+    expect(await screen.findByText(/mentions the exclusion term “plant”/)).toBeInTheDocument();
+    expect(screen.getByText(/12 were decided by a person/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Change 1,500 candidates" }));
+    expect(await screen.findByText("1,500 candidates changed by v1's rules.")).toBeInTheDocument();
+    expect(vi.mocked(api.applyScopeRules).mock.calls).toEqual([
+      ["v1", null],
+      ["v1", "step-1"],
+    ]);
+  });
+
+  it("lists what was done under a frozen version", async () => {
+    vi.mocked(api.listScopes).mockResolvedValue([frozen()]);
+    vi.mocked(api.listReviewHistory).mockResolvedValue({
+      items: [
+        {
+          id: "h2",
+          kind: "relevance_by_filter",
+          scope_version_id: "v1",
+          actor: "Steward",
+          rule: { title_words: ["ethanol"], to: "excluded" },
+          counts: { excluded: 1500 },
+          papers: [],
+          subject_id: null,
+          note: null,
+          started_at: "2026-11-23T10:00:00Z",
+          finished_at: null,
+        },
+        {
+          id: "h1",
+          kind: "scope_approved",
+          scope_version_id: "v1",
+          actor: "Steward",
+          rule: { name: "Yarrowia lipolytica", version: 1 },
+          counts: {},
+          papers: [],
+          subject_id: "v1",
+          note: null,
+          started_at: "2026-11-22T12:03:39Z",
+          finished_at: null,
+        },
+      ],
+      next_cursor: null,
+      total: 2,
+    });
+    const user = userEvent.setup();
+    render(<CollectionSetup />);
+    await user.click(await screen.findByRole("button", { name: "History of Yarrowia lipolytica v1" }));
+
+    expect(
+      await screen.findByText("Set 1,500 excluded by filter (title has all of ethanol)."),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Approved “Yarrowia lipolytica” v1/)).toBeInTheDocument();
+    expect(api.listReviewHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ scope_version_id: "v1" }),
+    );
   });
 });

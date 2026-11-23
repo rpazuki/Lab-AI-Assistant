@@ -451,6 +451,7 @@ class ScopeVersionRecord(CatalogRecord):
     inclusion_criteria: tuple[str, ...] = ()
     exclusion_criteria: tuple[str, ...] = ()
     concepts: tuple[str, ...] = ()
+    exclusion_terms: tuple[str, ...] = ()
     controlled_terms: tuple[str, ...] = ()
     connector_plan: tuple[dict[str, Any], ...] = ()
     approval_state: str | None = None

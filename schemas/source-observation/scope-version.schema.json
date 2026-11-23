@@ -182,6 +182,14 @@
       "title": "Exclusion Criteria",
       "type": "array"
     },
+    "exclusion_terms": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Exclusion Terms",
+      "type": "array"
+    },
     "frozen_at": {
       "anyOf": [
         {

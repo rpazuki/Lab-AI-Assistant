@@ -86,6 +86,21 @@
       "superseded": "No longer a question: another merge already joined or replaced one side."
     }
   },
+  "review_step": {
+    "title": "Review history",
+    "enum": "lab_assistant.domain.review.ReviewStepKind",
+    "values": {
+      "scope_approved": "The scope version was approved and frozen: from here on it cannot change.",
+      "discovery_frozen": "A discovery run under the scope was frozen, so its records became candidates.",
+      "reconciled": "The frozen run's records were grouped into papers and scored by the scope's rules.",
+      "scope_rules_applied": "A steward re-applied an approved scope version's rules to the candidates.",
+      "relevance_by_filter": "A steward included or excluded every candidate matching a filter.",
+      "merge_by_rule": "A steward merged every duplicate pair a merge rule accepted.",
+      "relevance_set": "A reviewer included or excluded one paper.",
+      "merged": "A reviewer merged two records of the same paper.",
+      "dismissed": "A reviewer marked a proposed pair as two different papers."
+    }
+  },
   "acquisition": {
     "title": "Acquisition plans",
     "enum": "lab_assistant.domain.states.AcquisitionState",
@@ -310,6 +325,7 @@
       "relevance_bulk_decided": "A steward included or excluded every candidate matching a filter, in one step.",
       "identities_bulk_merged": "A steward merged every duplicate pair a merge rule accepted, in one step.",
       "duplicate_dismissed": "A reviewer marked a proposed duplicate pair as two different papers.",
+      "scope_rules_applied": "A steward re-applied an approved scope version's concepts and exclusion terms to the candidates.",
       "rights_decided": "What may be done with a paper's content was decided.",
       "acquisition_attempted": "A route was tried to fetch a paper's full text.",
       "asset_registered": "A full-text file was stored.",

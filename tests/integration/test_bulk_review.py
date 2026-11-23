@@ -347,6 +347,7 @@ class TestMergeRule:
         await lab.pair(gone, other, similarity=0.88)
 
         result = await lab.service.apply_merge(lab.actor, MergeRule())
+        assert result.pop("step_id")
         assert result == {"groups_merged": 1, "works_merged": 1, "remaining_groups": 0}
         assert (await lab.work(gone)).merged_into_work_id == keep
         async with lab.harness.context.uow_factory() as uow:

@@ -167,6 +167,8 @@ export interface BulkRelevanceResult {
   sample: PaperSummary[];
   applied: number;
   remaining: number;
+  /** Set by an apply: pass it back so every round is one history step. */
+  step_id?: string;
 }
 
 export interface MergeRule {
@@ -393,8 +395,55 @@ export interface ScopeVersion {
   inclusion_criteria: string[];
   exclusion_criteria: string[];
   concepts: string[];
+  exclusion_terms: string[];
+  relevance_policy: { include_threshold: number; exclude_threshold: number };
   intended_uses: string[];
   connector_plan: { connector_id: string; query: string; required: boolean }[];
+  created_at: string | null;
+  frozen_at: string | null;
+}
+
+/** What applying an approved scope version's screening rules would change. */
+export interface ScopeRulesPlan {
+  scope: {
+    scope_version_id: string;
+    name: string;
+    version: number;
+    concepts: string[];
+    exclusion_terms: string[];
+    include_threshold: number;
+    exclude_threshold: number;
+  };
+  /** Active candidates in the collection. */
+  considered: number;
+  /** Decided by a person: never changed by the rules. */
+  decided_by_person: number;
+  /** Not yet indexed for the rules; the deploy's backfill fills these. */
+  not_indexed: number;
+  unchanged: number;
+  changes: number;
+  /** What the rules say, by relevance, over every candidate they may decide. */
+  outcome: Record<string, number>;
+  /** "unreviewed>excluded" → how many. */
+  transitions: Record<string, number>;
+  reasons: { relevance: string; reason: string; description: string; count: number }[];
+  samples: Record<string, (PaperSummary & { reason: string })[]>;
+  no_concepts: boolean;
+}
+
+/** One step in the review history. */
+export interface ReviewStep {
+  id: string;
+  kind: string;
+  scope_version_id: string | null;
+  actor: string | null;
+  rule: Record<string, unknown>;
+  counts: Record<string, number>;
+  papers: PaperSummary[];
+  subject_id: string | null;
+  note: string | null;
+  started_at: string;
+  finished_at: string | null;
 }
 
 export interface ScopeGateReport {

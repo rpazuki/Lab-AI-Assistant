@@ -25,6 +25,7 @@ from uuid import UUID
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.objects import register_object
 from lab_assistant.application.rate_limit import RateLimiter, budget_key, host_of
+from lab_assistant.application.review_history import record_step
 from lab_assistant.contracts.connector import (
     BodyKind,
     CompiledQuery,
@@ -59,6 +60,7 @@ from lab_assistant.domain.observation import (
     SourceRequest,
     run_fingerprint,
 )
+from lab_assistant.domain.review import ReviewStepKind
 from lab_assistant.domain.scope import ScopeVersion
 from lab_assistant.domain.workspace import Capability
 from lab_assistant.provenance.fingerprints import source_request_fingerprint
@@ -271,6 +273,20 @@ class DiscoveryService:
                     run_id=run.id,
                     metadata=dict(run.metrics),
                 )
+            )
+            await record_step(
+                uow,
+                context,
+                workspace_id=actor.workspace_id,
+                kind=ReviewStepKind.DISCOVERY_FROZEN,
+                actor_id=actor.user_id,
+                scope_version_id=run.scope_version_id,
+                subject_id=run.id,
+                counts={
+                    key: int(value)
+                    for key, value in run.metrics.items()
+                    if key in ("records_seen", "connectors", "degraded_accepted")
+                },
             )
             if force_accept_degraded:
                 await uow.audit.append(

@@ -25,6 +25,7 @@ from lab_assistant.application.reconciliation import (
     duplicate_row,
     refresh_summaries,
 )
+from lab_assistant.application.review_history import ReviewHistoryService, record_step
 from lab_assistant.contracts.errors import NotFound, StateTransitionError
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.domain.identity import (
@@ -40,6 +41,7 @@ from lab_assistant.domain.review import (
     DuplicateCandidate,
     DuplicateStatus,
     MergeRule,
+    ReviewStepKind,
     WorkSummary,
 )
 from lab_assistant.domain.states import RelevanceState
@@ -139,6 +141,7 @@ class BulkReviewService:
         relevance: RelevanceState,
         only_unreviewed: bool = True,
         apply: bool = False,
+        step_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Set one relevance on every candidate the filter matches.
 
@@ -209,11 +212,22 @@ class BulkReviewService:
                     metadata={"to": relevance.value, "changed": changed, "rule": described},
                 )
             )
+            step = await record_step(
+                uow,
+                context,
+                workspace_id=actor.workspace_id,
+                kind=ReviewStepKind.RELEVANCE_BY_FILTER,
+                actor_id=actor.user_id,
+                rule={**described, "to": relevance.value},
+                counts={relevance.value: changed},
+                step_id=step_id,
+            )
             await uow.commit()
         async with context.uow_factory() as uow:
             remaining = await uow.works.count_filtered(actor.workspace_id, target)
         answer["applied"] = changed
         answer["remaining"] = remaining
+        answer["step_id"] = str(step.id)
         return answer
 
     # ── duplicate queue ─────────────────────────────────────────────────────
@@ -277,6 +291,16 @@ class BulkReviewService:
                     previous_hash=await uow.audit.latest_hash(actor.workspace_id),
                     reason_code="reviewer_not_same_work",
                 )
+            )
+            await record_step(
+                uow,
+                context,
+                workspace_id=actor.workspace_id,
+                kind=ReviewStepKind.DISMISSED,
+                actor_id=actor.user_id,
+                work_ids=(row.left_work_id, row.right_work_id),
+                subject_id=row.id,
+                rule={"similarity": row.similarity},
             )
             await uow.commit()
         return row
@@ -369,7 +393,9 @@ class BulkReviewService:
         plan.group_pairs = [group_rows for _, group_rows in kept]
         return plan
 
-    async def apply_merge(self, actor: ActorContext, rule: MergeRule) -> dict[str, Any]:
+    async def apply_merge(
+        self, actor: ActorContext, rule: MergeRule, *, step_id: UUID | None = None
+    ) -> dict[str, Any]:
         """Merge up to ``MERGE_CHUNK`` groups the rule accepts; report what is left."""
         self._require(actor)
         plan = await self.plan_merge(actor, rule)
@@ -407,16 +433,30 @@ class BulkReviewService:
                     metadata={"groups": len(chosen), "works_merged": merged, "rule": described},
                 )
             )
+            step = await record_step(
+                uow,
+                context,
+                workspace_id=actor.workspace_id,
+                kind=ReviewStepKind.MERGE_BY_RULE,
+                actor_id=actor.user_id,
+                rule=described,
+                counts={"groups": len(chosen), "works_merged": merged},
+                step_id=step_id,
+            )
             await uow.commit()
         return {
             "groups_merged": len(chosen),
             "works_merged": merged,
             "remaining_groups": max(len(plan.groups) - len(chosen), 0),
+            "step_id": str(step.id),
         }
 
     # ── backfill ────────────────────────────────────────────────────────────
     async def backfill(self, workspace_id: UUID) -> dict[str, int]:
-        """Fill the summaries and queue rows a database predating them lacks. Idempotent."""
+        """Fill the summaries, queue rows and history a database predating them lacks.
+
+        Idempotent. A summary written before ``relevance_text`` existed is rebuilt.
+        """
         context = self._context
         summarised = 0
         while True:
@@ -461,7 +501,8 @@ class BulkReviewService:
                 rows.append(row)
             await uow.works.add_duplicate_candidates(rows)
             await uow.commit()
-        return {"summarised": summarised, "queued": len(rows)}
+        history = await ReviewHistoryService(context).backfill(workspace_id)
+        return {"summarised": summarised, "queued": len(rows), "history": history}
 
 
 def _skip_reason(

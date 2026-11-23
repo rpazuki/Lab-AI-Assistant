@@ -41,14 +41,16 @@ from lab_assistant.application.refresh import RefreshService
 from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseService
 from lab_assistant.application.retrieval import RetrievalService
 from lab_assistant.application.review import ReviewService
+from lab_assistant.application.review_history import ReviewHistoryService
 from lab_assistant.application.scopes import ScopeService
+from lab_assistant.application.screening import ScreeningService
 from lab_assistant.application.usage import UsageService
 from lab_assistant.contracts.errors import NotFound, PolicyDenied, ValidationFailure
 from lab_assistant.domain.chat import UsageTotals
 from lab_assistant.domain.claims import ReviewDecision
 from lab_assistant.domain.installation import InstallationCapability
-from lab_assistant.domain.review import CandidateFilter, MergeRule
-from lab_assistant.domain.scope import ConnectorPlanEntry
+from lab_assistant.domain.review import CandidateFilter, MergeRule, ReviewStepKind
+from lab_assistant.domain.scope import ConnectorPlanEntry, RelevancePolicy
 from lab_assistant.domain.states import IdentityState, RelevanceState
 from lab_assistant.domain.workspace import Capability, MembershipStatus, Role
 from lab_assistant.evaluation.service import EvaluationService, benchmark_json, run_json
@@ -168,6 +170,11 @@ class ScopeRequest(BaseModel):
     inclusion_criteria: list[str] = Field(default_factory=list)
     exclusion_criteria: list[str] = Field(default_factory=list)
     concepts: list[str] = Field(default_factory=list)
+    exclusion_terms: list[str] = Field(default_factory=list)
+    #: Share of concepts at or above which a paper is included; default 0.75.
+    include_threshold: float | None = Field(default=None, ge=0, le=1)
+    #: Share at or below which a paper with an abstract is excluded; default 0.25.
+    exclude_threshold: float | None = Field(default=None, ge=0, le=1)
     intended_uses: list[str] = Field(default_factory=list)
     connectors: list[dict[str, Any]] = Field(default_factory=list)
     scope_id: UUID | None = None
@@ -706,9 +713,24 @@ def _scope_fields(payload: ScopeRequest) -> dict[str, Any]:
         ],
         "inclusion_criteria": tuple(payload.inclusion_criteria),
         "exclusion_criteria": tuple(payload.exclusion_criteria),
-        "concepts": tuple(payload.concepts),
+        "concepts": tuple(c.strip() for c in payload.concepts if c.strip()),
+        "exclusion_terms": tuple(t.strip() for t in payload.exclusion_terms if t.strip()),
+        "relevance_policy": _relevance_policy(payload),
         "intended_uses": tuple(payload.intended_uses),
     }
+
+
+def _relevance_policy(payload: ScopeRequest) -> RelevancePolicy:
+    default = RelevancePolicy()
+    include, exclude = payload.include_threshold, payload.exclude_threshold
+    include = default.include_threshold if include is None else include
+    exclude = default.exclude_threshold if exclude is None else exclude
+    if exclude >= include:
+        raise ValidationFailure(
+            "the exclude threshold must be below the include threshold",
+            context={"include_threshold": include, "exclude_threshold": exclude},
+        )
+    return default.model_copy(update={"include_threshold": include, "exclude_threshold": exclude})
 
 
 @router.put(
@@ -759,7 +781,14 @@ async def list_scopes(actor: CurrentActor, container: Container) -> dict[str, An
                 "inclusion_criteria": list(scope.inclusion_criteria),
                 "exclusion_criteria": list(scope.exclusion_criteria),
                 "concepts": list(scope.concepts),
+                "exclusion_terms": list(scope.exclusion_terms),
+                "relevance_policy": {
+                    "include_threshold": scope.relevance_policy.include_threshold,
+                    "exclude_threshold": scope.relevance_policy.exclude_threshold,
+                },
                 "intended_uses": list(scope.intended_uses),
+                "created_at": scope.created_at.isoformat() if scope.created_at else None,
+                "frozen_at": scope.frozen_at.isoformat() if scope.frozen_at else None,
                 "connector_plan": [
                     {
                         "connector_id": entry.connector_id,
@@ -1054,6 +1083,8 @@ class BulkRelevanceRequest(BaseModel):
     only_unreviewed: bool = True
     #: False: a preview that changes nothing.
     apply: bool = False
+    #: The ``step_id`` the first apply returned, so every chunk is one history step.
+    step_id: UUID | None = None
 
 
 @router.post(
@@ -1077,6 +1108,7 @@ async def bulk_relevance(
         relevance=payload.relevance,
         only_unreviewed=payload.only_unreviewed,
         apply=payload.apply,
+        step_id=payload.step_id,
     )
 
 
@@ -1211,10 +1243,105 @@ async def preview_merge_rule(
     dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
 )
 async def apply_merge_rule(
-    actor: CurrentActor, container: Container, rule: MergeRule = Body(...)
+    actor: CurrentActor,
+    container: Container,
+    rule: MergeRule = Body(...),
+    step_id: Annotated[UUID | None, Query()] = None,
 ) -> dict[str, Any]:
-    """Merge up to 200 groups the rule accepts; repeat until ``remaining_groups`` is 0."""
-    return await BulkReviewService(container.context).apply_merge(actor, rule)
+    """Merge up to 200 groups the rule accepts; repeat until ``remaining_groups`` is 0.
+
+    Pass the ``step_id`` the first call returned to every later one, so the whole
+    application is one step in the review history.
+    """
+    return await BulkReviewService(container.context).apply_merge(actor, rule, step_id=step_id)
+
+
+# ── a scope's screening rules, and the review history ──────────────────────
+@router.post(
+    "/scopes/{scope_version_id}/rules/preview",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def preview_scope_rules(
+    scope_version_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """What applying this approved version's concepts and exclusion terms would change.
+
+    Changes nothing. Candidates a person decided, and merged records, are never
+    changed and are counted apart.
+    """
+    plan = await ScreeningService(container.context).plan(actor, scope_version_id)
+    return plan.view()
+
+
+class ApplyRulesRequest(BaseModel):
+    #: The ``step_id`` the first apply returned, so every chunk is one history step.
+    step_id: UUID | None = None
+
+
+@router.post(
+    "/scopes/{scope_version_id}/rules/apply",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def apply_scope_rules(
+    scope_version_id: UUID,
+    actor: CurrentActor,
+    container: Container,
+    payload: ApplyRulesRequest = Body(default_factory=ApplyRulesRequest),
+) -> dict[str, Any]:
+    """Make up to 1,000 of the preview's changes; repeat until ``remaining`` is 0."""
+    return await ScreeningService(container.context).apply(
+        actor, scope_version_id, step_id=payload.step_id
+    )
+
+
+def _history_cursor(value: str | None) -> tuple[datetime, UUID] | None:
+    if not value:
+        return None
+    try:
+        at, last = value.split("|", 1)
+        return datetime.fromisoformat(at), UUID(last)
+    except ValueError as error:
+        raise ValidationFailure("after must be a next_cursor this endpoint returned") from error
+
+
+@router.get("/review/history")
+async def review_history(
+    actor: CurrentActor,
+    container: Container,
+    scope_version_id: Annotated[UUID | None, Query()] = None,
+    kind: Annotated[list[ReviewStepKind] | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """The collection's review steps, newest first, optionally under one scope version."""
+    steps, total, summaries, people = await ReviewHistoryService(container.context).page(
+        actor,
+        scope_version_id=scope_version_id,
+        kinds=[k.value for k in kind] if kind else None,
+        limit=limit,
+        before=_history_cursor(after),
+    )
+    last = steps[-1] if len(steps) == limit else None
+    return {
+        "items": [
+            {
+                "id": str(step.id),
+                "kind": step.kind.value,
+                "scope_version_id": str(step.scope_version_id) if step.scope_version_id else None,
+                "actor": people.get(step.actor_id) if step.actor_id else None,
+                "rule": step.rule,
+                "counts": step.counts,
+                "papers": [paper(w, summaries.get(w)) for w in step.work_ids],
+                "subject_id": str(step.subject_id) if step.subject_id else None,
+                "note": step.note,
+                "started_at": step.started_at.isoformat(),
+                "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+            }
+            for step in steps
+        ],
+        "total": total,
+        "next_cursor": f"{last.started_at.isoformat()}|{last.id}" if last else None,
+    }
 
 
 @router.post(

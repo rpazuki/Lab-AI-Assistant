@@ -39,7 +39,13 @@ from lab_assistant.domain.assets import (
 )
 from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback, MessageRole, UsageTotals
 from lab_assistant.domain.claims import Claim, ClaimRevision, Entity, Experiment, Review
-from lab_assistant.domain.identity import IdentityDecision, Work, WorkIdentifier, WorkRelation
+from lab_assistant.domain.identity import (
+    IdentityDecision,
+    IdentityDecisionType,
+    Work,
+    WorkIdentifier,
+    WorkRelation,
+)
 from lab_assistant.domain.objects import ObjectRecord
 from lab_assistant.domain.observation import (
     DiscoveryRun,
@@ -49,7 +55,12 @@ from lab_assistant.domain.observation import (
 )
 from lab_assistant.domain.release import CorpusRelease, ReleaseItem, SearchAlias
 from lab_assistant.domain.renditions import EvidenceSpan, ParseRun, Rendition
-from lab_assistant.domain.review import CandidateFilter, DuplicateCandidate, WorkSummary
+from lab_assistant.domain.review import (
+    CandidateFilter,
+    DuplicateCandidate,
+    ReviewStep,
+    WorkSummary,
+)
 from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
 from lab_assistant.domain.states import TaskState
 from lab_assistant.domain.tasks import RateBudget, Task
@@ -98,6 +109,7 @@ class MemoryDatabase:
     identity_decisions: dict[UUID, IdentityDecision] = field(default_factory=dict)
     summaries: dict[UUID, WorkSummary] = field(default_factory=dict)
     duplicate_candidates: dict[UUID, DuplicateCandidate] = field(default_factory=dict)
+    review_steps: dict[UUID, ReviewStep] = field(default_factory=dict)
     manifestations: dict[UUID, Manifestation] = field(default_factory=dict)
     plans: dict[UUID, AcquisitionPlan] = field(default_factory=dict)
     attempts: dict[UUID, AcquisitionAttempt] = field(default_factory=dict)
@@ -835,11 +847,77 @@ class _Works:
             (
                 w.id
                 for w in self._db.works.values()
-                if w.workspace_id == workspace_id and w.id not in self._db.summaries
+                if w.workspace_id == workspace_id
+                and (
+                    (summary := self._db.summaries.get(w.id)) is None
+                    or summary.relevance_text is None
+                )
             ),
             key=str,
         )
         return missing[:limit]
+
+    async def human_relevance_work_ids(self, workspace_id: UUID) -> set[UUID]:
+        return {
+            work_id
+            for d in self._db.identity_decisions.values()
+            if d.workspace_id == workspace_id
+            and d.decision_type is IdentityDecisionType.SET_RELEVANCE
+            and d.decided_by_type == "human"
+            for work_id in d.subject_work_ids
+        }
+
+    async def add_review_step(self, step: ReviewStep) -> None:
+        self._db.review_steps[step.id] = step.model_copy(deep=True)
+
+    async def update_review_step(self, step: ReviewStep) -> None:
+        self._db.review_steps[step.id] = step.model_copy(deep=True)
+
+    async def get_review_step(self, workspace_id: UUID, step_id: UUID) -> ReviewStep | None:
+        step = self._db.review_steps.get(step_id)
+        if step is None or step.workspace_id != workspace_id:
+            return None
+        return step.model_copy(deep=True)
+
+    def _steps(
+        self, workspace_id: UUID, scope_version_id: UUID | None, kinds: Sequence[str] | None
+    ) -> list[ReviewStep]:
+        rows = [
+            step
+            for step in self._db.review_steps.values()
+            if step.workspace_id == workspace_id
+            and (scope_version_id is None or step.scope_version_id == scope_version_id)
+            and (not kinds or step.kind.value in kinds)
+        ]
+        return sorted(rows, key=lambda step: (step.started_at, str(step.id)), reverse=True)
+
+    async def list_review_steps(
+        self,
+        workspace_id: UUID,
+        *,
+        scope_version_id: UUID | None = None,
+        kinds: Sequence[str] | None = None,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[ReviewStep]:
+        rows = self._steps(workspace_id, scope_version_id, kinds)
+        if before is not None:
+            at, last = before
+            rows = [
+                r
+                for r in rows
+                if r.started_at < at or (r.started_at == at and str(r.id) < str(last))
+            ]
+        return [step.model_copy(deep=True) for step in rows[:limit]]
+
+    async def count_review_steps(
+        self,
+        workspace_id: UUID,
+        *,
+        scope_version_id: UUID | None = None,
+        kinds: Sequence[str] | None = None,
+    ) -> int:
+        return len(self._steps(workspace_id, scope_version_id, kinds))
 
     def _filtered(self, workspace_id: UUID, rule: CandidateFilter) -> list[Work]:
         return sorted(

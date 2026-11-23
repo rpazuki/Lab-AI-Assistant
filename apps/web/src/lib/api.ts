@@ -46,6 +46,8 @@ import type {
   RunComparison,
   RunReviewSummary,
   ScopeGateReport,
+  ReviewStep,
+  ScopeRulesPlan,
   ScopeVersion,
   TaskSnapshot,
   WorkingSheet,
@@ -267,6 +269,9 @@ export interface ScopeDocument {
   inclusion_criteria?: string[];
   exclusion_criteria?: string[];
   concepts?: string[];
+  exclusion_terms?: string[];
+  include_threshold?: number;
+  exclude_threshold?: number;
   intended_uses?: string[];
   connectors: { connector_id: string; query: string; required?: boolean }[];
 }
@@ -358,7 +363,7 @@ export const candidateFacets = () => request<CandidateFacets>("/candidates/facet
  */
 export const bulkRelevance = (
   filters: CandidateFilters,
-  body: { relevance: string; only_unreviewed: boolean; apply: boolean },
+  body: { relevance: string; only_unreviewed: boolean; apply: boolean; step_id?: string | null },
 ) =>
   request<BulkRelevanceResult>(`/candidates/relevance/bulk${queryString(filterQuery(filters))}`, {
     method: "POST",
@@ -392,12 +397,36 @@ export const previewMergeRule = (rule: MergeRule) =>
     body: JSON.stringify(rule),
   });
 
-/** Merge up to 200 groups the rule accepts; repeat until `remaining_groups` is 0. */
-export const applyMergeRule = (rule: MergeRule) =>
-  request<{ groups_merged: number; works_merged: number; remaining_groups: number }>(
-    "/duplicates/merge-rule/apply",
-    { method: "POST", body: JSON.stringify(rule) },
+/**
+ * Merge up to 200 groups the rule accepts; repeat until `remaining_groups` is 0,
+ * passing back the `step_id` the first call returned so the history shows one step.
+ */
+export const applyMergeRule = (rule: MergeRule, stepId: string | null = null) =>
+  request<{
+    groups_merged: number;
+    works_merged: number;
+    remaining_groups: number;
+    step_id?: string;
+  }>(`/duplicates/merge-rule/apply${queryString({ step_id: stepId })}`, {
+    method: "POST",
+    body: JSON.stringify(rule),
+  });
+
+/** What applying an approved scope version's rules would change now. Changes nothing. */
+export const previewScopeRules = (scopeVersionId: string) =>
+  request<ScopeRulesPlan>(`/scopes/${scopeVersionId}/rules/preview`, { method: "POST" });
+
+/** Make up to 1,000 of the preview's changes; repeat until `remaining` is 0. */
+export const applyScopeRules = (scopeVersionId: string, stepId: string | null = null) =>
+  request<{ applied: number; remaining: number; step_id: string }>(
+    `/scopes/${scopeVersionId}/rules/apply`,
+    { method: "POST", body: JSON.stringify({ step_id: stepId }) },
   );
+
+/** The review history, newest first; with `scope_version_id`, only that version's steps. */
+export const listReviewHistory = (
+  options: PageRequest & { scope_version_id?: string | null; kind?: string | null } = {},
+) => request<Page<ReviewStep>>(`/review/history${queryString({ ...options })}`);
 
 export const setRelevance = (workId: string, relevance: string, reasonCode: string) =>
   request<{ work_id: string; relevance: string }>(`/candidates/${workId}/relevance`, {

@@ -139,9 +139,12 @@ export function DuplicateReview({
     let merged = 0;
     try {
       let remaining = plan.groups;
+      // Every round extends the history step the first one opened.
+      let stepId: string | null = null;
       for (let round = 0; remaining > 0 && round < 500; round++) {
         setBusy(`Merging: ${merged.toLocaleString()} of ${plan.works_merged.toLocaleString()} papers`);
-        const step = await applyMergeRule(rule);
+        const step = await applyMergeRule(rule, stepId);
+        stepId = step.step_id ?? stepId;
         merged += step.works_merged;
         remaining = step.remaining_groups;
         if (step.groups_merged === 0) break;

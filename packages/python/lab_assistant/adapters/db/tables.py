@@ -509,9 +509,32 @@ work_summaries = Table(
     Column("subject_terms", Text, nullable=False, server_default=text("''")),
     Column("sources", Text, nullable=False, server_default=text("''")),
     Column("source_count", Integer, nullable=False, server_default=text("0")),
+    #: What a scope's screening rules read; NULL until the backfill rebuilds it.
+    Column("relevance_text", Text),
     Column("updated_at", DateTime(timezone=True)),
     Index("ix_work_summaries_year", "workspace_id", "year"),
     Index("ix_work_summaries_kind", "workspace_id", "resource_kind"),
+)
+
+#: A collection's review history: one row per step a person would name (a rule
+#: applied, a pair merged), with the scope version then in force and its counts.
+review_steps = Table(
+    "review_steps",
+    METADATA,
+    Column("id", _UUID, primary_key=True),
+    Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("scope_version_id", _UUID),
+    Column("actor_id", _UUID),
+    Column("rule_json", _JSONB, nullable=False, server_default=text("'{}'")),
+    Column("counts_json", _JSONB, nullable=False, server_default=text("'{}'")),
+    Column("work_ids", _ARRAY_TEXT, nullable=False, server_default=text("'{}'")),
+    Column("subject_id", _UUID),
+    Column("note", Text),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("finished_at", DateTime(timezone=True)),
+    Index("ix_review_steps_history", "workspace_id", "started_at"),
+    Index("ix_review_steps_scope", "workspace_id", "scope_version_id", "started_at"),
 )
 
 #: The duplicate-review queue: one row per proposal, with its review state. The
