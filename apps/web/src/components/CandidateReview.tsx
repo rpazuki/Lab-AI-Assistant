@@ -377,6 +377,9 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
             </div>
             <p className="mt-1 text-xs text-muted">
               {[candidate.journal, candidate.year, candidate.work_kind].filter(Boolean).join(" · ")}
+              {candidate.merged_into_work_id
+                ? ` · merged into ${candidate.merged_into_work_id.slice(0, 8)}, which holds its records`
+                : ""}
             </p>
             <p className="mt-1 font-mono text-xs text-neutral-strong">
               {candidate.identifiers.map((id) => `${id.scheme}:${id.value}`).join("  ")}

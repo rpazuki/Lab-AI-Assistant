@@ -1097,18 +1097,46 @@ async def list_candidates(
     works, total = await BulkReviewService(container.context).candidates(
         actor, rule, limit=limit, after_id=after
     )
+    ws = actor.workspace_id
     async with container.context.uow_factory() as uow:
+        # A merged paper's records moved to the paper it was merged into, so its
+        # own records say nothing; its summary kept what they said. Without it the
+        # list showed every merged paper as "Untitled".
+        summaries = await uow.works.get_summaries(
+            ws, [work.id for work in works if work.merged_into_work_id is not None]
+        )
         items = []
         for work in works:
-            assertions = await uow.observations.list_assertions(actor.workspace_id, work_id=work.id)
+            assertions = await uow.observations.list_assertions(ws, work_id=work.id)
             metadata = canonical_metadata(list(assertions))
-            identifiers = await uow.works.list_identifiers(actor.workspace_id, work.id)
+            summary = summaries.get(work.id)
+            if work.merged_into_work_id is not None and not metadata.get("title"):
+                # Follow a chain of merges to the paper that holds the records now.
+                holder_id, seen = work.merged_into_work_id, {work.id}
+                while holder_id not in seen:
+                    seen.add(holder_id)
+                    holder = await uow.works.get(ws, holder_id)
+                    if holder is None or holder.merged_into_work_id is None:
+                        break
+                    holder_id = holder.merged_into_work_id
+                held = await uow.observations.list_assertions(ws, work_id=holder_id)
+                kept = canonical_metadata(list(held))
+                metadata = {
+                    **kept,
+                    "title": (summary.title if summary else None) or kept.get("title"),
+                    "year": (summary.year if summary else None) or kept.get("year"),
+                    "journal": (summary.journal if summary else None) or kept.get("journal"),
+                }
+            identifiers = await uow.works.list_identifiers(ws, work.id)
             items.append(
                 {
                     "work_id": str(work.id),
                     "title": metadata.get("title"),
                     "year": metadata.get("year"),
                     "journal": metadata.get("journal"),
+                    "merged_into_work_id": (
+                        str(work.merged_into_work_id) if work.merged_into_work_id else None
+                    ),
                     "work_kind": work.work_kind.value,
                     "identity_status": work.identity_status.value,
                     "relevance": work.relevance.value,

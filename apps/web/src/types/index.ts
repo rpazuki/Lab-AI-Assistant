@@ -200,6 +200,8 @@ export interface Candidate {
   title: string | null;
   year: number | null;
   journal: string | null;
+  /** For a merged paper, the paper it was merged into. */
+  merged_into_work_id?: string | null;
   work_kind: string;
   identity_status: string;
   relevance: string;

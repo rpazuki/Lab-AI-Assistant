@@ -1051,6 +1051,92 @@ class TestCollections:
         assert items[0]["provenance"]["title"]
 
 
+class TestMergedCandidates:
+    async def test_a_merged_paper_keeps_its_title_in_the_candidate_list(self, api) -> None:
+        """Its records move to the paper it joins; the list must still name it."""
+        from lab_assistant.application.reconciliation import refresh_summaries
+        from lab_assistant.domain.identity import Work, WorkKind
+        from lab_assistant.domain.observation import (
+            Predicate,
+            SourceAssertion,
+            SourceObservation,
+            SourceRequest,
+        )
+
+        context, ws = api["harness"].context, api["workspace"].id
+        titles = ["Lipid factories in Yarrowia", "Lipid factories in Yarrowia lipolytica"]
+        ids = []
+        async with context.uow_factory() as uow:
+            for title in titles:
+                work = Work(
+                    id=context.new_id(),
+                    workspace_id=ws,
+                    work_kind=WorkKind.ARTICLE,
+                    created_at=context.now(),
+                )
+                await uow.works.add(work)
+                request_id, observation_id = context.new_id(), context.new_id()
+                await uow.observations.add_request(
+                    SourceRequest(
+                        id=request_id,
+                        workspace_id=ws,
+                        discovery_run_id=context.new_id(),
+                        connector_id="fixture",
+                        connector_version="1.0.0",
+                        request_fingerprint=str(request_id),
+                        method="GET",
+                        canonical_url_redacted="https://example.invalid/q",
+                        requested_at=context.now(),
+                    )
+                )
+                await uow.observations.add_observation(
+                    SourceObservation(
+                        id=observation_id,
+                        workspace_id=ws,
+                        source_request_id=request_id,
+                        source_record_locator=str(work.id),
+                        parser_id="p",
+                        parser_version="1",
+                        schema_version="1",
+                        observed_at=context.now(),
+                    )
+                )
+                await uow.observations.add_assertions(
+                    [
+                        SourceAssertion(
+                            id=context.new_id(),
+                            workspace_id=ws,
+                            source_observation_id=observation_id,
+                            subject_hint=str(work.id),
+                            predicate=Predicate.TITLE,
+                            value_json=title,
+                            work_id=work.id,
+                        )
+                    ]
+                )
+                ids.append(work.id)
+            await refresh_summaries(uow, ws, ids, now=context.now())
+            await uow.commit()
+
+        token = await _login(api["client"], "steward@lab.invalid")
+        merged = await api["client"].post(
+            "/api/v1/decisions/merge",
+            headers=_auth(token),
+            json={
+                "keep_work_id": str(ids[0]),
+                "merge_work_id": str(ids[1]),
+                "reason_code": "same_paper",
+            },
+        )
+        assert merged.status_code == 200, merged.text
+        listed = await api["client"].get(
+            "/api/v1/candidates", headers=_auth(token), params={"identity_status": "merged"}
+        )
+        [row] = [i for i in listed.json()["items"] if i["work_id"] == str(ids[1])]
+        assert row["title"] == titles[1]
+        assert row["merged_into_work_id"] == str(ids[0])
+
+
 class TestOperations:
     async def test_task_snapshot_requires_the_capability(self, api) -> None:
         researcher = await _login(api["client"], "researcher@lab.invalid")
