@@ -956,6 +956,19 @@
         "title": "Role",
         "type": "string"
       },
+      "ScopeDeletionRequest": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ScopeDeletionRequest",
+        "type": "object"
+      },
       "ScopeRequest": {
         "properties": {
           "concepts": {
@@ -986,13 +999,6 @@
             ],
             "title": "Exclude Threshold"
           },
-          "exclusion_criteria": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Exclusion Criteria",
-            "type": "array"
-          },
           "exclusion_terms": {
             "items": {
               "type": "string"
@@ -1012,13 +1018,6 @@
               }
             ],
             "title": "Include Threshold"
-          },
-          "inclusion_criteria": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Inclusion Criteria",
-            "type": "array"
           },
           "intended_uses": {
             "items": {
@@ -9174,6 +9173,166 @@
           }
         },
         "summary": "Approve Scope"
+      }
+    },
+    "/api/v1/scopes/{scope_version_id}/delete-scope": {
+      "post": {
+        "description": "Delete every version of this version's scope, its runs and the papers only it found.",
+        "operationId": "delete_scope_api_v1_scopes__scope_version_id__delete_scope_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scope_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scope Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeDeletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Scope Api V1 Scopes  Scope Version Id  Delete Scope Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Scope"
+      }
+    },
+    "/api/v1/scopes/{scope_version_id}/deletion": {
+      "get": {
+        "description": "What deleting this version's whole scope would remove, and what stops it.",
+        "operationId": "preview_scope_deletion_api_v1_scopes__scope_version_id__deletion_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scope_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scope Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preview Scope Deletion Api V1 Scopes  Scope Version Id  Deletion Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Scope Deletion"
       }
     },
     "/api/v1/scopes/{scope_version_id}/gate": {

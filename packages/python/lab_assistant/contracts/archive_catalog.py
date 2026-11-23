@@ -448,8 +448,6 @@ class ScopeVersionRecord(CatalogRecord):
     version: int | None = None
     name: str
     scientific_objective: str | None = None
-    inclusion_criteria: tuple[str, ...] = ()
-    exclusion_criteria: tuple[str, ...] = ()
     concepts: tuple[str, ...] = ()
     exclusion_terms: tuple[str, ...] = ()
     controlled_terms: tuple[str, ...] = ()

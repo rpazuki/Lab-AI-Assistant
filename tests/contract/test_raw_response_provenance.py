@@ -69,7 +69,6 @@ class TestDiscoveryStoresBoth:
                     query="yarrowia lipolytica lipid production",
                 )
             ],
-            inclusion_criteria=("engineered yeast lipid production",),
             intended_uses=("internal literature search",),
             concepts=("lipid production",),
         )

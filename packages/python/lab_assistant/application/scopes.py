@@ -170,8 +170,8 @@ class ScopeService:
         compiled: list[str] = []
         if not scope.connector_plan:
             blockers.append("scope has no connector plan")
-        if not scope.inclusion_criteria:
-            blockers.append("scope has no inclusion criteria")
+        if not scope.scientific_objective.strip():
+            blockers.append("scope does not state its purpose")
         if not scope.intended_uses:
             blockers.append("scope does not state its intended uses")
 

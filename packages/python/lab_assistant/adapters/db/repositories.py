@@ -2298,6 +2298,185 @@ def _utc():
     return UTC
 
 
+#: Ids per statement: well under asyncpg's 32,767 bind parameters.
+_PURGE_CHUNK = 2_000
+
+
+def _chunked(ids: Any) -> list[list[Any]]:
+    values = list(ids)
+    return [values[i : i + _PURGE_CHUNK] for i in range(0, len(values), _PURGE_CHUNK)]
+
+
+class _ScopePurge(_Base):
+    """``ScopePurgeRepository``: set-based, children first.
+
+    Explicit deletes rather than ``ON DELETE CASCADE``, as ``delete_run`` does:
+    SQLite enforces cascades only with a per-connection pragma. A self-reference
+    (a rendition superseding another, a revision superseding another, a work
+    merged into another) is cleared first, so no chunk deletes a row another
+    still names.
+    """
+
+    async def _ids(self, workspace_id: UUID, column: Any, ids: Any) -> set[UUID]:
+        found: set[UUID] = set()
+        table = column.table
+        for chunk in _chunked(ids):
+            result = await self._c.execute(
+                select(table.c.id).where(table.c.workspace_id == workspace_id, column.in_(chunk))
+            )
+            found.update(row[0] for row in result)
+        return found
+
+    async def _delete(self, workspace_id: UUID, column: Any, ids: Any) -> None:
+        table = column.table
+        for chunk in _chunked(ids):
+            await self._c.execute(
+                delete(table).where(table.c.workspace_id == workspace_id, column.in_(chunk))
+            )
+
+    async def _clear(self, workspace_id: UUID, column: Any, ids: Any) -> None:
+        """``column = NULL`` on the rows whose id is in ``ids``."""
+        table = column.table
+        for chunk in _chunked(ids):
+            await self._c.execute(
+                update(table)
+                .where(table.c.workspace_id == workspace_id, table.c.id.in_(chunk))
+                .values({column.name: None})
+            )
+
+    async def works_found_by_runs(
+        self, workspace_id: UUID, run_ids: Sequence[UUID]
+    ) -> tuple[set[UUID], set[UUID]]:
+        if not run_ids:
+            return set(), set()
+        a, o, r = t.source_assertions, t.source_observations, t.source_requests
+        joined = a.join(o, a.c.source_observation_id == o.c.id).join(
+            r, o.c.source_request_id == r.c.id
+        )
+        result = await self._c.execute(
+            select(a.c.work_id, r.c.discovery_run_id)
+            .select_from(joined)
+            .where(a.c.workspace_id == workspace_id, a.c.work_id.is_not(None))
+            .distinct()
+        )
+        runs = set(run_ids)
+        mine: set[UUID] = set()
+        others: set[UUID] = set()
+        for work_id, run_id in result:
+            (mine if run_id in runs else others).add(work_id)
+        return mine - others, mine & others
+
+    async def work_dependants(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[str, set[UUID]]:
+        ids = self._ids
+        plans = await ids(workspace_id, t.acquisition_plans.c.work_id, work_ids)
+        assets = await ids(workspace_id, t.assets.c.work_id, work_ids)
+        renditions = await ids(workspace_id, t.renditions.c.work_id, work_ids)
+        renditions |= await ids(workspace_id, t.renditions.c.asset_id, assets)
+        claims = await ids(workspace_id, t.claims.c.work_id, work_ids)
+        revisions = await ids(workspace_id, t.claim_revisions.c.claim_id, claims)
+        reviews = await ids(workspace_id, t.reviews.c.revision_id, revisions)
+        reviews |= await ids(workspace_id, t.reviews.c.subject_id, claims | revisions)
+        return {
+            "manifestations": await ids(workspace_id, t.manifestations.c.work_id, work_ids),
+            "plans": plans,
+            "attempts": await ids(
+                workspace_id, t.acquisition_attempts.c.acquisition_plan_id, plans
+            ),
+            "assets": assets,
+            "parse_runs": await ids(workspace_id, t.parse_runs.c.asset_id, assets),
+            "renditions": renditions,
+            "spans": await ids(workspace_id, t.evidence_spans.c.rendition_id, renditions),
+            "experiments": await ids(workspace_id, t.experiments.c.work_id, work_ids),
+            "claims": claims,
+            "revisions": revisions,
+            "reviews": reviews,
+        }
+
+    async def releases_holding(self, workspace_id: UUID, work_ids: Sequence[UUID]) -> set[UUID]:
+        found: set[UUID] = set()
+        items = t.release_items
+        for chunk in _chunked(work_ids):
+            result = await self._c.execute(
+                select(items.c.release_id)
+                .where(items.c.workspace_id == workspace_id, items.c.work_id.in_(chunk))
+                .distinct()
+            )
+            found.update(row[0] for row in result)
+        return found
+
+    async def purge(
+        self,
+        workspace_id: UUID,
+        *,
+        work_ids: Sequence[UUID],
+        dependants: dict[str, set[UUID]],
+        run_ids: Sequence[UUID],
+        scope_version_ids: Sequence[UUID],
+        lineage_keys: Sequence[str],
+    ) -> None:
+        ws, d = workspace_id, dependants
+        works = set(work_ids)
+        rm, clear = self._delete, self._clear
+        # What was made from the papers' full texts, deepest first.
+        await rm(ws, t.reviews.c.id, d.get("reviews", ()))
+        await clear(ws, t.claim_revisions.c.supersedes_revision_id, d.get("revisions", ()))
+        await rm(ws, t.claim_revisions.c.id, d.get("revisions", ()))
+        await rm(ws, t.claims.c.id, d.get("claims", ()))
+        await rm(ws, t.experiments.c.id, d.get("experiments", ()))
+        await rm(ws, t.evidence_spans.c.id, d.get("spans", ()))
+        await clear(ws, t.renditions.c.supersedes_rendition_id, d.get("renditions", ()))
+        await rm(ws, t.renditions.c.id, d.get("renditions", ()))
+        await rm(ws, t.parse_runs.c.id, d.get("parse_runs", ()))
+        subjects = (
+            works | d.get("assets", set()) | d.get("manifestations", set()) | d.get("plans", set())
+        )
+        await rm(ws, t.rights_decisions.c.subject_id, subjects)
+        await rm(ws, t.assets.c.id, d.get("assets", ()))
+        await rm(ws, t.acquisition_attempts.c.id, d.get("attempts", ()))
+        await rm(ws, t.acquisition_plans.c.id, d.get("plans", ()))
+        await rm(ws, t.manifestations.c.id, d.get("manifestations", ()))
+        # The papers' review state.
+        await rm(ws, t.work_relations.c.from_work_id, works)
+        await rm(ws, t.work_relations.c.to_work_id, works)
+        await rm(ws, t.work_identifiers.c.work_id, works)
+        await rm(ws, t.work_summaries.c.work_id, works)
+        await rm(ws, t.duplicate_candidates.c.left_work_id, works)
+        await rm(ws, t.duplicate_candidates.c.right_work_id, works)
+        await rm(ws, t.work_metadata.c.work_id, works)
+        decisions = await self._c.execute(
+            select(t.identity_decisions.c.id, t.identity_decisions.c.subject_work_ids).where(
+                t.identity_decisions.c.workspace_id == ws
+            )
+        )
+        only_these = [
+            decision_id
+            for decision_id, subject_ids in decisions
+            if subject_ids and {UUID(str(s)) for s in subject_ids} <= works
+        ]
+        await rm(ws, t.identity_decisions.c.id, only_these)
+        # The runs, with every page, record and assertion: including assertions
+        # linked to papers that stay, which other scopes found too.
+        requests = await self._ids(ws, t.source_requests.c.discovery_run_id, run_ids)
+        observations = await self._ids(ws, t.source_observations.c.source_request_id, requests)
+        await rm(ws, t.source_assertions.c.source_observation_id, observations)
+        await rm(ws, t.source_observations.c.id, observations)
+        await rm(ws, t.source_requests.c.id, requests)
+        await rm(ws, t.discovery_runs.c.id, run_ids)
+        await clear(ws, t.works.c.merged_into_work_id, works)
+        await rm(ws, t.works.c.id, works)
+        for chunk in _chunked(lineage_keys):
+            await self._c.execute(
+                delete(t.source_cursors).where(
+                    t.source_cursors.c.workspace_id == ws,
+                    t.source_cursors.c.lineage_key.in_(chunk),
+                )
+            )
+        await rm(ws, t.review_steps.c.scope_version_id, scope_version_ids)
+        await rm(ws, t.scope_versions.c.id, scope_version_ids)
+
+
 class SqlUnitOfWork:
     """One transaction. Committing is explicit; leaving without it rolls back."""
 
@@ -2329,6 +2508,7 @@ class SqlUnitOfWork:
         self.audit = _Audit(connection)
         self.chat = _Chat(connection)
         self.evaluations = _Evaluations(connection)
+        self.purge = _ScopePurge(connection)
         return self
 
     async def __aexit__(

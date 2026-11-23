@@ -169,7 +169,6 @@ class TestObjectRegistry:
                     connector_id="pubmed-fixture", connector_version="1.0.0", query=SCOPE_QUERY
                 )
             ],
-            inclusion_criteria=("engineered yeast lipid production",),
             intended_uses=("internal literature search",),
             concepts=("lipid production",),
         )

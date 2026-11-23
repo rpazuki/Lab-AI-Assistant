@@ -340,7 +340,6 @@ async def publish_demo_corpus(
         version=1,
         name=f"{name} seed scope",
         scientific_objective="Seeded material for demonstrations and tests.",
-        inclusion_criteria=("seeded demonstration material",),
         intended_uses=("demonstration",),
         authored_by=actor.user_id,
         created_at=context.now(),

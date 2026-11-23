@@ -316,6 +316,7 @@
       "invitation_deleted": "A revoked or expired invitation was removed from the list.",
       "scope_approved": "A scope version was approved for discovery.",
       "scope_draft_deleted": "An unapproved scope version was deleted.",
+      "scope_deleted": "A whole scope was deleted, with every version, its discovery runs and the papers only it found.",
       "discovery_run_started": "A discovery run started searching its sources.",
       "discovery_run_frozen": "A discovery run was frozen and its results became candidates.",
       "discovery_run_deleted": "A discovery run that produced no candidates was deleted, with the pages it fetched.",

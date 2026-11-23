@@ -41,7 +41,6 @@ async def _scope(harness, actor) -> Any:
                 connector_id="pubmed-fixture", connector_version="1.0.0", query=QUERY
             )
         ],
-        inclusion_criteria=("engineered yeast lipid production",),
         intended_uses=("internal literature search",),
         concepts=("lipid production",),
     )

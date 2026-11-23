@@ -4,11 +4,24 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Pager } from "@/components/ui/Pager";
 import { SortHeader } from "@/components/ui/table";
-import { Alert, Button, Empty, StateChip, row, rowList } from "@/components/ui/primitives";
-import { applyScopeRules, listReviewHistory, previewScopeRules } from "@/lib/api";
+import { Alert, Button, Empty, Input, StateChip, row, rowList } from "@/components/ui/primitives";
+import {
+  applyScopeRules,
+  deleteScope,
+  listReviewHistory,
+  previewScopeDeletion,
+  previewScopeRules,
+} from "@/lib/api";
 import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
-import type { Page, PaperSummary, ReviewStep, ScopeRulesPlan, ScopeVersion } from "@/types";
+import type {
+  Page,
+  PaperSummary,
+  ReviewStep,
+  ScopeDeletionPlan,
+  ScopeRulesPlan,
+  ScopeVersion,
+} from "@/types";
 
 const RELEVANCE_WORDS: Record<string, string> = {
   included: "included",
@@ -335,4 +348,122 @@ function transitionWords(transitions: Record<string, number>): string {
       return `${n(count)} ${RELEVANCE_WORDS[from ?? ""] ?? from} → ${RELEVANCE_WORDS[to ?? ""] ?? to}`;
     })
     .join(", ");
+}
+
+/**
+ * Deleting a whole scope: every version, its runs, and the papers only it found.
+ * The preview says what goes and what stops it; the button stays disabled until
+ * nothing stops it and the scope's name is typed, because it cannot be undone.
+ */
+export function ScopeDeletion({
+  scope,
+  onDeleted,
+}: {
+  scope: ScopeVersion;
+  onDeleted: (message: string) => void | Promise<void>;
+}) {
+  const [plan, setPlan] = useState<ScopeDeletionPlan | null>(null);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setPlan(await previewScopeDeletion(scope.id));
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "the deletion could not be previewed");
+    }
+  }, [scope.id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function remove() {
+    if (!plan) return;
+    setBusy(true);
+    try {
+      const { deleted } = await deleteScope(scope.id, typed);
+      await onDeleted(
+        `Scope “${plan.name}” deleted: ${plural(deleted.versions, "version")}, ${plural(deleted.runs, "discovery run")} and ${plural(deleted.papers, "paper")}.`,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "the scope was not deleted");
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const c = plan?.counts;
+  return (
+    <section
+      aria-label={`Delete ${scope.name}`}
+      className="mt-2 space-y-2 rounded-control border border-danger-strong/25 bg-surface-subtle px-4 py-3 text-sm"
+    >
+      {error ? (
+        <Alert tone="danger" role="alert">
+          {error}
+        </Alert>
+      ) : null}
+      {!plan || !c ? (
+        <p className="text-muted">Working out what would go…</p>
+      ) : (
+        <>
+          <p className="text-ink">
+            Deleting <strong>{plan.name}</strong> removes all {plural(c.versions, "version")} (
+            {plan.versions.map((v) => `v${v.version}`).join(", ")}), {plural(c.runs, "discovery run")}{" "}
+            with the pages they fetched, and <strong>{plural(c.papers, "paper")}</strong> only this scope
+            found, with their decisions, duplicate pairs and review history.
+          </p>
+          <ul className="list-disc pl-5 text-muted">
+            {c.decided_by_person > 0 ? (
+              <li>{plural(c.decided_by_person, "paper")} of those a person included or excluded.</li>
+            ) : null}
+            {c.files + c.parsed_texts + c.values > 0 ? (
+              <li>
+                Their full texts go too: {plural(c.files, "file")}, {plural(c.parsed_texts, "parsed text")},{" "}
+                {plural(c.values, "extracted value")} and {plural(c.value_reviews, "review")} of them.
+              </li>
+            ) : null}
+            {c.draft_releases > 0 ? <li>{plural(c.draft_releases, "draft release")} holding them.</li> : null}
+            {c.papers_kept > 0 ? (
+              <li>
+                {plural(c.papers_kept, "paper")} another scope also found stay, without this scope&apos;s
+                records of them.
+              </li>
+            ) : null}
+            <li>The audit log keeps a record of the deletion. It cannot be undone.</li>
+          </ul>
+          {plan.blockers.length > 0 ? (
+            <Alert tone="warning" role="status">
+              It cannot be deleted: {plan.blockers.join("; ")}.
+            </Alert>
+          ) : (
+            <form
+              className="flex flex-wrap items-end gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void remove();
+              }}
+            >
+              <label className="block space-y-1">
+                <span className="block font-medium text-ink">
+                  Type <strong>{plan.name}</strong> to confirm
+                </span>
+                <Input
+                  value={typed}
+                  onChange={(event) => setTyped(event.target.value)}
+                />
+              </label>
+              <Button type="submit" variant="danger" size="sm" disabled={busy || typed.trim() !== plan.name.trim()}>
+                Delete the scope
+              </Button>
+            </form>
+          )}
+        </>
+      )}
+    </section>
+  );
 }

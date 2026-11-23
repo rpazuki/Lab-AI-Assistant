@@ -426,8 +426,6 @@ class SnapshotImporter:
                             version=record.version or 1,
                             name=record.name,
                             scientific_objective=record.scientific_objective or "",
-                            inclusion_criteria=record.inclusion_criteria,
-                            exclusion_criteria=record.exclusion_criteria,
                             concepts=record.concepts,
                             exclusion_terms=record.exclusion_terms,
                             connector_plan=record.connector_plan,

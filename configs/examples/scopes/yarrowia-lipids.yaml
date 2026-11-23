@@ -5,15 +5,13 @@ workspace_id: 00000000-0000-4000-8000-000000000001
 scope_id: 00000000-0000-4000-8000-00000000a000
 version: 1
 name: Yarrowia lipid production
+# The purpose, for people: never matched as text. Screening uses concepts and
+# exclusion_terms below.
 scientific_objective: >
   Lipid yields, culture conditions, and engineered strains in oleaginous yeast,
-  for the lab's sustainable-protein programme.
-inclusion_criteria:
-  - engineered or wild-type oleaginous yeast
-  - reports a measured lipid yield or titre
-exclusion_criteria:
-  - review articles without primary measurements
-  - plant or algal lipid production
+  for the lab's sustainable-protein programme. Belongs: engineered or wild-type
+  oleaginous yeast with a measured lipid yield or titre. Does not belong: reviews
+  without primary measurements; plant or algal lipid production.
 languages: [en]
 resource_kinds: [article, preprint, dataset]
 concepts:

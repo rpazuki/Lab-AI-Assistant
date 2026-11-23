@@ -42,6 +42,7 @@ from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseServi
 from lab_assistant.application.retrieval import RetrievalService
 from lab_assistant.application.review import ReviewService
 from lab_assistant.application.review_history import ReviewHistoryService
+from lab_assistant.application.scope_deletion import ScopeDeletionService
 from lab_assistant.application.scopes import ScopeService
 from lab_assistant.application.screening import ScreeningService
 from lab_assistant.application.usage import UsageService
@@ -167,8 +168,6 @@ class SearchRequest(BaseModel):
 class ScopeRequest(BaseModel):
     name: str
     scientific_objective: str
-    inclusion_criteria: list[str] = Field(default_factory=list)
-    exclusion_criteria: list[str] = Field(default_factory=list)
     concepts: list[str] = Field(default_factory=list)
     exclusion_terms: list[str] = Field(default_factory=list)
     #: Share of concepts at or above which a paper is included; default 0.75.
@@ -711,8 +710,6 @@ def _scope_fields(payload: ScopeRequest) -> dict[str, Any]:
             )
             for entry in payload.connectors
         ],
-        "inclusion_criteria": tuple(payload.inclusion_criteria),
-        "exclusion_criteria": tuple(payload.exclusion_criteria),
         "concepts": tuple(c.strip() for c in payload.concepts if c.strip()),
         "exclusion_terms": tuple(t.strip() for t in payload.exclusion_terms if t.strip()),
         "relevance_policy": _relevance_policy(payload),
@@ -762,6 +759,37 @@ async def delete_scope_draft(
     return Response(status_code=204)
 
 
+class ScopeDeletionRequest(BaseModel):
+    #: The scope's name, typed by the person, as the confirmation.
+    name: str
+
+
+@router.get("/scopes/{scope_version_id}/deletion")
+async def preview_scope_deletion(
+    scope_version_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """What deleting this version's whole scope would remove, and what stops it."""
+    plan = await ScopeDeletionService(container.context).plan(actor, scope_version_id)
+    return plan.view()
+
+
+@router.post(
+    "/scopes/{scope_version_id}/delete-scope",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def delete_scope(
+    scope_version_id: UUID,
+    payload: ScopeDeletionRequest,
+    actor: CurrentActor,
+    container: Container,
+) -> dict[str, Any]:
+    """Delete every version of this version's scope, its runs and the papers only it found."""
+    counts = await ScopeDeletionService(container.context).delete(
+        actor, scope_version_id, confirm_name=payload.name
+    )
+    return {"deleted": counts}
+
+
 @router.get("/scopes")
 async def list_scopes(actor: CurrentActor, container: Container) -> dict[str, Any]:
     async with container.context.uow_factory() as uow:
@@ -778,8 +806,6 @@ async def list_scopes(actor: CurrentActor, container: Container) -> dict[str, An
                 # Everything the form edits, so a draft that fails its gate can be
                 # reopened and saved as its next version instead of retyped.
                 "scientific_objective": scope.scientific_objective,
-                "inclusion_criteria": list(scope.inclusion_criteria),
-                "exclusion_criteria": list(scope.exclusion_criteria),
                 "concepts": list(scope.concepts),
                 "exclusion_terms": list(scope.exclusion_terms),
                 "relevance_policy": {

@@ -87,9 +87,9 @@ class ScopeVersion(BaseModel):
     scope_id: UUID
     version: int
     name: str
+    #: The purpose: what belongs and what does not, as prose for people. Never
+    #: matched as text; what decides papers is the screening rules below.
     scientific_objective: str
-    inclusion_criteria: tuple[str, ...] = ()
-    exclusion_criteria: tuple[str, ...] = ()
     date_from: date | None = None
     date_to: date | None = None
     languages: tuple[str, ...] = ("en",)
@@ -97,8 +97,7 @@ class ScopeVersion(BaseModel):
     #: Screening concepts (``domain/screening.py``): one per entry, alternatives
     #: separated by ``|``. The share present in a paper is its relevance score.
     concepts: tuple[str, ...] = ()
-    #: Words or phrases whose presence excludes a paper outright. Exclusion
-    #: *criteria* above are prose for people and are never matched as text.
+    #: Words or phrases whose presence excludes a paper outright.
     exclusion_terms: tuple[str, ...] = ()
     controlled_terms: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     connector_plan: tuple[ConnectorPlanEntry, ...] = ()
@@ -131,13 +130,15 @@ class ScopeVersion(BaseModel):
         document: dict[str, Any] = {
             "scope_id": self.scope_id,
             "version": self.version,
-            "inclusion": self.inclusion_criteria,
-            "exclusion": self.exclusion_criteria,
+            # What the version is for: a change to it is a different version.
+            "purpose": self.scientific_objective,
+            "intended_uses": self.intended_uses,
             "date_from": self.date_from,
             "date_to": self.date_to,
             "languages": self.languages,
             "resource_kinds": self.resource_kinds,
             "concepts": self.concepts,
+            "exclusion_terms": self.exclusion_terms,
             "controlled_terms": self.controlled_terms,
             "connector_plan": [e.model_dump(mode="python") for e in self.connector_plan],
             "relevance_policy": {
@@ -145,10 +146,6 @@ class ScopeVersion(BaseModel):
                 for key, value in self.relevance_policy.model_dump(mode="python").items()
             },
         }
-        # Only when set, so every version saved before the field existed keeps
-        # the checksum it was approved under.
-        if self.exclusion_terms:
-            document["exclusion_terms"] = self.exclusion_terms
         return sha256_bytes(canonical_json(document))
 
     @property

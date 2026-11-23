@@ -14,8 +14,10 @@ turns it into a decision:
 * anything between is left for review, and is never included silently (audit
   finding H-3) unless the policy allows "included, uncertain".
 
-Exclusion *criteria* are prose for people ("only mentioned in passing") and are
-never matched as text; exclusion *terms* are.
+What is read is the work's canonical title and abstract (one each, from the most
+authoritative source that gave one) and every subject term any source asserted.
+A scope's purpose and intended uses are prose for people and are never matched
+as text; exclusion *terms* are.
 """
 
 from __future__ import annotations

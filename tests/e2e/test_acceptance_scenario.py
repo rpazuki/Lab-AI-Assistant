@@ -305,7 +305,6 @@ async def test_full_lifecycle_acceptance_scenario() -> None:
                 connector_id="crossref-fixture", connector_version="1.0.0", query=SCOPE_QUERY
             ),
         ],
-        inclusion_criteria=("engineered yeast lipid production",),
         intended_uses=("internal literature search", "datasheet extraction"),
         concepts=("lipid production", "yarrowia lipolytica"),
     )

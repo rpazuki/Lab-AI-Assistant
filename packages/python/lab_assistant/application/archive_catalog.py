@@ -1221,8 +1221,6 @@ def _scope_record(library_id: UUID, scope) -> ScopeVersionRecord:
         version=scope.version,
         name=scope.name,
         scientific_objective=scope.scientific_objective,
-        inclusion_criteria=tuple(scope.inclusion_criteria or ()),
-        exclusion_criteria=tuple(scope.exclusion_criteria or ()),
         concepts=tuple(scope.concepts or ()),
         exclusion_terms=tuple(getattr(scope, "exclusion_terms", ()) or ()),
         controlled_terms=tuple(scope.controlled_terms or ()),

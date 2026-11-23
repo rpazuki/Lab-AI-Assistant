@@ -47,6 +47,7 @@ import type {
   RunReviewSummary,
   ScopeGateReport,
   ReviewStep,
+  ScopeDeletionPlan,
   ScopeRulesPlan,
   ScopeVersion,
   TaskSnapshot,
@@ -266,8 +267,6 @@ export const listScopes = () =>
 export interface ScopeDocument {
   name: string;
   scientific_objective: string;
-  inclusion_criteria?: string[];
-  exclusion_criteria?: string[];
   concepts?: string[];
   exclusion_terms?: string[];
   include_threshold?: number;
@@ -422,6 +421,17 @@ export const applyScopeRules = (scopeVersionId: string, stepId: string | null = 
     `/scopes/${scopeVersionId}/rules/apply`,
     { method: "POST", body: JSON.stringify({ step_id: stepId }) },
   );
+
+/** What deleting this version's whole scope would remove, and what stops it. Changes nothing. */
+export const previewScopeDeletion = (scopeVersionId: string) =>
+  request<ScopeDeletionPlan>(`/scopes/${scopeVersionId}/deletion`);
+
+/** Delete every version of the scope, its runs and the papers only it found. */
+export const deleteScope = (scopeVersionId: string, name: string) =>
+  request<{ deleted: ScopeDeletionPlan["counts"] }>(`/scopes/${scopeVersionId}/delete-scope`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
 
 /** The review history, newest first; with `scope_version_id`, only that version's steps. */
 export const listReviewHistory = (

@@ -70,6 +70,7 @@ from lab_assistant.domain.workspace import (
 )
 
 __all__ = [
+    "DEPENDANT_KINDS",
     "ArchiveControlStore",
     "ArchiveDeletionStore",
     "ArchiveImportRepository",
@@ -94,6 +95,7 @@ __all__ = [
     "PublicationRepository",
     "ReleaseRepository",
     "RenditionRepository",
+    "ScopePurgeRepository",
     "SearchIndex",
     "StageResultRepository",
     "StoredObject",
@@ -1236,6 +1238,65 @@ class PublicationRepository(Protocol):
         ...
 
 
+#: What ``ScopePurgeRepository.work_dependants`` returns: the ids of every row
+#: that hangs off a set of works, by kind.
+DEPENDANT_KINDS: tuple[str, ...] = (
+    "manifestations",
+    "plans",
+    "attempts",
+    "assets",
+    "parse_runs",
+    "renditions",
+    "spans",
+    "experiments",
+    "claims",
+    "revisions",
+    "reviews",
+)
+
+
+@runtime_checkable
+class ScopePurgeRepository(Protocol):
+    """Deleting a whole scope: its versions, runs, and the papers only it found.
+
+    Set-based, because a scope's candidates run to tens of thousands of works and
+    each has rows in a dozen tables. Nothing here decides what may be deleted;
+    ``application/scope_deletion.py`` does, and passes the ids in.
+    """
+
+    async def works_found_by_runs(
+        self, workspace_id: UUID, run_ids: Sequence[UUID]
+    ) -> tuple[set[UUID], set[UUID]]:
+        """(works with assertions only from these runs, works also with others')."""
+        ...
+
+    async def work_dependants(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[str, set[UUID]]:
+        """The ids, by ``DEPENDANT_KINDS``, of every row that hangs off these works."""
+        ...
+
+    async def releases_holding(self, workspace_id: UUID, work_ids: Sequence[UUID]) -> set[UUID]:
+        """Releases with an item for any of these works."""
+        ...
+
+    async def purge(
+        self,
+        workspace_id: UUID,
+        *,
+        work_ids: Sequence[UUID],
+        dependants: dict[str, set[UUID]],
+        run_ids: Sequence[UUID],
+        scope_version_ids: Sequence[UUID],
+        lineage_keys: Sequence[str],
+    ) -> None:
+        """Delete these works with every row that hangs off them, then the runs
+        with their pages, records and assertions (also those linked to works that
+        stay), the cursors, the review steps filed under the versions, and the
+        versions. Releases and tasks are deleted by their own repositories."""
+        ...
+
+
 @runtime_checkable
 class UnitOfWork(Protocol):
     """Transaction boundary plus the repository set.
@@ -1263,6 +1324,7 @@ class UnitOfWork(Protocol):
     audit: AuditRepository
     chat: ChatRepository
     evaluations: EvaluationRepository
+    purge: ScopePurgeRepository
 
     async def __aenter__(self) -> UnitOfWork: ...
     async def __aexit__(

@@ -392,8 +392,6 @@ export interface ScopeVersion {
   approval_state: string;
   connectors: string[];
   scientific_objective: string;
-  inclusion_criteria: string[];
-  exclusion_criteria: string[];
   concepts: string[];
   exclusion_terms: string[];
   relevance_policy: { include_threshold: number; exclude_threshold: number };
@@ -429,6 +427,30 @@ export interface ScopeRulesPlan {
   reasons: { relevance: string; reason: string; description: string; count: number }[];
   samples: Record<string, (PaperSummary & { reason: string })[]>;
   no_concepts: boolean;
+}
+
+/** What deleting a whole scope would remove, and what stops it. */
+export interface ScopeDeletionPlan {
+  scope_id: string;
+  name: string;
+  versions: { id: string; version: number; approval_state: string }[];
+  counts: {
+    versions: number;
+    runs: number;
+    /** Papers that go: found only by this scope, and those merged into them. */
+    papers: number;
+    /** Papers other scopes also found: they stay, without this scope's records. */
+    papers_kept: number;
+    decided_by_person: number;
+    files: number;
+    parsed_texts: number;
+    values: number;
+    value_reviews: number;
+    draft_releases: number;
+    tasks: number;
+  };
+  blockers: string[];
+  deletable: boolean;
 }
 
 /** One step in the review history. */

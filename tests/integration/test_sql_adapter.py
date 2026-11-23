@@ -967,7 +967,6 @@ class TestDeletesOverSql:
             connector_plan=[
                 ConnectorPlanEntry(connector_id="pubmed", connector_version="1.0.0", query="q")
             ],
-            inclusion_criteria=("x",),
             intended_uses=("y",),
             concepts=("z",),
         )
@@ -1152,7 +1151,6 @@ class TestReconciliationOverSql:
             connector_plan=[
                 ConnectorPlanEntry(connector_id="pubmed", connector_version="1.0.0", query="q")
             ],
-            inclusion_criteria=("x",),
             intended_uses=("y",),
             concepts=("yarrowia",),
         )

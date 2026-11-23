@@ -54,6 +54,9 @@ class AuditAction(StrEnum):
     SCOPE_APPROVED = "scope_approved"
     #: An unapproved scope version was deleted. Nothing had searched with it.
     SCOPE_DRAFT_DELETED = "scope_draft_deleted"
+    #: A whole scope was deleted: every version, its runs, and the papers only it
+    #: found. Refused once a release past draft, a question or an evaluation used it.
+    SCOPE_DELETED = "scope_deleted"
     DISCOVERY_RUN_STARTED = "discovery_run_started"
     DISCOVERY_RUN_FROZEN = "discovery_run_frozen"
     #: A discovery run that contributed no candidates was deleted, with its pages.

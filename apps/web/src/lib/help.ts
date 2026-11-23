@@ -180,7 +180,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "What can be deleted, and when",
         about: [
           "Something can be deleted only while nothing else depends on it. Where deletion is allowed a red **Delete** button appears; where it is missing, the item is part of the record others rely on and stays. Every deletion asks first, is recorded in the audit log, and cannot be undone.",
-          "Members, candidates, papers, files, values and reviews are never deleted: exclude, withdraw or reject them instead, so the history of what was decided stays complete.",
+          "Members, candidates, papers, files, values and reviews are not deleted one by one: exclude, withdraw or reject them instead, so the history of what was decided stays complete. The one exception is deleting a whole scope, which takes the papers only it found with it.",
         ],
         howTos: [
           {
@@ -409,7 +409,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         statuses: ["approval"],
         title: "Scopes",
         about: [
-          "A scope says what a collection is for and where to search: a scientific objective, inclusion and exclusion criteria, and a query for each source (PubMed, Europe PMC, Crossref, OpenAlex, DataCite) in that source's own syntax.",
+          "A scope says what a collection is for and where to search: a **Purpose** and **Intended uses** for the people who review and use it, **Screening rules** that decide candidates, and a query for each source (PubMed, Europe PMC, Crossref, OpenAlex, DataCite) in that source's own syntax. Purpose and intended uses are never read to decide a paper or to search a source: write what belongs and what does not in Purpose, for people. What is searched is each source's query; what is decided automatically is the screening rules.",
           "A scope starts as a draft. Its gate checks that it is complete enough to run; once approved, discovery can search with it. Until then a draft can be corrected, saved as a new version, or deleted. Approved scopes cannot be changed: they are a record of exactly what was searched.",
         ],
         howTos: [
@@ -418,14 +418,13 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             needs: STEWARD,
             steps: [
               "On **Collections**, select **New scope**.",
-              "Enter a **Name** and the **Scientific objective**.",
-              "List the **Inclusion criteria** and, optionally, the **Exclusion criteria**, one per line.",
+              "Enter a **Name** and, under **Purpose**, what the collection is for, what belongs in it and what does not.",
               "Under **Screening rules**, list the **Concepts** a relevant paper mentions and any **Exclusion terms** (see Screening rules and review history, below).",
               "Under **Intended uses**, say what the collection is for, one per line (for example literature search).",
               "Under sources, tick each source to search and type its query (or write them with the organism lookup, below).",
               "Select **Save as draft**.",
             ],
-            note: "The gate needs inclusion criteria, intended uses and a query that compiles for every ticked source.",
+            note: "The gate needs a purpose, intended uses and a query that compiles for every ticked source.",
           },
           {
             title: "How to fix a scope whose gate fails",
@@ -439,10 +438,20 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             note: "Only unapproved versions can be edited. An approved scope is the record of what was searched: to change it, select **New version** on it.",
           },
           {
-            title: "How to delete a draft scope",
+            title: "How to delete a draft scope version",
             needs: STEWARD,
             steps: ["Select **Delete** on the draft and confirm."],
-            note: "Only unapproved versions can be deleted. The deletion is recorded in the audit log.",
+            note: "This deletes that one unapproved version. To delete a scope with everything it found, see the next how-to.",
+          },
+          {
+            title: "How to delete a whole scope",
+            needs: STEWARD,
+            steps: [
+              "On **Collections**, select **Delete scope** on any approved or retired version of it.",
+              "Read what would go: every version, its discovery runs with the pages they fetched, and every paper only this scope found, with its decisions, duplicate pairs, full texts, extracted values and review history. Papers another scope also found stay, without this scope's records of them.",
+              "Type the scope's name and select **Delete the scope**.",
+            ],
+            note: "It is refused while a release past draft holds its papers or names its versions, a question was answered or an evaluation ran on a release that holds them, work for it is still queued or running, or another scope searched a source with the same query. Draft releases holding its papers go with it. The audit log keeps a record of the deletion, which cannot be undone.",
           },
           {
             title: "How to approve a scope",
@@ -459,7 +468,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         statuses: ["review_step"],
         title: "Screening rules and review history",
         about: [
-          "A scope's **Concepts** and **Exclusion terms** decide candidates automatically. A paper's score is the share of concepts its title, abstract or subject terms mention; a concept can list alternatives separated by | (yarrowia | y. lipolytica). An exclusion term excludes outright. A paper with no abstract is never excluded for missing a concept: its title alone is no evidence, so it is left for review.",
+          "A scope's **Concepts** and **Exclusion terms** decide candidates automatically. A paper's score is the share of concepts it mentions; a concept can list alternatives separated by | (yarrowia | y. lipolytica). An exclusion term excludes outright. A paper with no abstract is never excluded for missing a concept: its title alone is no evidence, so it is left for review. Three fields of each candidate are read, as the sources reported them: its **title** (one, from the most authoritative source that gave one: Crossref or DataCite, then Europe PMC, then OpenAlex), its **abstract** (only Europe PMC supplies abstracts) and its **subject terms** (the topic labels OpenAlex assigns, up to 20). The journal, authors, year, MeSH headings, author keywords and full text are not read. Case is ignored, and a term matches anywhere in the text, even inside a longer word (plant also matches implant).",
           "An approved scope is frozen, so changing its rules means a new version. **Apply rules** then re-decides the candidates with that version, but never a candidate a person decided. Every step under a scope (its approval, frozen runs, rules applied, filters, merges, single decisions) is kept in its **History**.",
         ],
         howTos: [
@@ -467,7 +476,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             title: "How to see what a frozen scope contains",
             steps: [
               "On **Collections**, select **View** on the approved scope.",
-              "Its criteria, screening rules and source queries show read-only. Select **View** again to close it.",
+              "Its purpose, intended uses, screening rules and source queries show read-only. Select **View** again to close it.",
             ],
           },
           {

@@ -27,6 +27,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     previewScopeRules: vi.fn(),
     applyScopeRules: vi.fn(),
     listReviewHistory: vi.fn(),
+    previewScopeDeletion: vi.fn(),
+    deleteScope: vi.fn(),
   };
 });
 
@@ -41,8 +43,6 @@ function scope(overrides: Partial<ScopeVersion> = {}): ScopeVersion {
     approval_state: "draft",
     connectors: ["pubmed"],
     scientific_objective: "Yarrowia literature",
-    inclusion_criteria: ["Y. lipolytica is studied"],
-    exclusion_criteria: [],
     concepts: ["lipids"],
     exclusion_terms: [],
     relevance_policy: { include_threshold: 0.75, exclude_threshold: 0.25 },
@@ -62,8 +62,6 @@ describe("CollectionSetup", () => {
   const expectedFields = {
     name: "Yarrowia lipolytica",
     scientific_objective: "Yarrowia literature",
-    inclusion_criteria: ["Y. lipolytica is studied"],
-    exclusion_criteria: [],
     intended_uses: ["literature search"],
     concepts: ["lipids"],
     exclusion_terms: [],
@@ -80,7 +78,7 @@ describe("CollectionSetup", () => {
     expect(await screen.findByText(/Select Edit to fix it/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Edit" }));
     const form = screen.getByRole("form", { name: "Edit Yarrowia lipolytica" });
-    expect(within(form).getByLabelText("Scientific objective")).toHaveValue("Yarrowia literature");
+    expect(within(form).getByLabelText("Purpose")).toHaveValue("Yarrowia literature");
     expect(within(form).getByLabelText("PubMed query")).toHaveValue('"Yarrowia lipolytica"');
     await user.type(within(form).getByLabelText("Intended uses (one per line)"), "literature search");
     return { user, form };
@@ -178,12 +176,13 @@ describe("CollectionSetup", () => {
     expect(screen.getAllByRole("button", { name: "Delete" })).toHaveLength(2);
   });
 
-  const frozen = () =>
+  const frozen = (overrides: Partial<ScopeVersion> = {}) =>
     scope({
       approval_state: "approved",
       concepts: ["yarrowia | y. lipolytica"],
       exclusion_terms: ["plant"],
       frozen_at: "2026-11-22T12:03:39Z",
+      ...overrides,
     });
 
   it("shows a frozen version read-only, with no way to save it", async () => {
@@ -200,6 +199,92 @@ describe("CollectionSetup", () => {
     expect(within(form).getByLabelText("Exclusion terms (one per line)")).toHaveValue("plant");
     expect(within(form).getByLabelText("PubMed query")).toBeDisabled();
     expect(within(form).queryByRole("button")).toBeNull();
+  });
+
+  it("shows a frozen version as saved: its own text, never the form's examples", async () => {
+    vi.mocked(api.listScopes).mockResolvedValue([frozen({ exclusion_terms: [], concepts: [] })]);
+    const user = userEvent.setup();
+    render(<CollectionSetup />);
+    await user.click(await screen.findByRole("button", { name: "View Yarrowia lipolytica v1" }));
+
+    const form = screen.getByRole("form", { name: "Yarrowia lipolytica v1, read-only" });
+    expect(within(form).getByLabelText("Purpose")).toHaveValue("Yarrowia literature");
+    for (const field of within(form).getAllByRole("textbox")) {
+      expect(field).not.toHaveAttribute("placeholder", expect.stringMatching(/./));
+    }
+  });
+
+  it("deletes a whole scope only once nothing stops it and its name is typed", async () => {
+    vi.mocked(api.listScopes).mockResolvedValue([frozen()]);
+    vi.mocked(api.previewScopeDeletion).mockResolvedValue({
+      scope_id: "s1",
+      name: "Yarrowia lipolytica",
+      versions: [{ id: "v1", version: 1, approval_state: "approved" }],
+      counts: {
+        versions: 1,
+        runs: 2,
+        papers: 28044,
+        papers_kept: 0,
+        decided_by_person: 6,
+        files: 0,
+        parsed_texts: 0,
+        values: 0,
+        value_reviews: 0,
+        draft_releases: 0,
+        tasks: 3,
+      },
+      blockers: [],
+      deletable: true,
+    });
+    vi.mocked(api.deleteScope).mockResolvedValue({
+      deleted: { versions: 1, runs: 2, papers: 28044 } as never,
+    });
+    const user = userEvent.setup();
+    render(<CollectionSetup />);
+    await user.click(
+      await screen.findByRole("button", { name: "Delete the scope Yarrowia lipolytica, every version" }),
+    );
+
+    expect(await screen.findByText("28,044 papers")).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: "Delete the scope" });
+    expect(submit).toBeDisabled();
+    await user.type(screen.getByLabelText(/to confirm/), "Yarrowia lipolytica");
+    await user.click(submit);
+
+    await waitFor(() => expect(api.deleteScope).toHaveBeenCalledWith("v1", "Yarrowia lipolytica"));
+    expect(await screen.findByText(/Scope “Yarrowia lipolytica” deleted/)).toBeInTheDocument();
+  });
+
+  it("says why a scope cannot be deleted, and offers no button", async () => {
+    vi.mocked(api.listScopes).mockResolvedValue([frozen()]);
+    vi.mocked(api.previewScopeDeletion).mockResolvedValue({
+      scope_id: "s1",
+      name: "Yarrowia lipolytica",
+      versions: [{ id: "v1", version: 1, approval_state: "approved" }],
+      counts: {
+        versions: 1,
+        runs: 1,
+        papers: 10,
+        papers_kept: 0,
+        decided_by_person: 0,
+        files: 0,
+        parsed_texts: 0,
+        values: 0,
+        value_reviews: 0,
+        draft_releases: 0,
+        tasks: 0,
+      },
+      blockers: ["release “Corpus” 1.0.0 is published and holds its papers"],
+      deletable: false,
+    });
+    const user = userEvent.setup();
+    render(<CollectionSetup />);
+    await user.click(
+      await screen.findByRole("button", { name: "Delete the scope Yarrowia lipolytica, every version" }),
+    );
+
+    expect(await screen.findByText(/is published and holds its papers/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete the scope" })).toBeNull();
   });
 
   it("starts the next version from a frozen one, which stays as it is", async () => {

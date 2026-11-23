@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 
 import { QueryHelper } from "@/components/QueryHelper";
-import { ReviewHistory, ScopeRules } from "@/components/ScopeReview";
+import { ReviewHistory, ScopeDeletion, ScopeRules } from "@/components/ScopeReview";
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { SortHeader } from "@/components/ui/table";
@@ -73,7 +73,7 @@ function runDeletable(run: DiscoveryRun): boolean {
 /**
  * Setting a collection up: its scope, and the discovery runs that search it.
  *
- * A scope has to pass its gate (inclusion criteria, intended uses, every source
+ * A scope has to pass its gate (a purpose, intended uses, every source
  * query compiled) and be approved before discovery may run against it. Until it
  * is approved nothing refers to it, so a draft can be corrected in place, saved
  * as a new version, or deleted. An approved version is immutable: discovery runs
@@ -91,9 +91,9 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ScopeVersion | null>(null);
   /** What is open under each scope row: its read-only view, its rules, its history. */
-  const [open, setOpen] = useState<{ id: string; what: "view" | "rules" | "history" } | null>(null);
+  const [open, setOpen] = useState<{ id: string; what: "view" | "rules" | "history" | "delete" } | null>(null);
 
-  function toggle(scope: ScopeVersion, what: "view" | "rules" | "history") {
+  function toggle(scope: ScopeVersion, what: "view" | "rules" | "history" | "delete") {
     setOpen((current) => (current?.id === scope.id && current.what === what ? null : { id: scope.id, what }));
   }
 
@@ -288,6 +288,17 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                           Delete
                         </Button>
                       ) : null}
+                      {!editable ? (
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          aria-pressed={shown === "delete"}
+                          aria-label={`Delete the scope ${scope.name}, every version`}
+                          onClick={() => toggle(scope, "delete")}
+                        >
+                          Delete scope
+                        </Button>
+                      ) : null}
                       <Button variant="ghost" size="sm" onClick={() => gate(scope)}>
                         Check gate
                       </Button>
@@ -320,6 +331,18 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                   ) : null}
                   {shown === "rules" ? <ScopeRules scope={scope} onChanged={onChanged} /> : null}
                   {shown === "history" ? <ReviewHistory scope={scope} /> : null}
+                  {shown === "delete" ? (
+                    <ScopeDeletion
+                      scope={scope}
+                      onDeleted={async (message) => {
+                        setOpen(null);
+                        setGates({});
+                        setNotice(message);
+                        onChanged?.();
+                        await live.refresh();
+                      }}
+                    />
+                  ) : null}
                   {report ? (
                     <div className="mt-2">
                       {report.passed ? (
@@ -493,8 +516,6 @@ function ScopeForm({
   const readOnly = mode === "view";
   const [name, setName] = useState(initial?.name ?? "");
   const [objective, setObjective] = useState(initial?.scientific_objective ?? "");
-  const [inclusion, setInclusion] = useState((initial?.inclusion_criteria ?? []).join("\n"));
-  const [exclusion, setExclusion] = useState((initial?.exclusion_criteria ?? []).join("\n"));
   const [concepts, setConcepts] = useState((initial?.concepts ?? []).join("\n"));
   const [exclusionTerms, setExclusionTerms] = useState((initial?.exclusion_terms ?? []).join("\n"));
   const [includeAt, setIncludeAt] = useState(
@@ -518,8 +539,6 @@ function ScopeForm({
       const fields = {
         name: name.trim(),
         scientific_objective: objective.trim(),
-        inclusion_criteria: lines(inclusion),
-        exclusion_criteria: lines(exclusion),
         concepts: lines(concepts),
         exclusion_terms: lines(exclusionTerms),
         include_threshold: Number(includeAt) / 100,
@@ -602,47 +621,62 @@ function ScopeForm({
           <Field label="Name">
             <Input required value={name} onChange={(event) => setName(event.target.value)} />
           </Field>
-          <Field label="Scientific objective">
-            <Input required value={objective} onChange={(event) => setObjective(event.target.value)} />
-          </Field>
-          <Field label="Inclusion criteria (one per line)">
-            <textarea
-              rows={3}
-              className={textareaClass}
-              value={inclusion}
-              onChange={(event) => setInclusion(event.target.value)}
-            />
-          </Field>
-          <Field label="Exclusion criteria (one per line)">
-            <textarea
-              rows={3}
-              className={textareaClass}
-              value={exclusion}
-              onChange={(event) => setExclusion(event.target.value)}
-            />
-          </Field>
           <Field label="Intended uses (one per line)">
             <textarea
               rows={2}
               className={textareaClass}
-              placeholder="literature search"
               value={uses}
               onChange={(event) => setUses(event.target.value)}
             />
           </Field>
         </div>
+        <Field label="Purpose">
+          <textarea
+            required
+            rows={4}
+            className={textareaClass}
+            value={objective}
+            onChange={(event) => setObjective(event.target.value)}
+          />
+        </Field>
+        <p className="text-xs text-muted">
+          Purpose and intended uses are for people: what the collection is for, what belongs in it and
+          what does not. Approval needs both, and changing either needs a new version, but nothing
+          reads them to decide a paper or to search a source. What decides papers is the screening
+          rules below; what is searched is each source&apos;s query.
+        </p>
         <fieldset className="space-y-2 rounded-control border border-border px-3 py-2">
           <legend className="px-1 text-sm font-medium text-ink">Screening rules</legend>
-          <p className="text-xs text-muted">
-            What decides a candidate automatically. The criteria above are for people; these are
-            matched against each paper&apos;s title, abstract and subject terms.
-          </p>
+          <div className="space-y-1 text-xs text-muted">
+            <p>
+              What decides a candidate automatically, when its run is reconciled and when you select{" "}
+              <strong>Apply rules</strong>. Each concept and exclusion term is looked for in three fields
+              of the candidate, as the sources reported them:
+            </p>
+            <ul className="list-disc pl-5">
+              <li>
+                <strong>Title</strong>: one title, from the most authoritative source that gave one
+                (Crossref or DataCite, then Europe PMC, then OpenAlex).
+              </li>
+              <li>
+                <strong>Abstract</strong>: only Europe PMC supplies abstracts. A candidate no Europe PMC
+                record matched has none.
+              </li>
+              <li>
+                <strong>Subject terms</strong>: the topic labels OpenAlex assigns (up to 20).
+              </li>
+            </ul>
+            <p>
+              Nothing else is read: not the journal, authors, year, MeSH headings, author keywords or full
+              text. Case is ignored, and a term matches anywhere in the text, even inside a longer word
+              (“plant” also matches “implant”).
+            </p>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Concepts (one per line; alternatives separated by |)">
               <textarea
                 rows={3}
                 className={textareaClass}
-                placeholder={"yarrowia | y. lipolytica\nlipid | oleaginous"}
                 value={concepts}
                 onChange={(event) => setConcepts(event.target.value)}
               />
@@ -651,7 +685,6 @@ function ScopeForm({
               <textarea
                 rows={3}
                 className={textareaClass}
-                placeholder={"plant\nmammalian cell"}
                 value={exclusionTerms}
                 onChange={(event) => setExclusionTerms(event.target.value)}
               />
@@ -721,7 +754,7 @@ function ScopeForm({
                 <Input
                   aria-label={`${connector.label} query`}
                   disabled={!on}
-                  placeholder={on ? connector.example : ""}
+                  placeholder={on && !readOnly ? connector.example : ""}
                   value={queries[connector.id] ?? ""}
                   onChange={(event) =>
                     setQueries((current) => ({ ...current, [connector.id]: event.target.value }))

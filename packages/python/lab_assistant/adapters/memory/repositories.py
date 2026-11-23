@@ -1972,6 +1972,153 @@ class _Evaluations:
         self._db.benchmarks.pop((str(workspace_id), benchmark_id, version), None)
 
 
+class _ScopePurge:
+    """``ScopePurgeRepository`` over the dictionaries; the SQL one documents it."""
+
+    def __init__(self, db: MemoryDatabase) -> None:
+        self._db = db
+
+    @staticmethod
+    def _ids(rows: dict[UUID, Any], workspace_id: UUID, keep: Any) -> set[UUID]:
+        return {key for key, row in rows.items() if row.workspace_id == workspace_id and keep(row)}
+
+    def _run_of_assertion(self) -> dict[UUID, UUID]:
+        """Assertion id -> the run whose page it came from."""
+        db = self._db
+        run_of_request = {r.id: r.discovery_run_id for r in db.source_requests.values()}
+        run_of_observation = {
+            o.id: run_of_request.get(o.source_request_id) for o in db.observations.values()
+        }
+        return {
+            a.id: run_of_observation.get(a.source_observation_id)  # type: ignore[misc]
+            for a in db.assertions.values()
+        }
+
+    async def works_found_by_runs(
+        self, workspace_id: UUID, run_ids: Sequence[UUID]
+    ) -> tuple[set[UUID], set[UUID]]:
+        runs = set(run_ids)
+        run_of = self._run_of_assertion()
+        mine: set[UUID] = set()
+        others: set[UUID] = set()
+        for assertion in self._db.assertions.values():
+            if assertion.workspace_id != workspace_id or assertion.work_id is None:
+                continue
+            (mine if run_of.get(assertion.id) in runs else others).add(assertion.work_id)
+        return mine - others, mine & others
+
+    async def work_dependants(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[str, set[UUID]]:
+        db, ws, works = self._db, workspace_id, set(work_ids)
+        plans = self._ids(db.plans, ws, lambda p: p.work_id in works)
+        assets = self._ids(db.assets, ws, lambda a: a.work_id in works)
+        renditions = self._ids(
+            db.renditions, ws, lambda r: r.work_id in works or r.asset_id in assets
+        )
+        claims = self._ids(db.claims, ws, lambda c: c.work_id in works)
+        revisions = self._ids(db.revisions, ws, lambda r: r.claim_id in claims)
+        return {
+            "manifestations": self._ids(db.manifestations, ws, lambda m: m.work_id in works),
+            "plans": plans,
+            "attempts": self._ids(db.attempts, ws, lambda a: a.acquisition_plan_id in plans),
+            "assets": assets,
+            "parse_runs": self._ids(db.parse_runs, ws, lambda p: p.asset_id in assets),
+            "renditions": renditions,
+            "spans": self._ids(db.spans, ws, lambda s: s.rendition_id in renditions),
+            "experiments": self._ids(db.experiments, ws, lambda e: e.work_id in works),
+            "claims": claims,
+            "revisions": revisions,
+            "reviews": self._ids(
+                db.reviews,
+                ws,
+                lambda r: r.revision_id in revisions or r.subject_id in claims | revisions,
+            ),
+        }
+
+    async def releases_holding(self, workspace_id: UUID, work_ids: Sequence[UUID]) -> set[UUID]:
+        works = set(work_ids)
+        return {
+            item.release_id
+            for item in self._db.release_items.values()
+            if item.workspace_id == workspace_id and item.record.work_id in works
+        }
+
+    async def purge(
+        self,
+        workspace_id: UUID,
+        *,
+        work_ids: Sequence[UUID],
+        dependants: dict[str, set[UUID]],
+        run_ids: Sequence[UUID],
+        scope_version_ids: Sequence[UUID],
+        lineage_keys: Sequence[str],
+    ) -> None:
+        db, ws, works, d = self._db, workspace_id, set(work_ids), dependants
+
+        def drop(rows: dict[Any, Any], ids: Any) -> None:
+            for key in ids:
+                row = rows.get(key)
+                if row is not None and getattr(row, "workspace_id", ws) == ws:
+                    del rows[key]
+
+        drop(db.reviews, d.get("reviews", ()))
+        drop(db.revisions, d.get("revisions", ()))
+        drop(db.claims, d.get("claims", ()))
+        drop(db.experiments, d.get("experiments", ()))
+        drop(db.spans, d.get("spans", ()))
+        drop(db.renditions, d.get("renditions", ()))
+        drop(db.parse_runs, d.get("parse_runs", ()))
+        subjects = (
+            works | d.get("assets", set()) | d.get("manifestations", set()) | d.get("plans", set())
+        )
+        drop(
+            db.rights_decisions,
+            self._ids(db.rights_decisions, ws, lambda r: r.subject_id in subjects),
+        )
+        drop(db.assets, d.get("assets", ()))
+        drop(db.attempts, d.get("attempts", ()))
+        drop(db.plans, d.get("plans", ()))
+        drop(db.manifestations, d.get("manifestations", ()))
+        drop(
+            db.relations,
+            self._ids(db.relations, ws, lambda r: r.from_work_id in works or r.to_work_id in works),
+        )
+        drop(db.identifiers, self._ids(db.identifiers, ws, lambda i: i.work_id in works))
+        drop(db.summaries, works)
+        drop(
+            db.duplicate_candidates,
+            self._ids(
+                db.duplicate_candidates,
+                ws,
+                lambda c: c.left_work_id in works or c.right_work_id in works,
+            ),
+        )
+        for work_id in works:
+            db.work_metadata.pop((ws, work_id), None)
+        drop(
+            db.identity_decisions,
+            self._ids(
+                db.identity_decisions,
+                ws,
+                lambda decision: (
+                    bool(decision.subject_work_ids) and set(decision.subject_work_ids) <= works
+                ),
+            ),
+        )
+        for run_id in run_ids:
+            await _Observations(db).delete_run(ws, run_id)
+        drop(db.works, works)
+        for key in lineage_keys:
+            db.cursors.pop((ws, key), None)
+        versions = set(scope_version_ids)
+        drop(
+            db.review_steps,
+            self._ids(db.review_steps, ws, lambda s: s.scope_version_id in versions),
+        )
+        drop(db.scope_versions, versions)
+
+
 class MemoryUnitOfWork:
     """A unit of work over the in-memory store.
 
@@ -2000,6 +2147,7 @@ class MemoryUnitOfWork:
         self.audit = _Audit(db)
         self.chat = _Chat(db)
         self.evaluations = _Evaluations(db)
+        self.purge = _ScopePurge(db)
         self._committed = False
 
     async def __aenter__(self) -> MemoryUnitOfWork:

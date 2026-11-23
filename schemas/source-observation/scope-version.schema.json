@@ -174,14 +174,6 @@
       "default": null,
       "title": "Date To"
     },
-    "exclusion_criteria": {
-      "default": [],
-      "items": {
-        "type": "string"
-      },
-      "title": "Exclusion Criteria",
-      "type": "array"
-    },
     "exclusion_terms": {
       "default": [],
       "items": {
@@ -220,14 +212,6 @@
       "format": "uuid",
       "title": "Id",
       "type": "string"
-    },
-    "inclusion_criteria": {
-      "default": [],
-      "items": {
-        "type": "string"
-      },
-      "title": "Inclusion Criteria",
-      "type": "array"
     },
     "intended_uses": {
       "default": [],

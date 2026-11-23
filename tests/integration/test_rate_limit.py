@@ -112,7 +112,6 @@ async def provisioned_two_page(jats_bytes):
                 connector_id="pubmed-fixture", connector_version="1.0.0", query=query
             )
         ],
-        inclusion_criteria=("anything",),
         intended_uses=("internal literature search",),
         concepts=("paging",),
     )
@@ -317,7 +316,6 @@ class TestDiscoveryUsesTheLimiter:
                     query="yarrowia lipolytica lipid production",
                 )
             ],
-            inclusion_criteria=("engineered yeast lipid production",),
             intended_uses=("internal literature search",),
             concepts=("lipid production",),
         )
@@ -392,7 +390,6 @@ class TestRateLimitedWorkAlwaysComesBack:
                     query="yarrowia lipolytica lipid production",
                 )
             ],
-            inclusion_criteria=("engineered yeast lipid production",),
             intended_uses=("internal literature search",),
             concepts=("lipid production",),
         )

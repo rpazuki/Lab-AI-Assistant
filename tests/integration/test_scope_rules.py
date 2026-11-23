@@ -68,6 +68,32 @@ class TestTheRules:
         assert score("anything", concepts=())[0] is RelevanceState.UNREVIEWED
 
 
+class TestTheFingerprint:
+    """Purpose and intended uses are part of a version, without moving old checksums."""
+
+    @staticmethod
+    def version(**fields: Any) -> ScopeVersion:
+        base: dict[str, Any] = {
+            "id": UUID(int=1),
+            "workspace_id": UUID(int=2),
+            "scope_id": UUID(int=3),
+            "version": 1,
+            "name": "Yarrowia",
+            "scientific_objective": "Papers that study Y. lipolytica.",
+            "intended_uses": ("literature search",),
+        }
+        return ScopeVersion(**{**base, **fields})
+
+    def test_a_new_version_changes_with_its_purpose_and_uses(self) -> None:
+        checksum = self.version().config_checksum
+        assert self.version(scientific_objective="Something else.").config_checksum != checksum
+        assert self.version(intended_uses=("answers",)).config_checksum != checksum
+
+    def test_a_new_version_changes_with_its_exclusion_terms(self) -> None:
+        checksum = self.version().config_checksum
+        assert self.version(exclusion_terms=("plant",)).config_checksum != checksum
+
+
 class ScopeLab(Lab):
     async def scope(
         self,

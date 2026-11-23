@@ -753,7 +753,6 @@ class TestCollections:
             json={
                 "name": "Yarrowia lipids",
                 "scientific_objective": "Lipid yields",
-                "inclusion_criteria": ["engineered yeast"],
                 "intended_uses": ["literature search"],
                 "concepts": ["lipid production"],
                 "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
@@ -780,7 +779,6 @@ class TestCollections:
             json={
                 "name": "Yarrowia",
                 "scientific_objective": "Yarrowia literature",
-                "exclusion_criteria": ["not English"],
                 "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
             },
         )
@@ -791,7 +789,7 @@ class TestCollections:
         listed = await api["client"].get("/api/v1/scopes", headers=_auth(token))
         draft = next(item for item in listed.json()["items"] if item["id"] == draft_id)
         assert draft["scientific_objective"] == "Yarrowia literature"
-        assert draft["exclusion_criteria"] == ["not English"]
+        assert "inclusion_criteria" not in draft
         assert draft["connector_plan"] == [
             {"connector_id": "pubmed-fixture", "query": "lipid production", "required": True}
         ]
@@ -803,8 +801,6 @@ class TestCollections:
                 "scope_id": draft["scope_id"],
                 "name": draft["name"],
                 "scientific_objective": draft["scientific_objective"],
-                "inclusion_criteria": ["Y. lipolytica is a studied organism"],
-                "exclusion_criteria": draft["exclusion_criteria"],
                 "intended_uses": ["literature search"],
                 "connectors": draft["connector_plan"],
             },
@@ -823,7 +819,6 @@ class TestCollections:
         body = {
             "name": "Yarrowia",
             "scientific_objective": "Yarrowia literature",
-            "inclusion_criteria": ["Y. lipolytica is a studied organism"],
             "intended_uses": ["literature search"],
             "concepts": ["yarrowia | y. lipolytica", " "],
             "exclusion_terms": ["plant"],
@@ -871,6 +866,40 @@ class TestCollections:
         assert history.json()["items"][1]["actor"]
         assert history.json()["next_cursor"] is None
 
+    async def test_a_scope_with_only_a_purpose_passes_its_gate_and_is_deleted_whole(
+        self, api
+    ) -> None:
+        """Purpose replaces the criteria lists; deleting needs the name typed exactly."""
+        token = await _login(api["client"], "steward@lab.invalid")
+        body = {
+            "name": "Yarrowia",
+            "scientific_objective": "Papers that study Y. lipolytica itself.",
+            "intended_uses": ["literature search"],
+            "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
+        }
+        v1 = (await api["client"].post("/api/v1/scopes", headers=_auth(token), json=body)).json()
+        gate = await api["client"].post(f"/api/v1/scopes/{v1['id']}/gate", headers=_auth(token))
+        assert gate.json()["passed"] is True
+        await api["client"].post(f"/api/v1/scopes/{v1['id']}/approve", headers=_auth(token))
+
+        preview = await api["client"].get(
+            f"/api/v1/scopes/{v1['id']}/deletion", headers=_auth(token)
+        )
+        assert preview.json()["deletable"] is True
+        assert preview.json()["counts"]["versions"] == 1
+        wrong = await api["client"].post(
+            f"/api/v1/scopes/{v1['id']}/delete-scope", headers=_auth(token), json={"name": "Y"}
+        )
+        assert wrong.status_code == 422
+        deleted = await api["client"].post(
+            f"/api/v1/scopes/{v1['id']}/delete-scope",
+            headers=_auth(token),
+            json={"name": "Yarrowia"},
+        )
+        assert deleted.json()["deleted"]["versions"] == 1
+        listed = await api["client"].get("/api/v1/scopes", headers=_auth(token))
+        assert v1["id"] not in {item["id"] for item in listed.json()["items"]}
+
     async def test_a_draft_is_corrected_in_place_keeping_its_version(self, api) -> None:
         token = await _login(api["client"], "steward@lab.invalid")
         created = await api["client"].post(
@@ -889,7 +918,6 @@ class TestCollections:
             json={
                 "name": "Yarrowia lipolytica",
                 "scientific_objective": "Yarrowia literature",
-                "inclusion_criteria": ["Y. lipolytica is a studied organism"],
                 "intended_uses": ["literature search"],
                 "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
             },
@@ -934,7 +962,6 @@ class TestCollections:
         body = {
             "name": "Yarrowia lipids",
             "scientific_objective": "Lipid yields",
-            "inclusion_criteria": ["engineered yeast"],
             "intended_uses": ["literature search"],
             "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
         }
@@ -990,7 +1017,6 @@ class TestCollections:
             json={
                 "name": "Yarrowia lipids",
                 "scientific_objective": "Lipid yields",
-                "inclusion_criteria": ["engineered yeast"],
                 "intended_uses": ["literature search"],
                 "concepts": ["lipid production"],
                 "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
