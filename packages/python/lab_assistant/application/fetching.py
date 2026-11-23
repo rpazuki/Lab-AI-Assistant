@@ -7,9 +7,9 @@ never fetched, and nothing said so. ``plan_included`` queues planning again; the
 planner skips any paper that already has a plan, so asking twice costs a scan and
 plans nothing twice.
 
-``retry_waiting`` puts fetches that ended waiting for a person back in the queue,
-but only those with an automatic route left to try: a paper whose only route is a
-person's upload would only end where it started.
+``retry_waiting`` puts fetches that ended waiting for a person, or that ran out of
+retries, back in the queue, but only those with an automatic route left to try: a
+paper whose only route is a person's upload would only end where it started.
 """
 
 from __future__ import annotations
@@ -67,8 +67,10 @@ class FetchQueue:
         )
 
     async def retry_waiting(self, actor: ActorContext) -> dict[str, int]:
-        """Put waiting fetches with an automatic route back in the queue.
+        """Put waiting and dead-lettered fetches with an automatic route back in the queue.
 
+        Dead letters are included because the ones a fetch leaves are a fault the
+        fetch had, not the paper: retrying them after the fix is the point.
         Returns how many were queued again and how many stay with a person.
         """
         self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
@@ -81,7 +83,7 @@ class FetchQueue:
             async with context.uow_factory() as uow:
                 page = await uow.tasks.page_tasks(
                     ws,
-                    states=[TaskState.AWAITING_USER.value],
+                    states=[TaskState.AWAITING_USER.value, TaskState.DEAD_LETTER.value],
                     stage=StageName.ACQUISITION.value,
                     limit=_PAGE,
                     after=after,

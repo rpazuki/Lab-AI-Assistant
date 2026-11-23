@@ -8,15 +8,20 @@ after a run that were never planned at all.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
 import pytest
+from test_scope_deletion import DeletionLab
 
 from lab_assistant.adapters.connectors.fake import FakeAcquisitionConnector
+from lab_assistant.adapters.db.engine import create_schema, make_engine
+from lab_assistant.adapters.db.repositories import sql_uow_factory
 from lab_assistant.application.acquisition import AcquisitionHandler, AcquisitionPlanningHandler
 from lab_assistant.application.fetching import FetchQueue
+from lab_assistant.config import LabEnv, Settings
 from lab_assistant.contracts.connector import (
     AcquisitionRequest,
     IdentifierScheme,
@@ -36,7 +41,7 @@ from lab_assistant.domain.observation import (
 from lab_assistant.domain.states import RelevanceState, TaskState
 from lab_assistant.domain.tasks import Task
 from lab_assistant.domain.workspace import Role
-from lab_assistant.testing import build_harness, make_actor
+from lab_assistant.testing import build_harness, make_actor, reset_database
 
 
 def compressed_pdf(text: str) -> bytes:
@@ -86,8 +91,12 @@ class Recording(FakeAcquisitionConnector):
         return await super().acquire(request)
 
 
-@pytest.fixture
-async def lab():
+BACKENDS = ["memory", "sqlite"] + (["postgres"] if os.environ.get("LAB_TEST_DATABASE_URL") else [])
+
+
+@pytest.fixture(params=BACKENDS)
+async def lab(request, tmp_path):
+    """Over every adapter: SQL enforces the foreign keys an in-memory store does not."""
     acquirer = Recording(
         assets={
             # A source reports no licence: the one discovery recorded must decide.
@@ -97,7 +106,25 @@ async def lab():
         },
         failures={"doi:10.9/down": ErrorClass.SOURCE_UNAVAILABLE},
     )
-    harness = build_harness(connectors={"fake-acquire": acquirer})
+    engine = None
+    if request.param == "memory":
+        harness = build_harness(connectors={"fake-acquire": acquirer})
+    else:
+        settings = Settings(
+            env=LabEnv.LOCAL,
+            database_url=(
+                os.environ["LAB_TEST_DATABASE_URL"]
+                if request.param == "postgres"
+                else "sqlite+aiosqlite:///:memory:"
+            ),
+            object_store_root=tmp_path / "objects",
+        )
+        engine = make_engine(settings)
+        await create_schema(engine, dimensions=(64,))
+        await reset_database(engine)
+        harness = build_harness(
+            uow_factory=sql_uow_factory(engine), connectors={"fake-acquire": acquirer}
+        )
     owner = await harness.accounts.create_user(
         email="steward@lab.invalid", password="a-long-passphrase"
     )
@@ -105,7 +132,15 @@ async def lab():
         slug="rla-lab", display_name="RLA Lab", owner_user_id=owner.id
     )
     actor = make_actor(user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN)
-    return _Lab(harness, actor, acquirer)
+    lab = _Lab(harness, actor, acquirer)
+    # Source requests belong to a discovery run, and a run to a scope version.
+    scopes = DeletionLab(harness, actor)
+    lab.run_id = (await scopes.run(await scopes.scope())).id
+    try:
+        yield lab
+    finally:
+        if engine is not None:
+            await engine.dispose()
 
 
 @dataclass
@@ -113,6 +148,7 @@ class _Lab:
     harness: Any
     actor: Any
     acquirer: Recording
+    run_id: UUID | None = None
 
     @property
     def ws(self) -> UUID:
@@ -156,7 +192,7 @@ class _Lab:
                 SourceRequest(
                     id=request_id,
                     workspace_id=self.ws,
-                    discovery_run_id=context.new_id(),
+                    discovery_run_id=self.run_id,
                     connector_id="fixture",
                     connector_version="1.0.0",
                     request_fingerprint=str(request_id),
@@ -203,6 +239,7 @@ class _Lab:
             workspace_id=self.ws,
             work_id=work_id,
             manifestation_kind="publisher_pdf",
+            created_at=context.now(),
         )
         plan = AcquisitionPlan(
             id=context.new_id(),
@@ -270,6 +307,18 @@ class TestWhatTheFetchIsTold:
         assert (await lab.fetch(plan)).status is StageStatus.SUCCEEDED
         sent = {(i.scheme, i.value) for i in lab.acquirer.requests[-1].identifiers}
         assert (IdentifierScheme.PMCID, "PMC77") in sent
+
+
+class TestAScannerThatCannotRun:
+    async def test_leaves_the_file_unscanned_not_infected(self, lab) -> None:
+        """A missing scanner reported "not clean", which quarantined every file."""
+        lab.harness.context.malware_scanner.available = False
+        plan = await lab.plan(await lab.paper("10.9/licensed", licence="cc-by-4.0"), OPEN)
+        assert (await lab.fetch(plan)).status is StageStatus.SUCCEEDED
+        async with lab.harness.context.uow_factory() as uow:
+            [asset] = await uow.assets.list_assets(lab.ws, work_id=plan.work_id)
+        assert asset.malware_scan_status.value == "scanner_unavailable"
+        assert asset.validation_status.value != "quarantined"
 
 
 class TestASourceThatIsDown:

@@ -4,8 +4,14 @@ FROM python:3.12-slim AS base
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 
-# Parsing needs the optional parser extras and a malware scanner; the others do
-# not, so they stay smaller.
+# This image fetches documents, and a fetched document is scanned before it is
+# stored: the ClamAV client talks to the scanner container over its socket
+# (/run/clamav, mounted in docker-compose.prod.yml). Without it every fetched
+# file reported "clamdscan is not installed" and was set aside unscanned.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends clamdscan \
+ && rm -rf /var/lib/apt/lists/*
+COPY infra/compose/clamd-client.conf /etc/clamav/clamd.conf
 
 COPY packages/python /app/packages/python
 COPY services/api /app/services/api

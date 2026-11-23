@@ -58,6 +58,12 @@ services:
     env_file: *server-env
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
+    # It fetches documents and scans each one before storing it.
+    volumes:
+      - clamav-socket:/run/clamav:ro
+      - clamav-signatures:/var/lib/clamav:ro
+    depends_on:
+      scanner: { condition: service_healthy }
     deploy:
       resources:
         limits: { cpus: "1.0", memory: 1G }

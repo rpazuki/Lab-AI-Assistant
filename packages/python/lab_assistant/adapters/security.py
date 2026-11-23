@@ -21,6 +21,8 @@ class ScanResult:
     scanner: str
     signature_version: str | None = None
     detail: str | None = None
+    #: False when the scan could not run, so ``clean`` False means "unscanned".
+    available: bool = True
 
 
 @dataclass
@@ -42,6 +44,7 @@ class ClamAvScanner:
                 clean=False,
                 scanner=self.scanner_id,
                 detail=f"{self.binary} is not installed in this image",
+                available=False,
             )
         process = await asyncio.create_subprocess_exec(
             self.binary,
@@ -58,7 +61,9 @@ class ClamAvScanner:
             )
         except TimeoutError:
             process.kill()
-            return ScanResult(clean=False, scanner=self.scanner_id, detail="scan timed out")
+            return ScanResult(
+                clean=False, scanner=self.scanner_id, detail="scan timed out", available=False
+            )
         output = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
         if process.returncode == 0:
             return ScanResult(
@@ -71,10 +76,12 @@ class ClamAvScanner:
             return ScanResult(
                 clean=False, scanner=self.scanner_id, detail=f"malware detected: {output.strip()}"
             )
+        # Exit 2 and above is clamdscan failing (no daemon, no socket), not a find.
         return ScanResult(
             clean=False,
             scanner=self.scanner_id,
             detail=f"scanner error (exit {process.returncode}): {output.strip()}",
+            available=False,
         )
 
     async def signature_age_days(self) -> float | None:
@@ -108,7 +115,9 @@ class StubScanner:
 
     async def scan(self, data: bytes, *, filename: str | None = None) -> ScanResult:
         if not self.available:
-            return ScanResult(clean=False, scanner=self.scanner_id, detail="scanner unavailable")
+            return ScanResult(
+                clean=False, scanner=self.scanner_id, detail="scanner unavailable", available=False
+            )
         for marker in self.malicious_markers:
             if marker in data:
                 return ScanResult(

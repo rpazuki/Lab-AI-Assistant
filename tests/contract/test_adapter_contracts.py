@@ -532,6 +532,15 @@ class TestScannerContract:
         result = await StubScanner().scan(b"prefix <script>evil suffix")
         assert not result.clean
         assert result.signature_version
+        assert result.available  # a finding, from a scanner that ran
+
+    async def test_a_scanner_that_cannot_run_says_so(self) -> None:
+        from lab_assistant.adapters.security import ClamAvScanner
+
+        assert not (await StubScanner(available=False).scan(b"payload")).available
+        missing = await ClamAvScanner(binary="no-such-clamdscan").scan(b"payload")
+        assert not missing.clean and not missing.available
+        assert "not installed" in (missing.detail or "")
 
 
 class TestFixtureLoading:

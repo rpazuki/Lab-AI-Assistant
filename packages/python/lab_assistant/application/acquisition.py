@@ -349,7 +349,15 @@ class AcquisitionService:
         )
         if context.malware_scanner is not None:
             result = await context.malware_scanner.scan(content, filename=filename)
-            scan_status = MalwareScanStatus.PASSED if result.clean else MalwareScanStatus.FAILED
+            # A scanner that could not run found nothing: the file is unscanned,
+            # not infected. Recording it as failed quarantined it for good.
+            scan_status = (
+                MalwareScanStatus.PASSED
+                if result.clean
+                else MalwareScanStatus.SCANNER_UNAVAILABLE
+                if not getattr(result, "available", True)
+                else MalwareScanStatus.FAILED
+            )
             scan_detail = result.detail
         elif needs_scan:
             scan_status = MalwareScanStatus.SCANNER_UNAVAILABLE
@@ -409,10 +417,14 @@ class AcquisitionService:
             )
             if existing is not None:
                 return existing
-            # The registry row before the row that references it: the asset's
-            # object_id is a foreign key, and a database that enforces it
-            # rejects the asset otherwise.
+            # The rows an asset references before the asset: its object_id and
+            # created_from_attempt_id are foreign keys, and a database that
+            # enforces them rejects the asset otherwise. The attempt was only
+            # saved after the fetch finished, so every file a source returned was
+            # refused, and the task died, at the moment it succeeded.
             await register_object(uow, stored)
+            if attempt is not None:
+                await uow.assets.add_attempt(attempt)
             await uow.assets.add_asset(asset)
             await uow.audit.append(
                 context.audit.build(

@@ -626,7 +626,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             needs: STEWARD,
             steps: [
               "Under **Acquisition queue**, select **Fetch included papers**.",
-              "Every included paper without a plan is planned, and every waiting fetch that still has an open route is tried again. The message says how many were queued and how many can only come from an upload.",
+              "Every included paper without a plan is planned, and every fetch that is waiting or ran out of retries, and still has an open route, is tried again. The message says how many were queued and how many can only come from an upload.",
             ],
             note: "Asking twice plans nothing twice: a paper that already has a plan is skipped.",
           },

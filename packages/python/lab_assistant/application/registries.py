@@ -66,6 +66,9 @@ class MalwareScanResult(Protocol):
     scanner: str
     signature_version: str | None
     detail: str | None
+    #: False when the scanner could not run at all: a missing binary, a scanner
+    #: that is down, a timeout. Then ``clean`` is False without anything found.
+    available: bool
 
 
 @runtime_checkable
