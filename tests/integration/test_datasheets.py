@@ -154,10 +154,10 @@ class TestRuns:
 
         started = await service.start_run(actor, template=None)
         assert started["tasks"] == 2 and started["template"] == "yeast-lipid-datasheet@1.0.0"
-        [run] = await service.list_runs(actor)
+        (run,), _, _ = await service.list_runs(actor)
         assert run["run_id"] == started["run_id"] and run["total"] == 2
         await harness.run_all_tasks()
-        [run] = await service.list_runs(actor)
+        (run,), _, _ = await service.list_runs(actor)
         assert run["finished"] is True and run["states"] == {"succeeded": 2}
 
         # Two papers by two targets: the measured paper yields a value, and every
@@ -189,7 +189,7 @@ class TestRuns:
         from uuid import UUID
 
         assert await service.cancel_run(actor, run_id=UUID(started["run_id"])) == 2
-        [run] = await service.list_runs(actor)
+        (run,), _, _ = await service.list_runs(actor)
         assert run["states"] == {"cancelled": 2} and run["finished"] is True
 
     async def test_an_unknown_template_is_not_found(self, sheet) -> None:

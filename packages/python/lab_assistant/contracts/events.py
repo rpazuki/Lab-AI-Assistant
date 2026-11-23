@@ -75,6 +75,8 @@ class AuditAction(StrEnum):
     # rights and acquisition
     RIGHTS_DECIDED = "rights_decided"
     ACQUISITION_ATTEMPTED = "acquisition_attempted"
+    #: Fetches waiting for a person were put back in the queue to try again.
+    ACQUISITION_REQUEUED = "acquisition_requeued"
     ASSET_REGISTERED = "asset_registered"
     ASSET_QUARANTINED = "asset_quarantined"
     ASSISTED_UPLOAD_ACCEPTED = "assisted_upload_accepted"

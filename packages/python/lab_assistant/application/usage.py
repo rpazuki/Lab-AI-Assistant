@@ -15,6 +15,7 @@ conversation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
@@ -93,21 +94,32 @@ class UsageService:
         if not self._context.settings.chat_admin_access:
             raise PolicyDenied("this installation does not let admins read members' chats")
 
-    async def member_sessions(self, actor: ActorContext, *, user_id: UUID) -> list[ChatSession]:
+    async def member_sessions(
+        self,
+        actor: ActorContext,
+        *,
+        user_id: UUID,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> tuple[list[ChatSession], int]:
         """A member's conversations, deleted ones included and marked as such.
 
-        Listing titles is already reading: a title is the member's first question.
-        So the list is audited like a conversation.
+        Newest first, one page, with how many there are. Listing titles is already
+        reading: a title is the member's first question. So every page is audited
+        like a conversation.
         """
         self._require_oversight(actor)
         context = self._context
         async with context.uow_factory() as uow:
             if await uow.workspaces.get_membership(actor.workspace_id, user_id) is None:
                 raise NotFound(f"member {user_id} not found")
-            sessions = await uow.chat.list_sessions(actor.workspace_id, user_id, limit=500)
+            sessions = await uow.chat.list_sessions(
+                actor.workspace_id, user_id, limit=limit, before=before
+            )
+            total = await uow.chat.count_sessions(actor.workspace_id, user_id)
             await self._audit(uow, actor, subject_id=user_id, subject_type="user", scope="list")
             await uow.commit()
-        return sessions
+        return sessions, total
 
     async def member_session(
         self, actor: ActorContext, *, user_id: UUID, session_id: UUID

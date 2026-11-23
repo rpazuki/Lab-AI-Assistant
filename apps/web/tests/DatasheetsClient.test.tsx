@@ -11,7 +11,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...actual,
     listExtractionTemplates: vi.fn(),
-    listExtractionRuns: vi.fn(async () => []),
+    listExtractionRuns: vi.fn(async () => ({ items: [], next_cursor: null, total: 0 })),
     registerExtractionTemplate: vi.fn(),
     approveExtractionTemplate: vi.fn(),
     estimateExtraction: vi.fn(),
@@ -27,12 +27,17 @@ vi.mock("@/lib/api", async (importOriginal) => {
         rows: [
           { work_id: "w1abcdef99", experiment_id: "", revision_ids: "r1", lipid_yield: "0.42 g/g", strain: "YL-7" },
         ],
+        total: 1,
+        next_cursor: null,
       },
     })),
   };
 });
 
 const api = await import("@/lib/api");
+
+/** A one-page answer from a paged endpoint. */
+const page = <T,>(items: T[]) => ({ items, next_cursor: null, total: items.length });
 
 function template(overrides: Partial<ExtractionTemplate> = {}): ExtractionTemplate {
   return {
@@ -132,9 +137,9 @@ describe("DatasheetsClient", () => {
   });
 
   it("cancels an unfinished run", async () => {
-    vi.mocked(api.listExtractionRuns).mockResolvedValue([
+    vi.mocked(api.listExtractionRuns).mockResolvedValue(page([
       { run_id: "run-123456789", template: "yeast-lipid-datasheet@1.0.0", states: { ready: 3, succeeded: 1 }, total: 4, finished: false, created_at: null, errors: [] },
-    ]);
+    ]));
     vi.mocked(api.cancelExtractionRun).mockResolvedValue({ run_id: "run-123456789", cancelled_tasks: 3 });
     render(<DatasheetsClient />);
     expect(await screen.findByText("3 ready, 1 succeeded")).toBeInTheDocument();

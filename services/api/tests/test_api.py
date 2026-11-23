@@ -1069,6 +1069,74 @@ class TestOperations:
         actions = {event["action"] for event in response.json()["items"]}
         assert "membership_changed" in actions or "grant_changed" in actions
 
+    async def test_queues_and_the_audit_log_are_paged(self, api) -> None:
+        steward = await _login(api["client"], "steward@lab.invalid")
+        client = api["client"]
+        for queue in ("waiting", "awaiting_user", "dead_letter"):
+            page = await client.get(
+                "/api/v1/operations/queue", params={"queue": queue}, headers=_auth(steward)
+            )
+            assert page.status_code == 200
+            assert set(page.json()) == {"items", "total", "next_cursor"}
+        bad = await client.get(
+            "/api/v1/operations/queue", params={"queue": "everything"}, headers=_auth(steward)
+        )
+        assert bad.status_code == 422
+
+        everything = (await client.get("/api/v1/audit-events", headers=_auth(steward))).json()
+        assert everything["total"] >= 2
+        assert sum(everything["action_counts"].values()) == everything["total"]
+        seen, after = [], None
+        while True:
+            params = {"limit": 1, **({"after": after} if after else {})}
+            page = (
+                await client.get("/api/v1/audit-events", params=params, headers=_auth(steward))
+            ).json()
+            seen.extend(event["id"] for event in page["items"])
+            after = page["next_cursor"]
+            if after is None:
+                break
+        assert len(seen) == len(set(seen)) == everything["total"]
+        stamps = [e["occurred_at"] for e in everything["items"]]
+        assert stamps == sorted(stamps, reverse=True)
+
+        action = everything["items"][0]["action"]
+        narrowed = (
+            await client.get(
+                "/api/v1/audit-events", params={"action": action}, headers=_auth(steward)
+            )
+        ).json()
+        assert narrowed["total"] == everything["action_counts"][action]
+        assert {e["action"] for e in narrowed["items"]} == {action}
+        bad = await client.get(
+            "/api/v1/audit-events", params={"after": "not-a-cursor"}, headers=_auth(steward)
+        )
+        assert bad.status_code == 422
+
+    async def test_every_long_list_answers_one_page_with_a_total(self, api) -> None:
+        steward = await _login(api["client"], "steward@lab.invalid")
+        client = api["client"]
+        for path in (
+            "/api/v1/chat/sessions",
+            "/api/v1/discovery-runs",
+            "/api/v1/corpus-releases",
+            "/api/v1/extraction/runs",
+            "/api/v1/claims",
+            "/api/v1/evaluation/runs",
+            "/api/v1/evaluation/reviews/mine",
+        ):
+            page = await client.get(path, params={"limit": 1}, headers=_auth(steward))
+            assert page.status_code == 200, path
+            body = page.json()
+            assert {"items", "total", "next_cursor"} <= set(body), path
+            assert len(body["items"]) <= 1, path
+            if body["total"] > 1:
+                assert body["next_cursor"] is not None, path
+        bad = await client.get(
+            "/api/v1/discovery-runs", params={"after": "nonsense"}, headers=_auth(steward)
+        )
+        assert bad.status_code == 422
+
     async def test_audit_metadata_never_contains_a_secret(self, api) -> None:
         steward = await _login(api["client"], "steward@lab.invalid")
         response = await api["client"].get("/api/v1/audit-events", headers=_auth(steward))

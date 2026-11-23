@@ -17,9 +17,16 @@ from lab_assistant.adapters.connectors.scholarly import (
     DataCiteConnector,
     EuropePmcConnector,
     OpenAlexConnector,
+    UnpaywallResolver,
 )
 from lab_assistant.config import Settings
-from lab_assistant.contracts.connector import Cursor, DiscoveryRequest
+from lab_assistant.contracts.connector import (
+    AcquisitionRequest,
+    Cursor,
+    DiscoveryRequest,
+    Identifier,
+    IdentifierScheme,
+)
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 
 
@@ -138,3 +145,137 @@ class TestOpenAlexKey:
 def test_datacite_without_a_year() -> None:
     record = DataCiteConnector._record({"id": "10.5/x", "attributes": {"publicationYear": ""}})
     assert _years(record) == []
+
+
+# ── fetching full text ─────────────────────────────────────────────────────
+PDF = b"%PDF-1.7\n a paper"
+DOI = Identifier(scheme=IdentifierScheme.DOI, value="10.1000/yeast")
+
+
+class TestEuropePmcFullText:
+    async def test_asks_for_xml_which_is_what_the_endpoint_serves(self) -> None:
+        seen: list[str] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers["accept"])
+            if request.headers["accept"] != "application/xml":
+                return httpx.Response(406)
+            return httpx.Response(200, content=b"<article/>")
+
+        connector = EuropePmcConnector(
+            request_identity="test", client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        )
+        raw = await connector.acquire(
+            AcquisitionRequest(
+                identifiers=(Identifier(scheme=IdentifierScheme.PMCID, value="PMC123"),),
+                route="open_access_api",
+            )
+        )
+        assert raw.content == b"<article/>" and seen == ["application/xml"]
+
+
+def _unpaywall(routes: dict[str, httpx.Response], seen: list[str]) -> UnpaywallResolver:
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url).split("?")[0])
+        for prefix, response in routes.items():
+            if str(request.url).startswith(prefix):
+                return response
+        return httpx.Response(404)
+
+    return UnpaywallResolver(
+        request_identity="test",
+        contact="lab@example.invalid",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+
+
+class TestUnpaywallFetch:
+    async def test_the_link_discovery_found_is_fetched_first(self) -> None:
+        seen: list[str] = []
+        connector = _unpaywall(
+            {"https://journal.example/paper.pdf": httpx.Response(200, content=PDF)}, seen
+        )
+        raw = await connector.acquire(
+            AcquisitionRequest(
+                identifiers=(DOI,),
+                route="open_repository",
+                target_url="https://journal.example/paper.pdf",
+            )
+        )
+        assert raw.content == PDF and raw.declared_media_type == "application/pdf"
+        assert seen == ["https://journal.example/paper.pdf"]  # no lookup was needed
+
+    async def test_without_a_link_unpaywall_is_asked_for_one(self) -> None:
+        seen: list[str] = []
+        lookup = httpx.Response(
+            200,
+            json={
+                "best_oa_location": {"url_for_pdf": "https://repo.example/a.pdf"},
+                "oa_locations": [],
+            },
+        )
+        connector = _unpaywall(
+            {
+                "https://api.unpaywall.org/v2/10.1000/yeast": lookup,
+                "https://repo.example/a.pdf": httpx.Response(200, content=PDF),
+            },
+            seen,
+        )
+        raw = await connector.acquire(
+            AcquisitionRequest(identifiers=(DOI,), route="open_repository")
+        )
+        assert raw.content == PDF
+        assert seen == ["https://api.unpaywall.org/v2/10.1000/yeast", "https://repo.example/a.pdf"]
+
+    async def test_a_redirect_is_followed_and_checked_again(self) -> None:
+        seen: list[str] = []
+        connector = _unpaywall(
+            {
+                "https://doi.example/x": httpx.Response(
+                    302, headers={"location": "https://cdn.example/x.pdf"}
+                ),
+                "https://cdn.example/x.pdf": httpx.Response(200, content=PDF),
+            },
+            seen,
+        )
+        raw = await connector.acquire(
+            AcquisitionRequest(
+                identifiers=(), route="open_repository", target_url="https://doi.example/x"
+            )
+        )
+        assert raw.content == PDF and seen == ["https://doi.example/x", "https://cdn.example/x.pdf"]
+
+        to_local = _unpaywall(
+            {
+                "https://doi.example/y": httpx.Response(
+                    302, headers={"location": "https://127.0.0.1/secret"}
+                )
+            },
+            [],
+        )
+        with pytest.raises(LabAssistantError) as refused:
+            await to_local.acquire(
+                AcquisitionRequest(
+                    identifiers=(), route="open_repository", target_url="https://doi.example/y"
+                )
+            )
+        assert refused.value.error_class is ErrorClass.POLICY_BLOCKED
+
+    async def test_a_landing_page_is_not_a_pdf(self) -> None:
+        connector = _unpaywall(
+            {
+                "https://journal.example/landing": httpx.Response(
+                    200, content=b"<html>Sign in</html>"
+                )
+            },
+            [],
+        )
+        with pytest.raises(LabAssistantError) as refused:
+            await connector.acquire(
+                AcquisitionRequest(
+                    identifiers=(),
+                    route="open_repository",
+                    target_url="https://journal.example/landing",
+                )
+            )
+        assert refused.value.error_class is ErrorClass.INVALID_CONTENT

@@ -12,6 +12,7 @@ import {
   StateChip,
 } from "@/components/ui/primitives";
 import { DeleteButton } from "@/components/ui/DeleteButton";
+import { Pager } from "@/components/ui/Pager";
 import { SortHeader, TableSearch } from "@/components/ui/table";
 import {
   createInvitation,
@@ -26,8 +27,9 @@ import {
   revokeMemberSessions,
   updateMember,
 } from "@/lib/api";
+import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
-import type { ChatMessage, Invitation, Member, MemberSession } from "@/types";
+import type { ChatMessage, Invitation, Member, MemberSession, Page } from "@/types";
 
 /** The roles a person can hold, in order of reach. A service account is not one. */
 export const ROLES = ["researcher", "reviewer", "data_steward", "admin"] as const;
@@ -597,16 +599,24 @@ function LimitEditor({
  * anything is shown.
  */
 export function MemberChats({ member, onClose }: { member: Member; onClose: () => void }) {
-  const [sessions, setSessions] = useState<MemberSession[] | null>(null);
+  const [page, setPage] = useState<Page<MemberSession> | null>(null);
+  const sessions = page?.items ?? null;
   const [open, setOpen] = useState<(MemberSession & { messages: ChatMessage[] }) | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const pager = usePager(20);
+  const { cursor, pageSize, reset } = pager;
+
+  // Another member starts again at the first page.
+  useEffect(() => {
+    setOpen(null);
+    reset();
+  }, [member.user_id, reset]);
 
   useEffect(() => {
     let current = true;
-    setOpen(null);
-    setSessions(null);
-    listMemberSessions(member.user_id)
-      .then((items) => current && setSessions(items))
+    setPage(null);
+    listMemberSessions(member.user_id, { after: cursor, limit: pageSize })
+      .then((answer) => current && setPage(answer))
       .catch(
         (caught) =>
           current && setError(caught instanceof Error ? caught.message : "chats could not be loaded"),
@@ -614,7 +624,7 @@ export function MemberChats({ member, onClose }: { member: Member; onClose: () =
     return () => {
       current = false;
     };
-  }, [member.user_id]);
+  }, [member.user_id, cursor, pageSize]);
 
   async function read(session: MemberSession) {
     try {
@@ -648,28 +658,39 @@ export function MemberChats({ member, onClose }: { member: Member; onClose: () =
         <Empty>No conversations.</Empty>
       ) : (
         <div className="grid gap-4 md:grid-cols-[16rem_1fr]">
-          <ul className="space-y-1 text-sm">
-            {sessions.map((session) => (
-              <li key={session.id}>
-                <button
-                  type="button"
-                  aria-current={open?.id === session.id ? "true" : undefined}
-                  onClick={() => read(session)}
-                  className={`w-full rounded-control px-3 py-2 text-left transition-colors ${
-                    open?.id === session.id
-                      ? "bg-surface-subtle font-semibold"
-                      : "hover:bg-surface-subtle"
-                  }`}
-                >
-                  <span className="block truncate">{session.title ?? "Untitled"}</span>
-                  <span className="block text-xs text-muted">
-                    {when(session.updated_at)}
-                    {session.deleted ? " · deleted by the member" : ""}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div>
+            <ul className="space-y-1 text-sm">
+              {sessions.map((session) => (
+                <li key={session.id}>
+                  <button
+                    type="button"
+                    aria-current={open?.id === session.id ? "true" : undefined}
+                    onClick={() => read(session)}
+                    className={`w-full rounded-control px-3 py-2 text-left transition-colors ${
+                      open?.id === session.id
+                        ? "bg-surface-subtle font-semibold"
+                        : "hover:bg-surface-subtle"
+                    }`}
+                  >
+                    <span className="block truncate">{session.title ?? "Untitled"}</span>
+                    <span className="block text-xs text-muted">
+                      {when(session.updated_at)}
+                      {session.deleted ? " · deleted by the member" : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {page ? (
+              <Pager
+                pager={pager}
+                shown={page.items.length}
+                total={page.total}
+                nextCursor={page.next_cursor}
+                label="conversations"
+              />
+            ) : null}
+          </div>
           <div className="space-y-3">
             {open ? (
               open.messages.map((message) => (

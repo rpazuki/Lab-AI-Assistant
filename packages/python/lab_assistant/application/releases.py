@@ -16,7 +16,7 @@ from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.objects import register_object
-from lab_assistant.application.pagination import collect_pages
+from lab_assistant.application.pagination import collect_pages, every_session
 from lab_assistant.application.release_gates import evaluation_gate_status
 from lab_assistant.contracts.canonical import canonical_json
 from lab_assistant.contracts.errors import (
@@ -669,7 +669,7 @@ class ReleaseService:
                 )
             if any(
                 session.pinned_release_id == release_id
-                for session in await uow.chat.list_workspace_sessions(actor.workspace_id)
+                for session in await every_session(uow, actor.workspace_id)
             ):
                 raise StateTransitionError("a conversation is pinned to this release")
             tasks = await uow.tasks.list_tasks(actor.workspace_id, limit=100_000)

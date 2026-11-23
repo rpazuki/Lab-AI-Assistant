@@ -12,6 +12,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     ...actual,
     listBenchmarks: vi.fn(),
     listReleases: vi.fn(),
+    listAllReleases: vi.fn(),
     listEvaluationRuns: vi.fn(),
     registerBenchmark: vi.fn(),
     requestEvaluationRun: vi.fn(),
@@ -37,6 +38,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 const api = await import("@/lib/api");
+
+/** A one-page answer from a paged endpoint. */
+const page = <T,>(items: T[]) => ({ items, next_cursor: null, total: items.length });
 
 const BENCHMARK: Benchmark = {
   benchmark_id: "rla-retrieval",
@@ -88,7 +92,8 @@ describe("EvaluationClient", () => {
     vi.clearAllMocks();
     vi.mocked(api.listBenchmarks).mockResolvedValue([BENCHMARK]);
     vi.mocked(api.listReleases).mockResolvedValue(RELEASES as never);
-    vi.mocked(api.listEvaluationRuns).mockResolvedValue([run()]);
+    vi.mocked(api.listAllReleases).mockResolvedValue(RELEASES.items as never);
+    vi.mocked(api.listEvaluationRuns).mockResolvedValue(page([run()]));
   });
 
   it("shows each run's verdict, metrics and the release it measured", async () => {
@@ -147,7 +152,7 @@ describe("EvaluationClient", () => {
   it("asks again while a run is still on the queue", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      vi.mocked(api.listEvaluationRuns).mockResolvedValue([run({ status: "queued", metrics: {} })]);
+      vi.mocked(api.listEvaluationRuns).mockResolvedValue(page([run({ status: "queued", metrics: {} })]));
       render(<EvaluationClient />);
       await screen.findByText("queued");
       const before = vi.mocked(api.listEvaluationRuns).mock.calls.length;
@@ -159,7 +164,7 @@ describe("EvaluationClient", () => {
   });
 
   it("cancels a queued run", async () => {
-    vi.mocked(api.listEvaluationRuns).mockResolvedValue([run({ status: "queued", metrics: {} })]);
+    vi.mocked(api.listEvaluationRuns).mockResolvedValue(page([run({ status: "queued", metrics: {} })]));
     vi.mocked(api.cancelEvaluationRun).mockResolvedValue(run({ status: "cancelled" }));
     render(<EvaluationClient />);
     await userEvent.click(await screen.findByRole("button", { name: "Cancel" }));
@@ -167,10 +172,10 @@ describe("EvaluationClient", () => {
   });
 
   it("compares two finished runs", async () => {
-    vi.mocked(api.listEvaluationRuns).mockResolvedValue([
+    vi.mocked(api.listEvaluationRuns).mockResolvedValue(page([
       run(),
       run({ id: "run-2", release_id: "rel-1" }),
-    ]);
+    ]));
     vi.mocked(api.compareEvaluationRuns).mockResolvedValue({
       base: { id: "run-1", benchmark: "rla-retrieval@1.0.0", release_id: "rel-2" },
       candidate: { id: "run-2", benchmark: "rla-retrieval@1.0.0", release_id: "rel-1" },
@@ -211,7 +216,7 @@ describe("EvaluationClient", () => {
 
   it("assigns a generation run's answers for human review", async () => {
     const generation = run({ id: "run-g", kind: "generation", passed: true, gates: { g: true }, failures: [] });
-    vi.mocked(api.listEvaluationRuns).mockResolvedValue([generation]);
+    vi.mocked(api.listEvaluationRuns).mockResolvedValue(page([generation]));
     vi.mocked(api.getEvaluationRun).mockResolvedValue(generation);
     render(<EvaluationClient />);
     await userEvent.click(await screen.findByRole("button", { name: "Details" }));

@@ -10,6 +10,7 @@ vacuous, so the guard lives here rather than only in the SQL layer.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -82,6 +83,30 @@ def _check_workspace(workspace_id: UUID, row: Any) -> None:
 
 #: Sort key for a row written before `created_at` was set.
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def newest_page(
+    rows: Sequence[Any],
+    at: Any,
+    ident: Any,
+    limit: int,
+    before: tuple[datetime, UUID] | None,
+) -> list[Any]:
+    """Rows newest first by ``(at, id)``, after the cursor: the SQL adapter's order."""
+
+    def key(row: Any) -> tuple[datetime, str]:
+        moment = at(row) or _EPOCH
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        return (moment, str(ident(row)))
+
+    ordered = sorted(rows, key=key, reverse=True)
+    if before is not None:
+        moment, last = before
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        ordered = [row for row in ordered if key(row) < (moment, str(last))]
+    return ordered[:limit]
 
 
 @dataclass
@@ -528,9 +553,18 @@ class _Observations:
         _check_workspace(workspace_id, run)
         return run
 
-    async def list_runs(self, workspace_id: UUID, *, limit: int = 50) -> list[DiscoveryRun]:
+    async def list_runs(
+        self,
+        workspace_id: UUID,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[DiscoveryRun]:
         runs = [r for r in self._db.discovery_runs.values() if r.workspace_id == workspace_id]
-        return sorted(runs, key=lambda r: r.started_at or datetime.min, reverse=True)[:limit]
+        return newest_page(runs, lambda r: r.started_at, lambda r: r.id, limit, before)
+
+    async def count_runs(self, workspace_id: UUID) -> int:
+        return sum(1 for r in self._db.discovery_runs.values() if r.workspace_id == workspace_id)
 
     async def add_request(self, request: SourceRequest) -> None:
         self._db.source_requests[request.id] = request
@@ -1311,6 +1345,44 @@ class _Claims:
             ordered = [claim for claim in ordered if str(claim.id) > cursor]
         return ordered[:limit]
 
+    def _queued(
+        self, workspace_id: UUID, work_id: UUID | None, include_invalid: bool
+    ) -> list[Claim]:
+        out = []
+        for claim in self._db.claims.values():
+            if claim.workspace_id != workspace_id or (work_id and claim.work_id != work_id):
+                continue
+            revision = (
+                self._db.revisions.get(claim.current_revision_id)
+                if claim.current_revision_id
+                else None
+            )
+            if revision is None or revision.review_status.is_approved:
+                continue
+            if not include_invalid and not revision.is_valid:
+                continue
+            out.append(claim)
+        return sorted(out, key=lambda c: str(c.id))
+
+    async def list_review_queue(
+        self,
+        workspace_id: UUID,
+        *,
+        work_id: UUID | None = None,
+        include_invalid: bool = False,
+        limit: int = 50,
+        after_id: UUID | None = None,
+    ) -> list[Claim]:
+        claims = self._queued(workspace_id, work_id, include_invalid)
+        if after_id is not None:
+            claims = [c for c in claims if str(c.id) > str(after_id)]
+        return claims[:limit]
+
+    async def count_review_queue(
+        self, workspace_id: UUID, *, work_id: UUID | None = None, include_invalid: bool = False
+    ) -> int:
+        return len(self._queued(workspace_id, work_id, include_invalid))
+
     async def add_revision(self, revision: ClaimRevision) -> None:
         self._db.revisions[revision.id] = revision
 
@@ -1488,9 +1560,18 @@ class _Releases:
         _check_workspace(workspace_id, release)
         return release
 
-    async def list_releases(self, workspace_id: UUID, *, limit: int = 50) -> list[CorpusRelease]:
+    async def list_releases(
+        self,
+        workspace_id: UUID,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[CorpusRelease]:
         releases = [r for r in self._db.releases.values() if r.workspace_id == workspace_id]
-        return sorted(releases, key=lambda r: r.created_at or datetime.min, reverse=True)[:limit]
+        return newest_page(releases, lambda r: r.created_at, lambda r: r.id, limit, before)
+
+    async def count_releases(self, workspace_id: UUID) -> int:
+        return sum(1 for r in self._db.releases.values() if r.workspace_id == workspace_id)
 
     async def list_all_releases(
         self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
@@ -1643,6 +1724,55 @@ class _Tasks:
             counts[task.state.value] = counts.get(task.state.value, 0) + 1
         return dict(sorted(counts.items()))
 
+    def _matching(self, workspace_id: UUID, states: Sequence[str], stage: str | None) -> list[Task]:
+        return [
+            task
+            for task in self._db.tasks.values()
+            if task.workspace_id == workspace_id
+            and task.state.value in states
+            and (stage is None or task.stage.value == stage)
+        ]
+
+    async def page_tasks(
+        self,
+        workspace_id: UUID,
+        *,
+        states: Sequence[str],
+        stage: str | None = None,
+        limit: int = 50,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> list[Task]:
+        def key(task: Task) -> tuple[datetime, str]:
+            return (task.created_at or datetime.min.replace(tzinfo=UTC), str(task.id))
+
+        tasks = sorted(self._matching(workspace_id, states, stage), key=key)
+        if after is not None:
+            at, last = after
+            tasks = [task for task in tasks if key(task) > (at, str(last))]
+        return tasks[:limit]
+
+    async def count_tasks(
+        self, workspace_id: UUID, *, states: Sequence[str], stage: str | None = None
+    ) -> int:
+        return len(self._matching(workspace_id, states, stage))
+
+    async def tasks_by_stage(
+        self, workspace_id: UUID, *, states: Sequence[str]
+    ) -> list[tuple[str, int, datetime | None]]:
+        groups: dict[str, list[Task]] = defaultdict(list)
+        for task in self._matching(workspace_id, states, None):
+            groups[task.stage.value].append(task)
+        rows = [
+            (
+                stage,
+                len(tasks),
+                min((task.created_at for task in tasks if task.created_at), default=None),
+            )
+            for stage, tasks in groups.items()
+        ]
+        latest = datetime.max.replace(tzinfo=UTC)
+        return sorted(rows, key=lambda row: (row[2] is None, row[2] or latest, row[0]))
+
     async def list_run_tasks(self, workspace_id: UUID, run_id: UUID) -> list[Task]:
         tasks = [
             task
@@ -1716,6 +1846,62 @@ class _Audit:
         ]
         return events[-limit:]
 
+    def _events(
+        self, workspace_id: UUID, actions: Sequence[str] | None, words: Sequence[str]
+    ) -> list[AuditEventRecord]:
+        def text(event: AuditEventRecord) -> str:
+            return " ".join(
+                [
+                    event.action.value,
+                    event.actor_type.value,
+                    event.subject_type,
+                    str(event.subject_id or ""),
+                    event.reason_code or "",
+                    json.dumps(event.metadata, sort_keys=True, default=str),
+                ]
+            ).lower()
+
+        return [
+            event
+            for event in self._db.audit_events
+            if event.workspace_id == workspace_id
+            and (not actions or event.action.value in actions)
+            and all(word.lower() in text(event) for word in words)
+        ]
+
+    async def page_events(
+        self,
+        workspace_id: UUID,
+        *,
+        actions: Sequence[str] | None = None,
+        words: Sequence[str] = (),
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[AuditEventRecord]:
+        def key(event: AuditEventRecord) -> tuple[datetime, str]:
+            return (event.occurred_at, str(event.id))
+
+        events = sorted(self._events(workspace_id, actions, words), key=key, reverse=True)
+        if before is not None:
+            at, last = before
+            events = [event for event in events if key(event) < (at, str(last))]
+        return events[:limit]
+
+    async def count_events(
+        self,
+        workspace_id: UUID,
+        *,
+        actions: Sequence[str] | None = None,
+        words: Sequence[str] = (),
+    ) -> int:
+        return len(self._events(workspace_id, actions, words))
+
+    async def count_events_by_action(self, workspace_id: UUID) -> dict[str, int]:
+        counts: dict[str, int] = defaultdict(int)
+        for event in self._events(workspace_id, None, ()):
+            counts[event.action.value] += 1
+        return dict(sorted(counts.items()))
+
     async def add_outbox(self, event: OutboxEvent) -> None:
         self._db.outbox[event.id] = event
 
@@ -1745,25 +1931,44 @@ class _Chat:
         _check_workspace(workspace_id, session)
         return session
 
-    async def list_sessions(
-        self, workspace_id: UUID, user_id: UUID, *, limit: int = 50
+    def _sessions_of(
+        self, workspace_id: UUID, user_id: UUID, include_deleted: bool
     ) -> list[ChatSession]:
-        sessions = [
-            session
-            for session in self._db.chat_sessions.values()
-            if session.workspace_id == workspace_id and session.user_id == user_id
-        ]
-        return sorted(sessions, key=lambda s: s.updated_at or datetime.min, reverse=True)[:limit]
-
-    async def list_workspace_sessions(
-        self, workspace_id: UUID, *, limit: int = 1000
-    ) -> list[ChatSession]:
-        sessions = [
+        return [
             session
             for session in self._db.chat_sessions.values()
             if session.workspace_id == workspace_id
+            and session.user_id == user_id
+            and (include_deleted or session.deleted_at is None)
         ]
-        return sorted(sessions, key=lambda s: str(s.id))[:limit]
+
+    async def list_sessions(
+        self,
+        workspace_id: UUID,
+        user_id: UUID,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+        include_deleted: bool = True,
+    ) -> list[ChatSession]:
+        sessions = self._sessions_of(workspace_id, user_id, include_deleted)
+        return newest_page(sessions, lambda s: s.updated_at, lambda s: s.id, limit, before)
+
+    async def count_sessions(
+        self, workspace_id: UUID, user_id: UUID, *, include_deleted: bool = True
+    ) -> int:
+        return len(self._sessions_of(workspace_id, user_id, include_deleted))
+
+    async def list_workspace_sessions(
+        self, workspace_id: UUID, *, limit: int = 1000, after_id: UUID | None = None
+    ) -> list[ChatSession]:
+        sessions = sorted(
+            (s for s in self._db.chat_sessions.values() if s.workspace_id == workspace_id),
+            key=lambda s: str(s.id),
+        )
+        if after_id is not None:
+            sessions = [s for s in sessions if str(s.id) > str(after_id)]
+        return sessions[:limit]
 
     async def add_message(self, message: ChatMessage) -> None:
         self._db.chat_messages[message.id] = message
@@ -1876,16 +2081,32 @@ class _Evaluations:
         benchmark_id: str | None = None,
         release_id: UUID | None = None,
         limit: int = 100,
+        before: tuple[datetime, UUID] | None = None,
     ) -> list[dict[str, Any]]:
-        runs = [
+        runs = self._runs_matching(workspace_id, benchmark_id, release_id)
+        return newest_page(
+            runs, lambda run: run.get("created_at"), lambda run: run["id"], limit, before
+        )
+
+    def _runs_matching(
+        self, workspace_id: UUID, benchmark_id: str | None, release_id: UUID | None
+    ) -> list[dict[str, Any]]:
+        return [
             run
             for run in self._db.evaluation_runs.values()
             if str(run.get("workspace_id")) == str(workspace_id)
             and (benchmark_id is None or str(run.get("benchmark", "")).startswith(benchmark_id))
             and (release_id is None or str(run.get("release_id")) == str(release_id))
         ]
-        runs.sort(key=lambda run: run.get("_sequence", 0), reverse=True)
-        return runs[:limit]
+
+    async def count_runs(
+        self,
+        workspace_id: UUID,
+        *,
+        benchmark_id: str | None = None,
+        release_id: UUID | None = None,
+    ) -> int:
+        return len(self._runs_matching(workspace_id, benchmark_id, release_id))
 
     async def add_benchmark(self, benchmark: dict[str, Any]) -> None:
         key = (str(benchmark["workspace_id"]), benchmark["benchmark_id"], benchmark["version"])

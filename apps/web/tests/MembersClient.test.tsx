@@ -17,16 +17,20 @@ vi.mock("@/lib/api", async (importOriginal) => {
     revokeInvitation: vi.fn(async () => ({ id: "i1", state: "revoked" })),
     updateMember: vi.fn(),
     revokeMemberSessions: vi.fn(async () => ({ user_id: "u2" })),
-    listMemberSessions: vi.fn(async () => [
-      {
-        id: "s1",
-        title: "Lipid yields",
-        pinned_release_id: null,
-        created_at: "2026-11-18T10:00:00Z",
-        updated_at: "2026-11-18T10:05:00Z",
-        deleted: true,
-      },
-    ]),
+    listMemberSessions: vi.fn(async () => ({
+      items: [
+        {
+          id: "s1",
+          title: "Lipid yields",
+          pinned_release_id: null,
+          created_at: "2026-11-18T10:00:00Z",
+          updated_at: "2026-11-18T10:05:00Z",
+          deleted: true,
+        },
+      ],
+      next_cursor: null,
+      total: 1,
+    })),
     getMemberSession: vi.fn(async () => ({
       id: "s1",
       title: "Lipid yields",

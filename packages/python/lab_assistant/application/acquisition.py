@@ -12,6 +12,8 @@ that leaves the queue behind.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
@@ -22,6 +24,7 @@ from lab_assistant.contracts.connector import (
     AcquisitionRequest,
     ConnectorOperation,
     Identifier,
+    IdentifierScheme,
 )
 from lab_assistant.contracts.errors import (
     AcquisitionOutcome,
@@ -66,7 +69,7 @@ __all__ = [
     "detect_media_type",
 ]
 
-IMPLEMENTATION_VERSION = "acquisition/1"
+IMPLEMENTATION_VERSION = "acquisition/2"
 
 #: Media types a parser profile exists for. Anything else is invalid content,
 #: not a "we'll try anyway".
@@ -459,19 +462,41 @@ def _identity_matches(content: bytes, expected: tuple[Identifier, ...]) -> bool:
     """
     if not expected:
         return False
-    head = content[:200_000]
-    try:
-        text = head.decode("utf-8", errors="ignore").casefold()
-    except Exception:  # pragma: no cover - decode with errors="ignore" cannot raise
-        return False
+    values = []
     for identifier in expected:
         try:
             value = normalise_identifier(identifier.scheme, identifier.value).casefold()
         except ValueError:
             continue
-        if value and value in text:
-            return True
+        if value:
+            values.append(value)
+    text = content[:200_000].decode("utf-8", errors="ignore").casefold()
+    if any(value in text for value in values):
+        return True
+    # A PDF keeps its text compressed, so its bytes almost never show the DOI;
+    # its metadata and first pages, read as text, usually do.
+    if content.startswith(b"%PDF"):
+        text = _pdf_head_text(content).casefold()
+        return any(value in text for value in values)
     return False
+
+
+def _pdf_head_text(content: bytes, *, pages: int = 2) -> str:
+    """A PDF's metadata and first pages as text; empty when it cannot be read."""
+    import io
+
+    try:
+        from pypdf import PdfReader
+    except ModuleNotFoundError:  # pragma: no cover - the parsers extra is absent
+        return ""
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        metadata: Any = reader.metadata or {}
+        texts = [str(value) for value in metadata.values() if isinstance(value, str)]
+        texts += [(page.extract_text() or "") for page in reader.pages[:pages]]
+    except Exception:
+        return ""
+    return "\n".join(texts)
 
 
 class AcquisitionPlanningHandler:
@@ -507,7 +532,22 @@ class AcquisitionPlanningHandler:
             works = await collect_pages(
                 lambda after, size: uow.works.list_works(workspace_id, limit=size, after_id=after)
             )
-            included = [w for w in works if w.relevance.is_included and w.is_active]
+            # Only what has no plan yet: planning runs again whenever papers are
+            # included, after a run and after a person includes more, and a paper
+            # planned twice would be fetched twice.
+            planned_works = {
+                plan.work_id
+                for plan in await collect_pages(
+                    lambda after, size: uow.assets.list_plans(
+                        workspace_id, limit=size, after_id=after
+                    )
+                )
+            }
+            included = [
+                w
+                for w in works
+                if w.relevance.is_included and w.is_active and w.id not in planned_works
+            ]
             assertion_index = {
                 work.id: await uow.observations.list_assertions(workspace_id, work_id=work.id)
                 for work in included
@@ -656,6 +696,7 @@ class AcquisitionHandler:
             ]
             identifiers = await uow.works.list_identifiers(workspace_id, plan.work_id)
             existing_assets = await uow.assets.list_assets(workspace_id, work_id=plan.work_id)
+            assertions = await uow.observations.list_assertions(workspace_id, work_id=plan.work_id)
 
         if existing_assets:
             asset = existing_assets[0]
@@ -668,11 +709,19 @@ class AcquisitionHandler:
                 ),
             )
 
+        # What discovery recorded: the licence the plan was decided on, and where
+        # the full text was seen. A fetch reports neither, so without them every
+        # fetched file was judged "licence unknown" and every open-access link
+        # was missing.
+        licence = _first_value(assertions, "licence")
+        locations = _full_text_locations(assertions)
         strong = tuple(
             Identifier(scheme=i.scheme, value=i.value_normalized)
             for i in identifiers
             if i.scheme.is_strong
         )
+        if locations.pmcid and not any(i.scheme is IdentifierScheme.PMCID for i in strong):
+            strong = (*strong, Identifier(scheme=IdentifierScheme.PMCID, value=locations.pmcid))
         registry = context.require_connectors()
         limiter = RateLimiter(context)
         attempts: list[AcquisitionAttempt] = []
@@ -709,6 +758,7 @@ class AcquisitionHandler:
                             else ("application/pdf",)
                         ),
                         request_identity=context.settings.connector_request_identity,
+                        target_url=locations.url,
                     )
                     try:
                         # Through the shared budget, exactly as discovery is. Fetching
@@ -748,7 +798,11 @@ class AcquisitionHandler:
                         subject_id=(
                             manifestation.id if manifestation else plan.manifestation_ids[0]
                         ),
-                        licence_expression=raw.licence_expression or "unknown",
+                        licence_expression=(
+                            raw.licence_expression
+                            or (licence if isinstance(licence, str) else None)
+                            or "unknown"
+                        ),
                         access_basis=raw.access_basis,
                         route=route,
                         requested_actions=plan.requested_actions,
@@ -805,7 +859,15 @@ class AcquisitionHandler:
             if acquired_asset is not None:
                 break
 
-        if acquired_asset is None and AcquisitionRoute.USER_ASSISTED in plan.route_order:
+        # A source that was down, slow or rate-limiting is tried again while the
+        # task has deliveries left; only then is the paper handed to a person.
+        passing = [a for a in attempts if a.outcome in _PASSING_OUTCOMES]
+        retrying = (
+            acquired_asset is None and bool(passing) and command.attempt < command.max_attempts
+        )
+        if retrying:
+            final_outcome = passing[-1].outcome or AcquisitionOutcome.SOURCE_UNAVAILABLE_RETRYABLE
+        elif acquired_asset is None and AcquisitionRoute.USER_ASSISTED in plan.route_order:
             final_outcome = AcquisitionOutcome.ASSISTED_REQUIRED
 
         async with context.uow_factory() as uow:
@@ -831,15 +893,16 @@ class AcquisitionHandler:
                 )
             plan = await uow.assets.get_plan(workspace_id, plan_id)
             assert plan is not None
-            plan.status = (
-                "acquired"
-                if final_outcome.produced_asset
-                else "assisted"
-                if final_outcome is AcquisitionOutcome.ASSISTED_REQUIRED
-                else "failed"
-            )
-            plan.version += 1
-            await uow.assets.update_plan(plan)
+            if not retrying:
+                plan.status = (
+                    "acquired"
+                    if final_outcome.produced_asset
+                    else "assisted"
+                    if final_outcome is AcquisitionOutcome.ASSISTED_REQUIRED
+                    else "failed"
+                )
+                plan.version += 1
+                await uow.assets.update_plan(plan)
             await uow.commit()
 
         if acquired_asset is not None and final_outcome is AcquisitionOutcome.ACQUIRED:
@@ -917,6 +980,46 @@ def _acquisition_outcome(error_class: ErrorClass) -> AcquisitionOutcome:
         ErrorClass.CANCELLED: AcquisitionOutcome.CANCELLED,
     }
     return mapping.get(error_class, AcquisitionOutcome.FAILED_PERMANENT)
+
+
+#: Outcomes that say nothing about the paper: the source may answer next time.
+_PASSING_OUTCOMES = frozenset(
+    {
+        AcquisitionOutcome.RATE_LIMITED_RETRYABLE,
+        AcquisitionOutcome.SOURCE_UNAVAILABLE_RETRYABLE,
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FullTextLocations:
+    """Where discovery saw a work's full text: an open-access link and a PMCID."""
+
+    url: str | None = None
+    pmcid: str | None = None
+
+
+def _full_text_locations(assertions: list) -> FullTextLocations:
+    """The first https link and the PMCID among a work's full-text location assertions.
+
+    Sources assert a location as a URL (OpenAlex), as ``pmc:PMC…`` (Europe PMC)
+    or as a mapping with a ``url`` (Unpaywall).
+    """
+    url: str | None = None
+    pmcid: str | None = None
+    for assertion in assertions:
+        if assertion.predicate.value != "full_text_location":
+            continue
+        value = assertion.normalised_value_json or assertion.value_json
+        if isinstance(value, dict):
+            value = value.get("url")
+        if not isinstance(value, str):
+            continue
+        if value.lower().startswith("pmc:") and pmcid is None:
+            pmcid = value.split(":", 1)[1].strip() or None
+        elif value.startswith("https://") and url is None:
+            url = value
+    return FullTextLocations(url=url, pmcid=pmcid)
 
 
 def _first_value(assertions: list, predicate_value: str):

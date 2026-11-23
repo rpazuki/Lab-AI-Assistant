@@ -20,6 +20,7 @@ from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.pagination import every_release, every_session
 from lab_assistant.contracts.errors import NotFound
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.contracts.stage import StageName, TaskRequest
@@ -94,14 +95,14 @@ class RefreshService:
                 )
 
             # Which published releases contain it, and which answers cited it.
-            for release in await uow.releases.list_releases(actor.workspace_id):
+            for release in await every_release(uow, actor.workspace_id):
                 if release.status not in (ReleaseState.PUBLISHED, ReleaseState.SUPERSEDED):
                     continue
                 items = await uow.releases.list_items(actor.workspace_id, release.id)
                 if any(item.record.work_id == work_id for item in items):
                     plan.affected_release_ids.append(release.id)
 
-            for session in await uow.chat.list_workspace_sessions(actor.workspace_id):
+            for session in await every_session(uow, actor.workspace_id):
                 for message in await uow.chat.list_messages(actor.workspace_id, session.id):
                     if any(citation.work_id == work_id for citation in message.citations):
                         flagged = tuple(

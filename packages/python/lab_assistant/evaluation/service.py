@@ -24,6 +24,7 @@ two members can measure the same release differently, and the run records who.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -143,9 +144,26 @@ class EvaluationService:
         return row, True
 
     async def list_benchmarks(self, actor: ActorContext) -> list[dict[str, Any]]:
+        """Every benchmark version, each with ``runs``: how many runs measured against it.
+
+        A version with runs cannot be deleted, and the runs list is paged, so the
+        page cannot tell from the runs it shows.
+        """
         actor.require(Capability.RUN_EVALUATION)
+        ws = actor.workspace_id
         async with self._context.uow_factory() as uow:
-            return await uow.evaluations.list_benchmarks(actor.workspace_id)
+            rows = await uow.evaluations.list_benchmarks(ws)
+            measured: dict[str, int] = {}
+            for benchmark_id in {row["benchmark_id"] for row in rows}:
+                for run in await uow.evaluations.list_runs(
+                    ws, benchmark_id=benchmark_id, limit=100_000
+                ):
+                    key = str(run.get("benchmark"))
+                    measured[key] = measured.get(key, 0) + 1
+        return [
+            {**row, "runs": measured.get(f"{row['benchmark_id']}@{row['version']}", 0)}
+            for row in rows
+        ]
 
     async def get_benchmark(
         self, actor: ActorContext, *, benchmark_id: str, version: str
@@ -247,13 +265,21 @@ class EvaluationService:
         return run
 
     async def list_runs(
-        self, actor: ActorContext, *, release_id: UUID | None = None, limit: int = 100
-    ) -> list[dict[str, Any]]:
+        self,
+        actor: ActorContext,
+        *,
+        release_id: UUID | None = None,
+        limit: int = 100,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Runs newest first, one page, and how many there are."""
         actor.require(Capability.RUN_EVALUATION)
         async with self._context.uow_factory() as uow:
-            return await uow.evaluations.list_runs(
-                actor.workspace_id, release_id=release_id, limit=limit
+            rows = await uow.evaluations.list_runs(
+                actor.workspace_id, release_id=release_id, limit=limit, before=before
             )
+            total = await uow.evaluations.count_runs(actor.workspace_id, release_id=release_id)
+        return rows, total
 
     async def get_run(self, actor: ActorContext, *, run_id: UUID) -> dict[str, Any]:
         actor.require(Capability.RUN_EVALUATION)
@@ -526,6 +552,8 @@ def benchmark_json(row: dict[str, Any], *, include_definition: bool = False) -> 
         "registered_by": _str_or_none(row.get("registered_by")),
         "created_at": _iso(row.get("created_at")),
     }
+    if "runs" in row:
+        body["runs"] = row["runs"]
     if include_definition:
         body["definition"] = definition
     return body

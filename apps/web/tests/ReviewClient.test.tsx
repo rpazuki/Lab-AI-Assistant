@@ -20,6 +20,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 const api = await import("@/lib/api");
 
+/** A one-page answer from a paged endpoint. */
+const page = <T,>(items: T[]) => ({ items, next_cursor: null, total: items.length });
+
 const validItem = {
   claim_id: "c1",
   revision_id: "rev1",
@@ -60,14 +63,14 @@ describe("ReviewClient", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("shows the evidence with its locator and normalisation version", async () => {
-    vi.mocked(api.listReviewQueue).mockResolvedValue([validItem]);
+    vi.mocked(api.listReviewQueue).mockResolvedValue(page([validItem]));
     render(<ReviewClient />);
     expect(await screen.findByText(/a lipid yield of 0.42 g\/g substrate/)).toBeInTheDocument();
     expect(screen.getByText(/p-7 · normalisation v1/)).toBeInTheDocument();
   });
 
   it("accepts a valid proposal with optimistic concurrency", async () => {
-    vi.mocked(api.listReviewQueue).mockResolvedValue([validItem]);
+    vi.mocked(api.listReviewQueue).mockResolvedValue(page([validItem]));
     render(<ReviewClient />);
     await userEvent.click(await screen.findByRole("button", { name: /accept/i }));
     await waitFor(() =>
@@ -81,7 +84,7 @@ describe("ReviewClient", () => {
   });
 
   it("refuses to offer Accept for a proposal that failed validation", async () => {
-    vi.mocked(api.listReviewQueue).mockResolvedValue([invalidItem]);
+    vi.mocked(api.listReviewQueue).mockResolvedValue(page([invalidItem]));
     render(<ReviewClient />);
     expect(await screen.findByText(/quote_not_in_node/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /accept/i })).toBeDisabled();
@@ -89,7 +92,7 @@ describe("ReviewClient", () => {
   });
 
   it("sends a correction as a new value", async () => {
-    vi.mocked(api.listReviewQueue).mockResolvedValue([validItem]);
+    vi.mocked(api.listReviewQueue).mockResolvedValue(page([validItem]));
     render(<ReviewClient />);
     await userEvent.type(await screen.findByLabelText(/corrected value/i), "0.43");
     await userEvent.click(screen.getByRole("button", { name: /^correct$/i }));
@@ -105,7 +108,7 @@ describe("ReviewClient", () => {
   });
 
   it("reports a concurrency conflict rather than silently overwriting", async () => {
-    vi.mocked(api.listReviewQueue).mockResolvedValue([validItem]);
+    vi.mocked(api.listReviewQueue).mockResolvedValue(page([validItem]));
     vi.mocked(api.decideReview).mockRejectedValue(new Error("this claim changed since it was read"));
     render(<ReviewClient />);
     await userEvent.click(await screen.findByRole("button", { name: /accept/i }));
@@ -115,7 +118,7 @@ describe("ReviewClient", () => {
 
 describe("CorrectionRates", () => {
   it("lists predicates, most corrected first", async () => {
-    vi.mocked(api.listReviewQueue).mockResolvedValue([]);
+    vi.mocked(api.listReviewQueue).mockResolvedValue(page([]));
     render(<ReviewClient />);
     const table = await screen.findByRole("table");
     const cells = within(table).getAllByRole("cell").map((cell) => cell.textContent);

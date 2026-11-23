@@ -12,8 +12,8 @@
 import type {
   AcquisitionPlan,
   Allowance,
-  AskEvent,
   AnswerReview,
+  AskEvent,
   AuditEvent,
   Benchmark,
   BulkRelevanceResult,
@@ -39,17 +39,19 @@ import type {
   MergeRule,
   Page,
   ProblemDetails,
+  QueueTask,
   Release,
   ReleaseGate,
   Reviewer,
   ReviewItem,
+  ReviewStep,
   RunComparison,
   RunReviewSummary,
-  ScopeGateReport,
-  ReviewStep,
   ScopeDeletionPlan,
+  ScopeGateReport,
   ScopeRulesPlan,
   ScopeVersion,
+  TaskQueueName,
   TaskSnapshot,
   WorkingSheet,
 } from "@/types";
@@ -136,8 +138,9 @@ export const getAllowance = () => request<Allowance>("/chat/quota");
 export const createSession = () =>
   request<ChatSession>("/chat/sessions", { method: "POST" });
 
-export const listSessions = () =>
-  request<{ items: ChatSession[] }>("/chat/sessions").then((body) => body.items);
+/** Your conversations, newest first, one page at a time. */
+export const listSessions = (options: PageRequest = {}) =>
+  request<Page<ChatSession>>(`/chat/sessions${queryString({ ...options })}`);
 
 export const getSession = (sessionId: string) =>
   request<ChatSession & { messages: ChatMessage[] }>(`/chat/sessions/${sessionId}`);
@@ -301,8 +304,9 @@ export const approveScope = (scopeVersionId: string) =>
     method: "POST",
   });
 
-export const listDiscoveryRuns = () =>
-  request<{ items: DiscoveryRun[] }>("/discovery-runs").then((body) => body.items);
+/** Discovery runs, newest first, one page at a time. */
+export const listDiscoveryRuns = (options: PageRequest = {}) =>
+  request<Page<DiscoveryRun>>(`/discovery-runs${queryString({ ...options })}`);
 
 export const startDiscovery = (scopeVersionId: string) =>
   request<{ run_id: string; status: string }>("/discovery-runs", {
@@ -450,6 +454,16 @@ export const mergeWorks = (keepWorkId: string, mergeWorkId: string, reasonCode: 
     body: JSON.stringify({ keep_work_id: keepWorkId, merge_work_id: mergeWorkId, reason_code: reasonCode }),
   });
 
+/**
+ * Plan every included paper that has no plan, and put waiting fetches that still
+ * have an automatic route back in the queue.
+ */
+export const fetchIncluded = () =>
+  request<{ requeued: number; kept_for_a_person: number; planning_task_id: string }>(
+    "/acquisition-plans/fetch-included",
+    { method: "POST" },
+  );
+
 /** One page of acquisition plans, and how many plans are in each status. */
 export const listPlans = (options: PageRequest & { status?: string } = {}) =>
   request<Page<AcquisitionPlan> & { status_counts: Record<string, number> }>(
@@ -537,10 +551,11 @@ export async function bulkImport(
 }
 
 // ── review ────────────────────────────────────────────────────────────────
-export const listReviewQueue = (includeInvalid = false) =>
-  request<{ items: ReviewItem[] }>(
-    `/claims?include_invalid=${includeInvalid ? "true" : "false"}`,
-  ).then((body) => body.items);
+/** Values waiting for review, one page at a time. */
+export const listReviewQueue = (includeInvalid = false, options: PageRequest = {}) =>
+  request<Page<ReviewItem>>(
+    `/claims${queryString({ include_invalid: includeInvalid ? "true" : "false", ...options })}`,
+  );
 
 export const decideReview = (
   revisionId: string,
@@ -565,11 +580,23 @@ export const correctionRate = () => request<Record<string, number>>("/reviews/co
 export const deleteRelease = (releaseId: string) =>
   request<void>(`/corpus-releases/${releaseId}`, { method: "DELETE" });
 
-export const listReleases = () =>
-  request<{
-    items: Release[];
-    aliases: { alias: string; release_id: string | null; previous_release_id: string | null }[];
-  }>("/corpus-releases");
+export type ReleaseAlias = { alias: string; release_id: string | null; previous_release_id: string | null };
+
+/** Releases, newest first, one page at a time; every alias with each page. */
+export const listReleases = (options: PageRequest = {}) =>
+  request<Page<Release> & { aliases: ReleaseAlias[] }>(`/corpus-releases${queryString({ ...options })}`);
+
+/** Every release, for a menu that must offer all of them. Releases are few. */
+export async function listAllReleases(): Promise<Release[]> {
+  const releases: Release[] = [];
+  let after: string | null = null;
+  do {
+    const page: Page<Release> = await listReleases({ after, limit: 200 });
+    releases.push(...page.items);
+    after = page.next_cursor;
+  } while (after);
+  return releases;
+}
 
 export const draftRelease = (payload: {
   name: string;
@@ -657,8 +684,18 @@ export const retryTask = (taskId: string) =>
     method: "POST",
   });
 
-export const listAuditEvents = (limit = 100) =>
-  request<{ items: AuditEvent[] }>(`/audit-events?limit=${limit}`).then((body) => body.items);
+/** One page of a task queue, oldest first; `stage` narrows it to one stage. */
+export const taskQueue = (queue: TaskQueueName, options: PageRequest & { stage?: string | null } = {}) =>
+  request<Page<QueueTask>>(`/operations/queue${queryString({ queue, ...options })}`);
+
+/**
+ * One page of the audit trail, newest first. `q` keeps events holding every word
+ * in their action, subject, reason or details; `action` keeps one action.
+ */
+export const listAuditEvents = (options: PageRequest & { action?: string | null; q?: string | null } = {}) =>
+  request<Page<AuditEvent> & { action_counts: Record<string, number> }>(
+    `/audit-events${queryString({ ...options })}`,
+  );
 
 // ── members and invitations ───────────────────────────────────────────────
 export const listMembers = () =>
@@ -673,8 +710,8 @@ export const updateMember = (
 ) => request<Member>(`/members/${userId}`, { method: "PATCH", body: JSON.stringify(change) });
 
 /** A member's conversations. Every call is recorded in the audit log. */
-export const listMemberSessions = (userId: string) =>
-  request<{ items: MemberSession[] }>(`/members/${userId}/sessions`).then((body) => body.items);
+export const listMemberSessions = (userId: string, options: PageRequest = {}) =>
+  request<Page<MemberSession>>(`/members/${userId}/sessions${queryString({ ...options })}`);
 
 export const getMemberSession = (userId: string, sessionId: string) =>
   request<MemberSession & { messages: ChatMessage[] }>(`/members/${userId}/sessions/${sessionId}`);
@@ -760,10 +797,9 @@ export const deleteBenchmark = (benchmarkId: string, version: string) =>
     { method: "DELETE" },
   );
 
-export const listEvaluationRuns = (releaseId?: string) =>
-  request<{ items: EvaluationRun[] }>(
-    `/evaluation/runs${releaseId ? `?release_id=${encodeURIComponent(releaseId)}` : ""}`,
-  ).then((body) => body.items);
+/** Evaluation runs, newest first, one page at a time; `release_id` narrows to one release. */
+export const listEvaluationRuns = (options: PageRequest & { release_id?: string | null } = {}) =>
+  request<Page<EvaluationRun>>(`/evaluation/runs${queryString({ ...options })}`);
 
 /** Queue a run. It comes back `queued`; the evaluation worker completes it. */
 export const requestEvaluationRun = (payload: {
@@ -816,8 +852,11 @@ export const assignEvaluationReviews = (
 export const listRunReviews = (runId: string) =>
   request<RunReviewSummary>(`/evaluation/runs/${runId}/reviews`);
 
-export const listMyAnswerReviews = () =>
-  request<{ items: AnswerReview[]; scores: string[]; flags: string[] }>("/evaluation/reviews/mine");
+/** Your answer reviews, unfinished first, one page at a time. */
+export const listMyAnswerReviews = (options: PageRequest = {}) =>
+  request<Page<AnswerReview> & { to_do: number; scores: string[]; flags: string[] }>(
+    `/evaluation/reviews/mine${queryString({ ...options })}`,
+  );
 
 export const submitAnswerReview = (
   reviewId: string,
@@ -871,8 +910,9 @@ export const startExtractionRun = (payload: { template?: string; rerun?: boolean
     { method: "POST", body: JSON.stringify(payload) },
   );
 
-export const listExtractionRuns = () =>
-  request<{ items: ExtractionRun[] }>("/extraction/runs").then((body) => body.items);
+/** Extraction runs, newest first, one page at a time. */
+export const listExtractionRuns = (options: PageRequest = {}) =>
+  request<Page<ExtractionRun>>(`/extraction/runs${queryString({ ...options })}`);
 
 export const cancelExtractionRun = (runId: string) =>
   request<{ run_id: string; cancelled_tasks: number }>(`/extraction/runs/${runId}/cancel`, {
@@ -883,8 +923,9 @@ export const cancelExtractionRun = (runId: string) =>
 export const deleteExtractionRun = (runId: string) =>
   request<void>(`/extraction/runs/${runId}`, { method: "DELETE" });
 
-export const workingSheet = (template?: string) =>
-  request<WorkingSheet>(`/extraction/rows${templateQuery(template)}`);
+/** One page of the working sheet's rows; `q` searches every row on the server. */
+export const workingSheet = (template?: string, options: PageRequest & { q?: string | null } = {}) =>
+  request<WorkingSheet>(`/extraction/rows${queryString({ template, ...options })}`);
 
 /** A plain link: the browser downloads the CSV with the session cookie. */
 export function workingSheetCsvUrl(shape: "wide" | "long", template?: string): string {

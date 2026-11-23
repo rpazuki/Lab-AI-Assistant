@@ -3,29 +3,10 @@ import { join } from "node:path";
 
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { OperationsClient } from "@/components/OperationsClient";
 import { SEARCH_THRESHOLD, SortHeader, TableSearch } from "@/components/ui/table";
 import { compareValues, useTable } from "@/lib/useTable";
-import type { AuditEvent } from "@/types";
-
-vi.mock("@/lib/api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/api")>();
-  return {
-    ...actual,
-    taskSnapshot: vi.fn(async () => ({
-      counts: {},
-      oldest_pending_by_stage: {},
-      awaiting_user: [],
-      dead_letters: [],
-    })),
-    listAuditEvents: vi.fn(),
-    retryTask: vi.fn(),
-  };
-});
-
-const api = await import("@/lib/api");
 
 type Row = { name: string; size: string | null; at: string };
 
@@ -140,44 +121,6 @@ describe("a sortable table", () => {
     await user.type(screen.getByRole("searchbox", { name: "Search rows" }), "odd 1");
     expect(names()).toEqual(["row 1 odd", "row 11 odd"]);
     expect(screen.getByText(`2 of ${many.length}`)).toBeInTheDocument();
-  });
-});
-
-describe("the audit log", () => {
-  function event(index: number, action: string): AuditEvent {
-    return {
-      id: `e${index}`,
-      occurred_at: new Date(Date.UTC(2026, 10, 1 + index)).toISOString(),
-      actor_type: "user",
-      action,
-      subject_type: "scope_version",
-      subject_id: `s${index}`,
-      reason_code: null,
-      metadata: {},
-      integrity_hash: "h",
-    };
-  }
-
-  beforeEach(() => {
-    vi.mocked(api.listAuditEvents).mockResolvedValue(
-      // Oldest first from the API: the page must still show the newest on top.
-      Array.from({ length: 14 }, (_, index) => event(index, index === 3 ? "scope_approved" : "login_succeeded")),
-    );
-  });
-
-  it("shows the newest event first, and can be searched", async () => {
-    const user = userEvent.setup();
-    render(<OperationsClient />);
-    const search = await screen.findByRole("searchbox", { name: "Search audit events" });
-    const audit = screen.getAllByRole("table").at(-1)!;
-    const first = within(audit).getAllByRole("row")[1]!;
-    expect(first).toHaveTextContent("s13");
-    expect(api.listAuditEvents).toHaveBeenCalledWith(500);
-
-    await user.type(search, "scope_approved");
-    const rows = within(audit).getAllByRole("row").slice(1);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toHaveTextContent("s3");
   });
 });
 

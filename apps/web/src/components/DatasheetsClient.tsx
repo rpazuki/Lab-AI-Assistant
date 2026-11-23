@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
-import { SortHeader, TableSearch } from "@/components/ui/table";
-import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
+import { Pager } from "@/components/ui/Pager";
+import { SortHeader } from "@/components/ui/table";
+import { Alert, Button, Empty, Field, Input, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
   ApiError,
   approveExtractionTemplate,
@@ -21,8 +22,9 @@ import {
   workingSheetCsvUrl,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
+import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
-import type { ExtractionEstimate, ExtractionRun, ExtractionTemplate, WorkingSheet } from "@/types";
+import type { ExtractionEstimate, ExtractionRun, ExtractionTemplate, Page, WorkingSheet } from "@/types";
 
 /** A starting point: the worked example's shape, cut down to two targets. */
 export const EXAMPLE_TEMPLATE = `template_id: yeast-lipid-datasheet
@@ -69,8 +71,9 @@ const number = (value: number) => value.toLocaleString();
  */
 export function DatasheetsClient() {
   const [templates, setTemplates] = useState<ExtractionTemplate[]>([]);
-  const [runs, setRuns] = useState<ExtractionRun[]>([]);
-  const [sheet, setSheet] = useState<WorkingSheet | null>(null);
+  const [runPage, setRunPage] = useState<Page<ExtractionRun>>({ items: [], next_cursor: null, total: 0 });
+  const runs = runPage.items;
+  const runPager = usePager(10);
   const [chosen, setChosen] = useState("");
   const [estimate, setEstimate] = useState<ExtractionEstimate | null>(null);
   const [error, setError] = useState<{ message: string; problems: string[] } | null>(null);
@@ -87,34 +90,31 @@ export function DatasheetsClient() {
 
   const refresh = useCallback(async () => {
     try {
-      const [items, batches] = await Promise.all([listExtractionTemplates(), listExtractionRuns()]);
+      const [items, batches] = await Promise.all([
+        listExtractionTemplates(),
+        listExtractionRuns({ after: runPager.cursor, limit: runPager.pageSize }),
+      ]);
       setTemplates(items);
-      setRuns(batches);
+      setRunPage(batches);
       const active = items.find((item) => item.active);
       setChosen((current) => current || active?.key || "");
       setError(null);
     } catch (caught) {
       fail(caught, "datasheets could not be loaded");
     }
-  }, [fail]);
+  }, [fail, runPager.cursor, runPager.pageSize]);
 
-  // The sheet follows the chosen template.
+  // A new estimate is asked for each template.
   useEffect(() => {
-    if (!chosen) {
-      setSheet(null);
-      return;
-    }
-    let current = true;
     setEstimate(null);
-    workingSheet(chosen)
-      .then((answer) => current && setSheet(answer))
-      .catch(() => current && setSheet(null));
-    return () => {
-      current = false;
-    };
-  }, [chosen, runs]);
+  }, [chosen]);
 
   const live = useLiveRefresh(refresh, { active: runs.some((run) => !run.finished) });
+  const reload = live.refresh;
+  // Another page of runs loads at once rather than at the next scheduled refresh.
+  useEffect(() => {
+    void reload();
+  }, [refresh, reload]);
 
   async function act(action: () => Promise<unknown>, done: string, fallback: string) {
     setBusy(true);
@@ -325,9 +325,17 @@ export function DatasheetsClient() {
             ))}
           </ul>
         )}
+        <Pager
+          pager={runPager}
+          shown={runs.length}
+          total={runPage.total}
+          nextCursor={runPage.next_cursor}
+          label="extraction runs"
+        />
       </Panel>
 
-      <SheetPanel sheet={sheet} template={chosen} />
+      {/* Reloads with the runs: a finished batch adds rows. */}
+      <SheetPanel template={chosen} reloadKey={runs} />
     </div>
   );
 }
@@ -485,7 +493,38 @@ function TemplatesPanel({
   );
 }
 
-function SheetPanel({ sheet, template }: { sheet: WorkingSheet | null; template: string }) {
+/**
+ * The working sheet, a page of rows at a time. The search runs on the server over
+ * every row, not only the page on screen; the counts are over the whole sheet.
+ */
+function SheetPanel({ template, reloadKey }: { template: string; reloadKey: unknown }) {
+  const pager = usePager();
+  const [sheet, setSheet] = useState<WorkingSheet | null>(null);
+  const [typed, setTyped] = useState("");
+  const [query, setQuery] = useState("");
+  const { cursor, pageSize, reset } = pager;
+
+  // A new template starts the sheet again at its first page, unsearched.
+  useEffect(() => {
+    setTyped("");
+    setQuery("");
+    reset();
+  }, [template, reset]);
+
+  useEffect(() => {
+    if (!template) {
+      setSheet(null);
+      return;
+    }
+    let current = true;
+    workingSheet(template, { after: cursor, limit: pageSize, q: query || null })
+      .then((answer) => current && setSheet(answer))
+      .catch(() => current && setSheet(null));
+    return () => {
+      current = false;
+    };
+  }, [template, cursor, pageSize, query, reloadKey]);
+
   const columns = useMemo(
     () => (sheet?.wide.columns ?? []).filter((column) => column !== "revision_ids"),
     [sheet],
@@ -494,8 +533,14 @@ function SheetPanel({ sheet, template }: { sheet: WorkingSheet | null; template:
     columns: Object.fromEntries(
       columns.map((column) => [column, (row: Record<string, string>) => row[column]]),
     ),
-    searchText: (row) => columns.map((column) => row[column] ?? "").join(" "),
   });
+
+  function search(event: FormEvent) {
+    event.preventDefault();
+    setQuery(typed.trim());
+    reset();
+  }
+
   return (
     <Panel
       title="Working sheet"
@@ -529,34 +574,78 @@ function SheetPanel({ sheet, template }: { sheet: WorkingSheet | null; template:
             . Unreviewed values are proposals, not findings; the Review page is where they become
             either.
           </p>
-          <div className="mt-2 overflow-x-auto">
-            <TableSearch table={table} label="working sheet rows" placeholder="Filter by strain, value or any column" />
-            <table className="data-table">
-              <thead>
-                <tr>
-                  {columns.map((column) => (
-                    <SortHeader key={column} table={table} column={column}>
-                      {column.replace(/_/g, " ")}
-                    </SortHeader>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {table.rows.map((item, index) => (
-                  <tr key={`${item.work_id}:${item.experiment_id}:${index}`}>
+          <form
+            role="search"
+            aria-label="Search the working sheet"
+            onSubmit={search}
+            className="mt-2 flex flex-wrap items-center gap-3 border-b border-border px-5 py-2.5"
+          >
+            <Input
+              type="search"
+              aria-label="Search working sheet rows"
+              placeholder="Words in any column: strain, value, unit"
+              className="w-full max-w-xs"
+              value={typed}
+              onChange={(event) => setTyped(event.target.value)}
+            />
+            <Button type="submit" variant="ghost" size="sm">
+              Search
+            </Button>
+            {query ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setTyped("");
+                  setQuery("");
+                  reset();
+                }}
+              >
+                Clear
+              </Button>
+            ) : null}
+          </form>
+          {sheet.wide.total === 0 ? (
+            <div className="px-5 py-3">
+              <Empty>No row holds every word.</Empty>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
+                  <tr>
                     {columns.map((column) => (
-                      <td
-                        key={column}
-                        className={column.endsWith("_id") ? "font-mono text-xs text-muted" : "text-sm"}
-                      >
-                        {column.endsWith("_id") ? (item[column] ?? "").slice(0, 8) : item[column]}
-                      </td>
+                      <SortHeader key={column} table={table} column={column}>
+                        {column.replace(/_/g, " ")}
+                      </SortHeader>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {table.rows.map((item, index) => (
+                    <tr key={`${item.work_id}:${item.experiment_id}:${index}`}>
+                      {columns.map((column) => (
+                        <td
+                          key={column}
+                          className={column.endsWith("_id") ? "font-mono text-xs text-muted" : "text-sm"}
+                        >
+                          {column.endsWith("_id") ? (item[column] ?? "").slice(0, 8) : item[column]}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <Pager
+            pager={pager}
+            shown={sheet.wide.rows.length}
+            total={sheet.wide.total}
+            nextCursor={sheet.wide.next_cursor}
+            label="working sheet rows"
+          />
         </>
       )}
     </Panel>

@@ -10,8 +10,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...actual,
     listScopes: vi.fn(async () => []),
-    listDiscoveryRuns: vi.fn(async () => []),
+    listDiscoveryRuns: vi.fn(async () => ({ items: [], next_cursor: null, total: 0 })),
     listCandidates: vi.fn(),
+    fetchIncluded: vi.fn(),
     listPlans: vi.fn(async () => ({ items: [], next_cursor: null, total: 0, status_counts: {} })),
     listConflicts: vi.fn(async () => ({
       conflict_total: 0,
@@ -92,5 +93,23 @@ describe("The candidate list is read a page at a time", () => {
         expect.objectContaining({ relevance: "included", after: null }),
       ),
     );
+  });
+});
+
+describe("Fetching included papers", () => {
+  it("plans what has no plan, retries what can still be fetched, and says how many", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({ items: [], next_cursor: null, total: 0 });
+    vi.mocked(api.fetchIncluded).mockResolvedValue({
+      requeued: 1425,
+      kept_for_a_person: 6467,
+      planning_task_id: "t1",
+    });
+    const user = userEvent.setup();
+    render(<CollectionsClient />);
+    await user.click(await screen.findByRole("button", { name: "Fetch included papers" }));
+    expect(api.fetchIncluded).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByText(/1,425 waiting fetches will be tried again; 6,467 can only come from an upload/),
+    ).toBeInTheDocument();
   });
 });

@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { QueryHelper } from "@/components/QueryHelper";
 import { ReviewHistory, ScopeDeletion, ScopeRules } from "@/components/ScopeReview";
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
+import { Pager } from "@/components/ui/Pager";
 import { SortHeader } from "@/components/ui/table";
 import {
   Alert,
@@ -31,8 +32,9 @@ import {
   updateScopeDraft,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
+import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
-import type { DiscoveryRun, ScopeGateReport, ScopeVersion } from "@/types";
+import type { DiscoveryRun, Page, ScopeGateReport, ScopeVersion } from "@/types";
 
 /** The sources this installation registers. Each takes its own query language. */
 export const CONNECTORS = [
@@ -84,7 +86,9 @@ function runDeletable(run: DiscoveryRun): boolean {
  */
 export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
   const [scopes, setScopes] = useState<ScopeVersion[]>([]);
-  const [runs, setRuns] = useState<DiscoveryRun[]>([]);
+  const [runPage, setRunPage] = useState<Page<DiscoveryRun>>({ items: [], next_cursor: null, total: 0 });
+  const runs = runPage.items;
+  const runPager = usePager(20);
   const [gates, setGates] = useState<Record<string, ScopeGateReport>>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -99,16 +103,24 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextScopes, nextRuns] = await Promise.all([listScopes(), listDiscoveryRuns()]);
+      const [nextScopes, nextRuns] = await Promise.all([
+        listScopes(),
+        listDiscoveryRuns({ after: runPager.cursor, limit: runPager.pageSize }),
+      ]);
       setScopes([...nextScopes].sort((a, b) => a.name.localeCompare(b.name) || b.version - a.version));
-      setRuns(nextRuns);
+      setRunPage(nextRuns);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "collection setup could not be loaded");
     }
-  }, []);
+  }, [runPager.cursor, runPager.pageSize]);
 
   const live = useLiveRefresh(refresh, { active: runs.some((run) => SEARCHING.has(run.status)) });
+  const reload = live.refresh;
+  // Another page of runs loads at once rather than at the next scheduled refresh.
+  useEffect(() => {
+    void reload();
+  }, [refresh, reload]);
 
   /** Run a change, reload, then report, so a refusal survives the reload. */
   async function act(action: () => Promise<unknown>, done: string) {
@@ -433,6 +445,13 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
             ))}
           </ul>
         )}
+        <Pager
+          pager={runPager}
+          shown={runs.length}
+          total={runPage.total}
+          nextCursor={runPage.next_cursor}
+          label="discovery runs"
+        />
       </Panel>
     </div>
   );

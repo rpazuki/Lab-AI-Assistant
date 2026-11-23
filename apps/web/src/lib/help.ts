@@ -155,7 +155,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "Sorting and searching tables",
         about: [
           "Every table can be sorted by any of its columns. A table of events or anything dated starts newest first; others start in a useful order, such as the most-used first.",
-          "A table with more than ten rows shows a search box above it. Only the rows containing every word you type stay, and the count beside the box says how many match.",
+          "A table with more than ten rows shows a search box above it. Only the rows containing every word you type stay, and the count beside the box says how many match. A long list is shown a page at a time, with **Previous** and **Next** and a count such as “51–100 of 3,420”; there, sorting by a header orders the page on screen, and a search box with a **Search** button looks through every row, not only the page.",
         ],
         howTos: [
           {
@@ -617,10 +617,19 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         statuses: ["acquisition", "acquisition_outcome"],
         title: "Acquisition queue",
         about: [
-          "Every included paper gets an acquisition plan: the routes tried to fetch its full text, open repositories first. When no permitted route returns it, the plan waits for a person, who can upload a copy the lab is entitled to.",
-          "An uploaded copy goes through the same integrity, malware, identity and rights checks as an automatic download, and the paper then continues to parsing.",
+          "Every included paper gets an acquisition plan: the routes tried to fetch its full text, open repositories first. A plan is made after a discovery run, and again whenever papers are included, one at a time, by filter or by the scope's rules. When no permitted route returns the paper, the plan waits for a person, who can upload a copy the lab is entitled to. Open routes are tried only for papers whose licence permits keeping a copy (Creative Commons or public domain); a paper with no known licence can only be uploaded.",
+          "An uploaded copy goes through the same integrity, malware, identity and rights checks as an automatic download, and the paper then continues to parsing. A paper is in a release, and so can be asked about, only once its full text is parsed: an abstract alone is not enough.",
         ],
         howTos: [
+          {
+            title: "How to fetch included papers that were never fetched",
+            needs: STEWARD,
+            steps: [
+              "Under **Acquisition queue**, select **Fetch included papers**.",
+              "Every included paper without a plan is planned, and every waiting fetch that still has an open route is tried again. The message says how many were queued and how many can only come from an upload.",
+            ],
+            note: "Asking twice plans nothing twice: a paper that already has a plan is skipped.",
+          },
           {
             title: "How to upload a paper the system could not fetch",
             needs: STEWARD,
@@ -759,7 +768,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         id: "working-sheet",
         title: "The working sheet",
         about: [
-          "The working sheet shows every current proposal for the chosen template, one row per paper and experiment, reviewed or not. It is for the people building the datasheet: unreviewed values are proposals, not findings.",
+          "The working sheet shows every current proposal for the chosen template, one row per paper and experiment, reviewed or not, 50 rows at a time. It is for the people building the datasheet: unreviewed values are proposals, not findings. Its search looks through every row; the CSV downloads are always the whole sheet.",
           "The citable datasheet is the wide-form spreadsheet in a release's export package (see Releases).",
         ],
         howTos: [
@@ -1090,7 +1099,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         statuses: ["task"],
         title: "The task queue",
         about: [
-          "Discovery, acquisition, parsing, extraction, indexing and evaluation all run as tasks on background workers. The tiles count tasks by state, **Waiting longest, by stage** shows where work is backing up, and **Waiting for a person** lists tasks that need a decision. The page refreshes itself.",
+          "Discovery, acquisition, parsing, extraction, indexing and evaluation all run as tasks on background workers. The tiles count tasks by state. **Waiting longest** lists the tasks ready to run or being run, the one that has waited longest first; its stage menu shows how many wait in each stage and for how long, so you can see where work is backing up. **Waiting for a person** lists tasks that need a decision. Every list shows 10 tasks at a time, with **Previous** and **Next**, and counts every task, not only those on screen. The page refreshes itself and stays on the page you are reading.",
           "A task that fails is retried automatically; one that keeps failing becomes a dead letter and stops, so a broken input never loops forever.",
         ],
         howTos: [
@@ -1110,16 +1119,16 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         statuses: ["audit_action"],
         title: "The audit log",
         about: [
-          "Every decision that matters — sign-ins, membership changes, reviews, releases, overrides, reads of members' chats — is written to a tamper-evident audit log. The latest 500 events are shown here, newest first, with what was done and to what.",
+          "Every decision that matters — sign-ins, membership changes, reviews, releases, overrides, reads of members' chats — is written to a tamper-evident audit log. It is shown here newest first, 50 events at a time, with what was done and to what; **Previous** and **Next** move through all of it.",
         ],
         howTos: [
           {
             title: "How to see who changed something",
             needs: "Admins.",
             steps: [
-              "Scroll to **Audit log (latest 500)**.",
-              "Type an action, subject or detail in the search box above the table (for example scope_approved). Only matching events stay.",
-              "Select a column header, such as **When** or **Action**, to sort by it.",
+              "Scroll to **Audit log**.",
+              "Choose an action in the menu, or type words in the search box and press **Search** (for example yarrowia, or the first characters of a subject's id). Every event is searched, not only the page on screen; an event matches when it holds every word.",
+              "Select **Clear** to see every event again. A column header, such as **When** or **Action**, sorts the page on screen.",
             ],
           },
         ],

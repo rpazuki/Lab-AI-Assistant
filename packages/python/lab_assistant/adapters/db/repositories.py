@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from types import TracebackType
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, delete, func, insert, literal_column, or_, select, update
+from sqlalchemy import String, and_, cast, delete, func, insert, literal_column, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from lab_assistant.adapters.db import tables as t
@@ -65,9 +65,14 @@ from lab_assistant.domain.review import (
     WorkSummary,
 )
 from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
-from lab_assistant.domain.states import TaskState
+from lab_assistant.domain.states import ReviewState, TaskState
 from lab_assistant.domain.tasks import RateBudget, Task
 from lab_assistant.domain.workspace import Group, Invitation, Membership, User, Workspace
+
+#: Where a row without a timestamp sorts in a newest-first page: last.
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+#: A claim whose current revision is in one of these has left the review queue.
+APPROVED_REVIEW_STATES = tuple(state.value for state in ReviewState if state.is_approved)
 
 __all__ = ["SqlUnitOfWork", "sql_uow_factory"]
 
@@ -239,6 +244,33 @@ class _Base:
             statement = statement.limit(limit)
         result = await self._c.execute(statement)
         return mapper.from_rows(result.mappings().all())
+
+    async def _newest_page(
+        self,
+        mapper: Mapper,
+        at: Any,
+        *conditions: Any,
+        limit: int,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[Any]:
+        """One page newest first, by ``(at, id)``; ``before`` is the last row seen.
+
+        ``at`` is coalesced to the epoch, so a row without a time still has a
+        place in the order and is reached by the cursor like any other.
+        """
+        key = func.coalesce(at, EPOCH)
+        ident = mapper.table.c.id
+        if before is not None:
+            moment, last = before
+            conditions = (*conditions, (key < moment) | ((key == moment) & (ident < last)))
+        result = await self._c.execute(
+            select(mapper.table).where(*conditions).order_by(key.desc(), ident.desc()).limit(limit)
+        )
+        return mapper.from_rows(result.mappings().all())
+
+    async def _count(self, table: Any, *conditions: Any) -> int:
+        result = await self._c.execute(select(func.count()).select_from(table).where(*conditions))
+        return int(result.scalar() or 0)
 
     async def _upsert(self, mapper: Mapper, instance: Any) -> None:
         row, keys = mapper.upsert_values(instance)
@@ -642,13 +674,23 @@ class _Observations(_Base):
             RUNS, self._scope(RUNS, workspace_id), t.discovery_runs.c.id == run_id
         )
 
-    async def list_runs(self, workspace_id: UUID, *, limit: int = 50) -> list[DiscoveryRun]:
-        return await self._many(
+    async def list_runs(
+        self,
+        workspace_id: UUID,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[DiscoveryRun]:
+        return await self._newest_page(
             RUNS,
+            t.discovery_runs.c.started_at,
             self._scope(RUNS, workspace_id),
-            order=t.discovery_runs.c.started_at.desc(),
             limit=limit,
+            before=before,
         )
+
+    async def count_runs(self, workspace_id: UUID) -> int:
+        return await self._count(t.discovery_runs, self._scope(RUNS, workspace_id))
 
     async def add_request(self, request: SourceRequest) -> None:
         await self._upsert(REQUESTS, request)
@@ -1576,6 +1618,51 @@ class _Claims(_Base):
         # Ordered by id so the keyset cursor is total; created_at is not unique.
         return await self._many(CLAIMS, *conditions, order=t.claims.c.id, limit=limit)
 
+    def _queue_conditions(
+        self, workspace_id: UUID, work_id: UUID | None, include_invalid: bool
+    ) -> list[Any]:
+        c, r = t.claims, t.claim_revisions
+        conditions: list[Any] = [
+            c.c.workspace_id == workspace_id,
+            r.c.review_status.notin_(APPROVED_REVIEW_STATES),
+        ]
+        if work_id is not None:
+            conditions.append(c.c.work_id == work_id)
+        if not include_invalid:
+            conditions.append(r.c.validation_status == "valid")
+        return conditions
+
+    async def list_review_queue(
+        self,
+        workspace_id: UUID,
+        *,
+        work_id: UUID | None = None,
+        include_invalid: bool = False,
+        limit: int = 50,
+        after_id: UUID | None = None,
+    ) -> list[Claim]:
+        c, r = t.claims, t.claim_revisions
+        conditions = self._queue_conditions(workspace_id, work_id, include_invalid)
+        if after_id is not None:
+            conditions.append(c.c.id > after_id)
+        result = await self._c.execute(
+            select(c)
+            .join(r, r.c.id == c.c.current_revision_id)
+            .where(*conditions)
+            .order_by(c.c.id)
+            .limit(limit)
+        )
+        return CLAIMS.from_rows(result.mappings().all())
+
+    async def count_review_queue(
+        self, workspace_id: UUID, *, work_id: UUID | None = None, include_invalid: bool = False
+    ) -> int:
+        c, r = t.claims, t.claim_revisions
+        return await self._count(
+            c.join(r, r.c.id == c.c.current_revision_id),
+            *self._queue_conditions(workspace_id, work_id, include_invalid),
+        )
+
     async def add_revision(self, revision: ClaimRevision) -> None:
         await self._upsert(REVISIONS, revision)
 
@@ -1628,13 +1715,23 @@ class _Releases(_Base):
             RELEASES, self._scope(RELEASES, workspace_id), t.corpus_releases.c.id == release_id
         )
 
-    async def list_releases(self, workspace_id: UUID, *, limit: int = 50) -> list[CorpusRelease]:
-        return await self._many(
+    async def list_releases(
+        self,
+        workspace_id: UUID,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[CorpusRelease]:
+        return await self._newest_page(
             RELEASES,
+            t.corpus_releases.c.created_at,
             self._scope(RELEASES, workspace_id),
-            order=t.corpus_releases.c.created_at.desc(),
             limit=limit,
+            before=before,
         )
+
+    async def count_releases(self, workspace_id: UUID) -> int:
+        return await self._count(t.corpus_releases, self._scope(RELEASES, workspace_id))
 
     async def list_all_releases(
         self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
@@ -1850,6 +1947,59 @@ class _Tasks(_Base):
         )
         return {row[0]: row[1] for row in sorted(result.all())}
 
+    def _task_conditions(
+        self, workspace_id: UUID, states: Sequence[str], stage: str | None
+    ) -> list[Any]:
+        conditions = [t.tasks.c.workspace_id == workspace_id, t.tasks.c.state.in_(list(states))]
+        if stage is not None:
+            conditions.append(t.tasks.c.stage == stage)
+        return conditions
+
+    async def page_tasks(
+        self,
+        workspace_id: UUID,
+        *,
+        states: Sequence[str],
+        stage: str | None = None,
+        limit: int = 50,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> list[Task]:
+        tasks = t.tasks
+        conditions = self._task_conditions(workspace_id, states, stage)
+        if after is not None:
+            at, last = after
+            conditions.append(
+                (tasks.c.created_at > at) | ((tasks.c.created_at == at) & (tasks.c.id > last))
+            )
+        result = await self._c.execute(
+            select(tasks).where(*conditions).order_by(tasks.c.created_at, tasks.c.id).limit(limit)
+        )
+        return TASKS.from_rows(result.mappings().all())
+
+    async def count_tasks(
+        self, workspace_id: UUID, *, states: Sequence[str], stage: str | None = None
+    ) -> int:
+        result = await self._c.execute(
+            select(func.count())
+            .select_from(t.tasks)
+            .where(*self._task_conditions(workspace_id, states, stage))
+        )
+        return int(result.scalar() or 0)
+
+    async def tasks_by_stage(
+        self, workspace_id: UUID, *, states: Sequence[str]
+    ) -> list[tuple[str, int, datetime | None]]:
+        tasks = t.tasks
+        result = await self._c.execute(
+            select(tasks.c.stage, func.count(), func.min(tasks.c.created_at))
+            .where(*self._task_conditions(workspace_id, states, None))
+            .group_by(tasks.c.stage)
+        )
+        return sorted(
+            ((row[0], int(row[1]), row[2]) for row in result.all()),
+            key=lambda row: (row[2] is None, row[2] or datetime.max, row[0]),
+        )
+
     async def list_run_tasks(self, workspace_id: UUID, run_id: UUID) -> list[Task]:
         return await self._many(
             TASKS,
@@ -1949,6 +2099,76 @@ class _Audit(_Base):
         )
         return AUDIT.from_rows(result.mappings().all())
 
+    @staticmethod
+    def _event_conditions(
+        workspace_id: UUID, actions: Sequence[str] | None, words: Sequence[str]
+    ) -> list[Any]:
+        a = t.audit_events
+        conditions: list[Any] = [a.c.workspace_id == workspace_id]
+        if actions:
+            conditions.append(a.c.action.in_(list(actions)))
+        if words:
+            # ``||`` on both dialects; every word must appear, as in a table search.
+            parts = [
+                a.c.action,
+                a.c.actor_type,
+                a.c.subject_type,
+                func.coalesce(cast(a.c.subject_id, String), ""),
+                func.coalesce(a.c.reason_code, ""),
+                func.coalesce(cast(a.c.metadata_json, String), ""),
+            ]
+            joined = parts[0]
+            for part in parts[1:]:
+                joined = joined + " " + part
+            text = func.lower(joined)
+            conditions.extend(text.contains(word.lower(), autoescape=True) for word in words)
+        return conditions
+
+    async def page_events(
+        self,
+        workspace_id: UUID,
+        *,
+        actions: Sequence[str] | None = None,
+        words: Sequence[str] = (),
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[AuditEventRecord]:
+        a = t.audit_events
+        conditions = self._event_conditions(workspace_id, actions, words)
+        if before is not None:
+            at, last = before
+            conditions.append((a.c.occurred_at < at) | ((a.c.occurred_at == at) & (a.c.id < last)))
+        result = await self._c.execute(
+            select(a)
+            .where(*conditions)
+            .order_by(a.c.occurred_at.desc(), a.c.id.desc())
+            .limit(limit)
+        )
+        return AUDIT.from_rows(result.mappings().all())
+
+    async def count_events(
+        self,
+        workspace_id: UUID,
+        *,
+        actions: Sequence[str] | None = None,
+        words: Sequence[str] = (),
+    ) -> int:
+        result = await self._c.execute(
+            select(func.count())
+            .select_from(t.audit_events)
+            .where(*self._event_conditions(workspace_id, actions, words))
+        )
+        return int(result.scalar() or 0)
+
+    async def count_events_by_action(self, workspace_id: UUID) -> dict[str, int]:
+        a = t.audit_events
+        result = await self._c.execute(
+            select(a.c.action, func.count())
+            .where(a.c.workspace_id == workspace_id)
+            .group_by(a.c.action)
+        )
+        return {row[0]: int(row[1]) for row in sorted(result.all())}
+
     async def add_outbox(self, event: OutboxEvent) -> None:
         await self._c.execute(insert(t.outbox_events).values(**OUTBOX.to_row(event)))
 
@@ -1974,20 +2194,36 @@ class _Chat(_Base):
         )
 
     async def list_sessions(
-        self, workspace_id: UUID, user_id: UUID, *, limit: int = 50
+        self,
+        workspace_id: UUID,
+        user_id: UUID,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+        include_deleted: bool = True,
     ) -> list[ChatSession]:
-        return await self._many(
-            SESSIONS,
-            self._scope(SESSIONS, workspace_id),
-            t.chat_sessions.c.user_id == user_id,
-            order=t.chat_sessions.c.updated_at.desc(),
-            limit=limit,
+        conditions = [self._scope(SESSIONS, workspace_id), t.chat_sessions.c.user_id == user_id]
+        if not include_deleted:
+            conditions.append(t.chat_sessions.c.deleted_at.is_(None))
+        return await self._newest_page(
+            SESSIONS, t.chat_sessions.c.updated_at, *conditions, limit=limit, before=before
         )
 
+    async def count_sessions(
+        self, workspace_id: UUID, user_id: UUID, *, include_deleted: bool = True
+    ) -> int:
+        conditions = [self._scope(SESSIONS, workspace_id), t.chat_sessions.c.user_id == user_id]
+        if not include_deleted:
+            conditions.append(t.chat_sessions.c.deleted_at.is_(None))
+        return await self._count(t.chat_sessions, *conditions)
+
     async def list_workspace_sessions(
-        self, workspace_id: UUID, *, limit: int = 1000
+        self, workspace_id: UUID, *, limit: int = 1000, after_id: UUID | None = None
     ) -> list[ChatSession]:
-        return await self._many(SESSIONS, self._scope(SESSIONS, workspace_id), limit=limit)
+        conditions = [self._scope(SESSIONS, workspace_id)]
+        if after_id is not None:
+            conditions.append(t.chat_sessions.c.id > after_id)
+        return await self._many(SESSIONS, *conditions, order=t.chat_sessions.c.id, limit=limit)
 
     async def add_message(self, message: ChatMessage) -> None:
         await self._upsert(MESSAGES, message)
@@ -2117,19 +2353,45 @@ class _Evaluations(_Base):
         benchmark_id: str | None = None,
         release_id: UUID | None = None,
         limit: int = 100,
+        before: tuple[datetime, UUID] | None = None,
     ) -> list[dict[str, Any]]:
-        conditions = [t.evaluation_runs.c.workspace_id == workspace_id]
-        if benchmark_id is not None:
-            conditions.append(t.evaluation_runs.c.benchmark.like(f"{benchmark_id}%"))
-        if release_id is not None:
-            conditions.append(t.evaluation_runs.c.release_id == release_id)
+        runs = t.evaluation_runs
+        conditions = self._run_conditions(workspace_id, benchmark_id, release_id)
+        if before is not None:
+            at, last = before
+            conditions.append(
+                (runs.c.created_at < at) | ((runs.c.created_at == at) & (runs.c.id < last))
+            )
         result = await self._c.execute(
-            select(t.evaluation_runs)
+            select(runs)
             .where(*conditions)
-            .order_by(t.evaluation_runs.c.created_at.desc(), t.evaluation_runs.c.id)
+            .order_by(runs.c.created_at.desc(), runs.c.id.desc())
             .limit(limit)
         )
         return [dict(row) for row in result.mappings().all()]
+
+    @staticmethod
+    def _run_conditions(
+        workspace_id: UUID, benchmark_id: str | None, release_id: UUID | None
+    ) -> list[Any]:
+        runs = t.evaluation_runs
+        conditions: list[Any] = [runs.c.workspace_id == workspace_id]
+        if benchmark_id is not None:
+            conditions.append(runs.c.benchmark.like(f"{benchmark_id}%"))
+        if release_id is not None:
+            conditions.append(runs.c.release_id == release_id)
+        return conditions
+
+    async def count_runs(
+        self,
+        workspace_id: UUID,
+        *,
+        benchmark_id: str | None = None,
+        release_id: UUID | None = None,
+    ) -> int:
+        return await self._count(
+            t.evaluation_runs, *self._run_conditions(workspace_id, benchmark_id, release_id)
+        )
 
     async def add_benchmark(self, benchmark: dict[str, Any]) -> None:
         await self._c.execute(

@@ -86,6 +86,79 @@
         "title": "AskRequest",
         "type": "object"
       },
+      "AuditAction": {
+        "enum": [
+          "login_succeeded",
+          "login_failed",
+          "logout",
+          "session_revoked",
+          "password_changed",
+          "invitation_created",
+          "invitation_accepted",
+          "membership_changed",
+          "grant_changed",
+          "member_chat_read",
+          "invitation_deleted",
+          "scope_approved",
+          "scope_draft_deleted",
+          "scope_deleted",
+          "discovery_run_started",
+          "discovery_run_frozen",
+          "discovery_run_deleted",
+          "degraded_source_accepted",
+          "identity_decided",
+          "relevance_decided",
+          "relevance_bulk_decided",
+          "identities_bulk_merged",
+          "duplicate_dismissed",
+          "scope_rules_applied",
+          "rights_decided",
+          "acquisition_attempted",
+          "acquisition_requeued",
+          "asset_registered",
+          "asset_quarantined",
+          "assisted_upload_accepted",
+          "parse_completed",
+          "rendition_accepted_degraded",
+          "extraction_completed",
+          "proposal_rejected",
+          "extraction_run_deleted",
+          "extraction_template_deleted",
+          "claim_reviewed",
+          "release_drafted",
+          "release_draft_deleted",
+          "release_validated",
+          "release_approved",
+          "release_published",
+          "release_rolled_back",
+          "release_withdrawn",
+          "benchmark_registered",
+          "benchmark_deleted",
+          "evaluation_requested",
+          "evaluation_completed",
+          "evaluation_cancelled",
+          "evaluation_run_deleted",
+          "evaluation_review_assigned",
+          "evaluation_review_submitted",
+          "release_gate_changed",
+          "release_gate_overridden",
+          "answer_generated",
+          "citation_validation_failed",
+          "export_created",
+          "export_downloaded",
+          "asset_downloaded",
+          "policy_denied",
+          "task_dead_lettered",
+          "object_integrity_failed",
+          "admin_action",
+          "installation_drained",
+          "installation_promoted",
+          "archive_purged",
+          "legacy_import_run"
+        ],
+        "title": "AuditAction",
+        "type": "string"
+      },
       "Body_approve_release_api_v1_corpus_releases__release_id__approve_post": {
         "properties": {
           "evaluation_run_id": {
@@ -1100,6 +1173,36 @@
         "title": "SearchRequest",
         "type": "object"
       },
+      "StageName": {
+        "enum": [
+          "scope_freeze",
+          "discovery",
+          "reconciliation",
+          "acquisition_planning",
+          "acquisition",
+          "parsing",
+          "extraction",
+          "review",
+          "export",
+          "release_assembly",
+          "indexing",
+          "evaluation",
+          "publication",
+          "refresh"
+        ],
+        "title": "StageName",
+        "type": "string"
+      },
+      "TaskQueue": {
+        "description": "The lists of tasks the operations page pages through.",
+        "enum": [
+          "waiting",
+          "awaiting_user",
+          "dead_letter"
+        ],
+        "title": "TaskQueue",
+        "type": "string"
+      },
       "TemplateRequest": {
         "description": "A template as a JSON object, or as the YAML text of a template file.",
         "properties": {
@@ -1290,6 +1393,71 @@
           }
         },
         "summary": "List Plans"
+      }
+    },
+    "/api/v1/acquisition-plans/fetch-included": {
+      "post": {
+        "description": "Plan every included paper without a plan, and try waiting fetches again.\n\nWaiting fetches go back in the queue only when an automatic route is left; a\npaper only a person can supply stays waiting for that person.",
+        "operationId": "fetch_included_api_v1_acquisition_plans_fetch_included_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Fetch Included Api V1 Acquisition Plans Fetch Included Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fetch Included"
       }
     },
     "/api/v1/analytics/corpus": {
@@ -1784,6 +1952,7 @@
     },
     "/api/v1/audit-events": {
       "get": {
+        "description": "The audit trail, newest first, a page at a time.\n\n``q`` keeps events whose action, actor type, subject, reason or metadata hold\nevery word, case-insensitively; ``action`` keeps those actions only.",
         "operationId": "audit_events_api_v1_audit_events_get",
         "parameters": [
           {
@@ -1791,11 +1960,63 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 100,
+              "default": 50,
               "maximum": 500,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/AuditAction"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
             }
           },
           {
@@ -3042,6 +3263,7 @@
     },
     "/api/v1/chat/sessions": {
       "get": {
+        "description": "The caller's conversations, newest first, a page at a time.",
         "operationId": "list_sessions_api_v1_chat_sessions_get",
         "parameters": [
           {
@@ -3054,6 +3276,22 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           },
           {
@@ -3480,6 +3718,7 @@
     },
     "/api/v1/claims": {
       "get": {
+        "description": "Values waiting for review, a page at a time, ordered by claim.",
         "operationId": "review_queue_api_v1_claims_get",
         "parameters": [
           {
@@ -3519,6 +3758,23 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           },
           {
@@ -3648,8 +3904,37 @@
     },
     "/api/v1/corpus-releases": {
       "get": {
+        "description": "Releases, newest first, a page at a time; every alias, whichever page.",
         "operationId": "list_releases_api_v1_corpus_releases_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
           {
             "in": "header",
             "name": "X-Workspace",
@@ -4333,8 +4618,37 @@
     },
     "/api/v1/discovery-runs": {
       "get": {
+        "description": "Discovery runs, newest first, a page at a time.",
         "operationId": "list_discovery_runs_api_v1_discovery_runs_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
           {
             "in": "header",
             "name": "X-Workspace",
@@ -5532,8 +5846,37 @@
     },
     "/api/v1/evaluation/reviews/mine": {
       "get": {
+        "description": "The caller's answer reviews, unfinished first, a page at a time.",
         "operationId": "my_evaluation_reviews_api_v1_evaluation_reviews_mine_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
           {
             "in": "header",
             "name": "X-Workspace",
@@ -5680,6 +6023,7 @@
     },
     "/api/v1/evaluation/runs": {
       "get": {
+        "description": "Evaluation runs, newest first, a page at a time.",
         "operationId": "list_evaluation_runs_api_v1_evaluation_runs_get",
         "parameters": [
           {
@@ -5704,11 +6048,27 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 100,
+              "default": 50,
               "maximum": 500,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           },
           {
@@ -6477,7 +6837,7 @@
     },
     "/api/v1/extraction/rows": {
       "get": {
-        "description": "The working datasheet: current claim revisions, long and wide.",
+        "description": "The working datasheet, a page of wide rows at a time; counts over all of it.\n\n``q`` keeps the rows holding every word in any column. The CSV downloads stay\nwhole: they are the sheet, not a view of it.",
         "operationId": "extraction_rows_api_v1_extraction_rows_get",
         "parameters": [
           {
@@ -6495,6 +6855,51 @@
                 }
               ],
               "title": "Template"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           },
           {
@@ -6648,8 +7053,37 @@
     },
     "/api/v1/extraction/runs": {
       "get": {
+        "description": "Extraction runs, newest first, a page at a time.",
         "operationId": "list_extraction_runs_api_v1_extraction_runs_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
           {
             "in": "header",
             "name": "X-Workspace",
@@ -8153,7 +8587,7 @@
     },
     "/api/v1/members/{user_id}/sessions": {
       "get": {
-        "description": "A member's conversations, for an admin. Audited; see `UsageService`.",
+        "description": "A member's conversations, newest first, for an admin. Audited; see `UsageService`.",
         "operationId": "member_sessions_api_v1_members__user_id__sessions_get",
         "parameters": [
           {
@@ -8164,6 +8598,34 @@
               "format": "uuid",
               "title": "User Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           },
           {
@@ -8308,6 +8770,123 @@
           }
         },
         "summary": "Member Session"
+      }
+    },
+    "/api/v1/operations/queue": {
+      "get": {
+        "description": "One page of waiting, awaiting-a-person or dead-lettered tasks, oldest first.",
+        "operationId": "task_queue_api_v1_operations_queue_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "queue",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TaskQueue"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/StageName"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stage"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Task Queue Api V1 Operations Queue Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Task Queue"
       }
     },
     "/api/v1/operations/tasks": {

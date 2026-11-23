@@ -40,7 +40,7 @@ const refusal = new ApiError({
 describe("ReleasesClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(api.listReleases).mockResolvedValue({ items: [APPROVED], aliases: [] } as never);
+    vi.mocked(api.listReleases).mockResolvedValue({ items: [APPROVED], aliases: [], next_cursor: null, total: 1 } as never);
     vi.mocked(api.listReleaseGates).mockResolvedValue({
       items: [],
       status: [

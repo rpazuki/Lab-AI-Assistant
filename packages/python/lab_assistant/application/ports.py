@@ -545,7 +545,17 @@ class ObservationRepository(Protocol):
     async def add_run(self, run: DiscoveryRun) -> None: ...
     async def update_run(self, run: DiscoveryRun) -> None: ...
     async def get_run(self, workspace_id: UUID, run_id: UUID) -> DiscoveryRun | None: ...
-    async def list_runs(self, workspace_id: UUID, *, limit: int = 50) -> list[DiscoveryRun]: ...
+    async def list_runs(
+        self,
+        workspace_id: UUID,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[DiscoveryRun]:
+        """Newest first by ``(started_at, id)``, before the last row seen."""
+        ...
+
+    async def count_runs(self, workspace_id: UUID) -> int: ...
     async def add_request(self, request: SourceRequest) -> None: ...
     async def update_request(self, request: SourceRequest) -> None: ...
     async def find_request_by_fingerprint(
@@ -847,6 +857,21 @@ class ClaimRepository(Protocol):
         limit: int = 200,
         after_id: UUID | None = None,
     ) -> list[Claim]: ...
+    async def list_review_queue(
+        self,
+        workspace_id: UUID,
+        *,
+        work_id: UUID | None = None,
+        include_invalid: bool = False,
+        limit: int = 50,
+        after_id: UUID | None = None,
+    ) -> list[Claim]:
+        """Claims whose current revision awaits review, by id: the filter is in the query."""
+        ...
+
+    async def count_review_queue(
+        self, workspace_id: UUID, *, work_id: UUID | None = None, include_invalid: bool = False
+    ) -> int: ...
     async def add_revision(self, revision: ClaimRevision) -> None: ...
     async def update_revision(self, revision: ClaimRevision) -> None: ...
     async def get_revision(self, workspace_id: UUID, revision_id: UUID) -> ClaimRevision | None: ...
@@ -866,8 +891,16 @@ class ReleaseRepository(Protocol):
     async def update(self, release: CorpusRelease) -> None: ...
     async def get(self, workspace_id: UUID, release_id: UUID) -> CorpusRelease | None: ...
     async def list_releases(
-        self, workspace_id: UUID, *, limit: int = 50
-    ) -> list[CorpusRelease]: ...
+        self,
+        workspace_id: UUID,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[CorpusRelease]:
+        """Newest first by ``(created_at, id)``, before the last row seen."""
+        ...
+
+    async def count_releases(self, workspace_id: UUID) -> int: ...
 
     async def list_all_releases(
         self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
@@ -1034,6 +1067,27 @@ class TaskRepository(Protocol):
         limit: int = 100,
     ) -> list[Task]: ...
     async def count_by_state(self, workspace_id: UUID) -> dict[str, int]: ...
+    async def page_tasks(
+        self,
+        workspace_id: UUID,
+        *,
+        states: Sequence[str],
+        stage: str | None = None,
+        limit: int = 50,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> list[Task]:
+        """Tasks in these states, oldest first, after the ``(created_at, id)`` cursor."""
+        ...
+
+    async def count_tasks(
+        self, workspace_id: UUID, *, states: Sequence[str], stage: str | None = None
+    ) -> int: ...
+    async def tasks_by_stage(
+        self, workspace_id: UUID, *, states: Sequence[str]
+    ) -> list[tuple[str, int, datetime | None]]:
+        """``(stage, count, oldest created_at)`` per stage, the longest-waiting first."""
+        ...
+
     async def list_run_tasks(self, workspace_id: UUID, run_id: UUID) -> list[Task]:
         """Every task carrying this run id, whatever its stage or state."""
         ...
@@ -1058,6 +1112,30 @@ class AuditRepository(Protocol):
         action: str | None = None,
         limit: int = 100,
     ) -> list[AuditEventRecord]: ...
+    async def page_events(
+        self,
+        workspace_id: UUID,
+        *,
+        actions: Sequence[str] | None = None,
+        words: Sequence[str] = (),
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> list[AuditEventRecord]:
+        """Events newest first, before the ``(occurred_at, id)`` cursor.
+
+        ``words`` must all appear, case-insensitively, in the action, actor type,
+        subject, reason or metadata.
+        """
+        ...
+
+    async def count_events(
+        self,
+        workspace_id: UUID,
+        *,
+        actions: Sequence[str] | None = None,
+        words: Sequence[str] = (),
+    ) -> int: ...
+    async def count_events_by_action(self, workspace_id: UUID) -> dict[str, int]: ...
     async def add_outbox(self, event: OutboxEvent) -> None: ...
     async def list_unpublished_outbox(self, *, limit: int = 100) -> list[OutboxEvent]: ...
     async def mark_outbox_published(self, event_id: UUID, *, at: datetime) -> None: ...
@@ -1069,10 +1147,24 @@ class ChatRepository(Protocol):
     async def update_session(self, session: ChatSession) -> None: ...
     async def get_session(self, workspace_id: UUID, session_id: UUID) -> ChatSession | None: ...
     async def list_sessions(
-        self, workspace_id: UUID, user_id: UUID, *, limit: int = 50
-    ) -> list[ChatSession]: ...
-    async def list_workspace_sessions(self, workspace_id: UUID) -> list[ChatSession]:
-        """Every member's sessions: what a retraction or a retention plan must see."""
+        self,
+        workspace_id: UUID,
+        user_id: UUID,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+        include_deleted: bool = True,
+    ) -> list[ChatSession]:
+        """Newest first by ``(updated_at, id)``, before the last row seen."""
+        ...
+
+    async def count_sessions(
+        self, workspace_id: UUID, user_id: UUID, *, include_deleted: bool = True
+    ) -> int: ...
+    async def list_workspace_sessions(
+        self, workspace_id: UUID, *, limit: int = 1000, after_id: UUID | None = None
+    ) -> list[ChatSession]:
+        """One page of every member's sessions, by id: page with ``collect_pages``."""
         ...
 
     async def add_message(self, message: ChatMessage) -> None: ...
@@ -1109,9 +1201,18 @@ class EvaluationRepository(Protocol):
         benchmark_id: str | None = None,
         release_id: UUID | None = None,
         limit: int = 100,
+        before: tuple[datetime, UUID] | None = None,
     ) -> list[dict[str, Any]]:
-        """Newest first."""
+        """Newest first by ``(created_at, id)``, before the last row seen."""
         ...
+
+    async def count_runs(
+        self,
+        workspace_id: UUID,
+        *,
+        benchmark_id: str | None = None,
+        release_id: UUID | None = None,
+    ) -> int: ...
 
     async def add_benchmark(self, benchmark: dict[str, Any]) -> None: ...
     async def get_benchmark(

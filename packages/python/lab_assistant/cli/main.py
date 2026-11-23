@@ -19,6 +19,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from lab_assistant import __version__
+from lab_assistant.application.pagination import every_release
 from lab_assistant.config import ConfigProvenance, Settings, load_settings
 from lab_assistant.contracts.errors import (
     ErrorClass,
@@ -2111,7 +2112,7 @@ async def _release(args: argparse.Namespace, settings: Settings) -> int:
 
         if args.release_command == "list":
             async with container.context.uow_factory() as uow:
-                releases = await uow.releases.list_releases(workspace.id)
+                releases = await every_release(uow, workspace.id)
                 aliases = await uow.releases.list_aliases(workspace.id)
             for release in releases:
                 print(
@@ -2177,7 +2178,7 @@ async def _release_references(container: Any, workspace_id: UUID, *, digest: str
             if alias.release_id is not None
         }
         citing: list[dict[str, Any]] = []
-        for release in await uow.releases.list_releases(workspace_id, limit=1_000):
+        for release in await every_release(uow, workspace_id):
             items = await uow.releases.list_items(workspace_id, release.id)
             works = [
                 str(item.record.work_id) for item in items if item.record.rendition_digest == digest

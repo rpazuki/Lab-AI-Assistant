@@ -118,19 +118,23 @@ class _HttpConnector:
     timeout_seconds: float = 30.0
     client: httpx.AsyncClient | None = None
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, accept: str = "application/json") -> dict[str, str]:
         # Several scholarly services require an identifying User-Agent and a
-        # contact address. Credentials never go in the URL.
+        # contact address. Credentials never go in the URL. ``accept`` must name
+        # what the endpoint serves: asking a full-text endpoint for JSON is
+        # answered 406, which read as "this paper cannot be fetched".
         agent = self.request_identity
         if self.contact:
             agent = f"{agent} (mailto:{self.contact})"
-        return {"User-Agent": agent, "Accept": "application/json"}
+        return {"User-Agent": agent, "Accept": accept}
 
-    async def _get(self, url: str, params: dict[str, Any]) -> httpx.Response:
+    async def _get(
+        self, url: str, params: dict[str, Any], *, accept: str = "application/json"
+    ) -> httpx.Response:
         client = self.client or httpx.AsyncClient(timeout=self.timeout_seconds)
         owns_client = self.client is None
         try:
-            response = await client.get(url, params=params, headers=self._headers())
+            response = await client.get(url, params=params, headers=self._headers(accept))
         except httpx.TimeoutException as exc:
             raise LabAssistantError(f"timeout contacting {url}").with_class(
                 ErrorClass.TIMEOUT
@@ -513,7 +517,9 @@ class EuropePmcConnector(_HttpConnector):
             raise LabAssistantError(
                 "Europe PMC full text needs a PMCID; this work has none"
             ).with_class(ErrorClass.NOT_FOUND)
-        response = await self._get(f"{self.base_url}/{pmcid}/fullTextXML", {})
+        response = await self._get(
+            f"{self.base_url}/{pmcid}/fullTextXML", {}, accept="application/xml"
+        )
         return RawAcquisition(
             response=make_response(
                 method="GET",
@@ -1203,41 +1209,109 @@ class UnpaywallResolver(_HttpConnector):
                 record_locators=(record["locator"],),
             )
 
-    async def acquire(self, request: AcquisitionRequest) -> RawAcquisition:
-        """Fetch an open-access PDF from an allowlisted host.
+    async def pdf_locations(self, identifiers: tuple[Identifier, ...]) -> list[str]:
+        """Open-access PDF links Unpaywall knows for the work's DOI, best first."""
+        doi = next((i.value for i in identifiers if i.scheme is IdentifierScheme.DOI), None)
+        if doi is None or not self.contact:
+            return []
+        response = await self._get(f"{self.base_url}/{doi}", {"email": self.contact})
+        payload = response.json()
+        urls: list[str] = []
+        for location in [payload.get("best_oa_location"), *(payload.get("oa_locations") or [])]:
+            url = (location or {}).get("url_for_pdf")
+            if isinstance(url, str) and url not in urls:
+                urls.append(url)
+        return urls
 
-        SSRF controls: the URL must be absolute https, its host must be
-        allowlisted, and redirects are not followed to a different host.
+    async def acquire(self, request: AcquisitionRequest) -> RawAcquisition:
+        """Fetch an open-access PDF: the location discovery found, else Unpaywall's own.
+
+        Each link is tried in turn, at most three. SSRF controls apply to every
+        link and every redirect hop: absolute https only, no address literals or
+        local names, the allowlist when one is set, and at most three hops. A
+        response that is not a PDF (a landing page, a login wall) is not one.
         """
-        target = request.target_url
-        if not target:
-            raise LabAssistantError("no open-access location was supplied").with_class(
+        failure: LabAssistantError | None = None
+        if request.target_url:
+            try:
+                return await self._fetch_pdf(request.target_url, request)
+            except LabAssistantError as exc:
+                failure = exc
+        try:
+            found = await self.pdf_locations(request.identifiers)
+        except LabAssistantError:
+            if failure is None:
+                raise
+            found = []
+        for target in [url for url in found if url != request.target_url][:3]:
+            try:
+                return await self._fetch_pdf(target, request)
+            except LabAssistantError as exc:
+                failure = exc
+        if failure is None:
+            raise LabAssistantError("Unpaywall knows no open-access PDF for this work").with_class(
                 ErrorClass.NOT_FOUND
             )
+        raise failure
+
+    def _check_location(self, target: str) -> None:
+        import ipaddress
         from urllib.parse import urlparse
 
         parsed = urlparse(target)
-        if parsed.scheme != "https" or not parsed.hostname:
+        host = parsed.hostname or ""
+        if parsed.scheme != "https" or not host:
             raise LabAssistantError(f"refusing non-https location {target!r}").with_class(
                 ErrorClass.POLICY_BLOCKED
             )
-        if self.allowed_hosts and parsed.hostname not in self.allowed_hosts:
-            raise LabAssistantError(
-                f"host {parsed.hostname} is not on the acquisition allowlist"
-            ).with_class(ErrorClass.POLICY_BLOCKED)
+        try:
+            ipaddress.ip_address(host)
+            literal = True
+        except ValueError:
+            literal = False
+        if literal or host == "localhost" or host.endswith((".local", ".internal", ".localhost")):
+            raise LabAssistantError(f"refusing address-literal or local host {host}").with_class(
+                ErrorClass.POLICY_BLOCKED
+            )
+        if self.allowed_hosts and host not in self.allowed_hosts:
+            raise LabAssistantError(f"host {host} is not on the acquisition allowlist").with_class(
+                ErrorClass.POLICY_BLOCKED
+            )
+
+    async def _fetch_pdf(self, target: str, request: AcquisitionRequest) -> RawAcquisition:
+        from urllib.parse import urljoin
+
         client = self.client or httpx.AsyncClient(
             timeout=self.timeout_seconds, follow_redirects=False
         )
         owns = self.client is None
+        url = target
         try:
-            response = await client.get(target, headers=self._headers())
+            for _ in range(4):
+                self._check_location(url)
+                try:
+                    response = await client.get(url, headers=self._headers("application/pdf"))
+                except httpx.TimeoutException as exc:
+                    raise LabAssistantError(f"timeout contacting {self._redact(url)}").with_class(
+                        ErrorClass.TIMEOUT
+                    ) from exc
+                except httpx.HTTPError as exc:
+                    raise LabAssistantError(
+                        f"transport error contacting {self._redact(url)}: {exc}"
+                    ).with_class(ErrorClass.SOURCE_UNAVAILABLE) from exc
+                if response.status_code in (301, 302, 303, 307, 308):
+                    location = response.headers.get("location")
+                    if not location:
+                        break
+                    # Each hop is checked again before it is followed.
+                    url = urljoin(url, location)
+                    continue
+                break
+            else:
+                raise LabAssistantError("too many redirects").with_class(ErrorClass.POLICY_BLOCKED)
         finally:
             if owns:
                 await client.aclose()
-        if response.status_code in (301, 302, 303, 307, 308):
-            raise LabAssistantError(
-                "redirect not followed; the redirect target must be revalidated by policy"
-            ).with_class(ErrorClass.POLICY_BLOCKED)
         if response.status_code != 200:
             raise map_http_error(
                 response.status_code, retry_after=response.headers.get("retry-after")
@@ -1246,18 +1320,22 @@ class UnpaywallResolver(_HttpConnector):
             raise LabAssistantError(
                 f"content of {len(response.content)} bytes exceeds the limit"
             ).with_class(ErrorClass.TOO_LARGE)
+        if not response.content.startswith(b"%PDF"):
+            raise LabAssistantError(
+                "the open-access link answered with something other than a PDF"
+            ).with_class(ErrorClass.INVALID_CONTENT)
         return RawAcquisition(
             response=make_response(
                 method="GET",
-                url_redacted=self._redact(target),
+                url_redacted=self._redact(url),
                 status=response.status_code,
                 body=b"",
                 headers={"content-type": response.headers.get("content-type", "")},
             ),
             content=response.content,
-            declared_media_type=response.headers.get("content-type", "").split(";")[0] or None,
+            declared_media_type="application/pdf",
             access_basis="unpaywall_open_access_location",
-            source_url_redacted=self._redact(target),
+            source_url_redacted=self._redact(url),
             embedded_identifiers=tuple(request.identifiers),
         )
 

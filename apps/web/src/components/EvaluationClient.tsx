@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
+import { Pager } from "@/components/ui/Pager";
 import { SortHeader, TableSearch } from "@/components/ui/table";
 import { Alert, Button, Empty, Field, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
@@ -22,14 +23,16 @@ import {
   listBenchmarks,
   listEvaluationRuns,
   listReleaseGates,
+  listAllReleases,
   listReleases,
   registerBenchmark,
   requestEvaluationRun,
   setReleaseGate,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
+import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
-import type { Benchmark, EvaluationRun, Release, ReleaseGate } from "@/types";
+import type { Benchmark, EvaluationRun, Page, Release, ReleaseGate } from "@/types";
 
 /** A starting point for a benchmark file: a retrieval set naming papers by DOI. */
 export const EXAMPLE_BENCHMARK = {
@@ -64,7 +67,9 @@ const select =
 export function EvaluationClient() {
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
   const [releases, setReleases] = useState<Release[]>([]);
-  const [runs, setRuns] = useState<EvaluationRun[]>([]);
+  const [runPage, setRunPage] = useState<Page<EvaluationRun>>({ items: [], next_cursor: null, total: 0 });
+  const runs = runPage.items;
+  const runPager = usePager(20);
   const [error, setError] = useState<{ message: string; problems: string[] } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -85,28 +90,35 @@ export function EvaluationClient() {
 
   const refresh = useCallback(async () => {
     try {
-      const [benchmarkItems, releaseBody, runItems, gateBody] = await Promise.all([
+      // Every release, for the menu and the labels; the runs a page at a time.
+      const [benchmarkItems, releaseBody, everyRelease, runItems, gateBody] = await Promise.all([
         listBenchmarks(),
-        listReleases(),
-        listEvaluationRuns(),
+        listReleases({ limit: 1 }),
+        listAllReleases(),
+        listEvaluationRuns({ after: runPager.cursor, limit: runPager.pageSize }),
         listReleaseGates().catch(() => ({ items: [] as ReleaseGate[] })),
       ]);
       setBenchmarks(benchmarkItems);
       setGates(gateBody.items);
-      setReleases(releaseBody.items);
-      setRuns(runItems);
+      setReleases(everyRelease);
+      setRunPage(runItems);
       // Default to what is being served: the release most people will ask about.
       const served = releaseBody.aliases.find((alias) => alias.alias === "current")?.release_id;
-      setReleaseId((current) => current || served || releaseBody.items[0]?.id || "");
+      setReleaseId((current) => current || served || everyRelease[0]?.id || "");
       setBenchmarkKey((current) => current || benchmarkItems[0]?.key || "");
     } catch (caught) {
       fail(caught, "evaluation could not be loaded");
     }
-  }, [fail]);
+  }, [fail, runPager.cursor, runPager.pageSize]);
 
   const live = useLiveRefresh(refresh, {
     active: runs.some((run) => run.status === "queued" || run.status === "running"),
   });
+  const reload = live.refresh;
+  // Another page of runs loads at once rather than at the next scheduled refresh.
+  useEffect(() => {
+    void reload();
+  }, [refresh, reload]);
 
   const releaseLabel = useMemo(() => {
     const labels = new Map(
@@ -136,8 +148,14 @@ export function EvaluationClient() {
     );
   }
 
+  // Runs seen on any page, so two runs from different pages can still be compared.
+  const [seen, setSeen] = useState<Record<string, EvaluationRun>>({});
+  useEffect(() => {
+    setSeen((current) => ({ ...current, ...Object.fromEntries(runs.map((run) => [run.id, run])) }));
+  }, [runs]);
+
   const describeRun = (runId: string) => {
-    const run = runs.find((item) => item.id === runId);
+    const run = seen[runId];
     return run ? `${run.benchmark} on ${releaseLabel(run.release_id)}` : runId.slice(0, 8);
   };
 
@@ -275,6 +293,13 @@ export function EvaluationClient() {
             ))}
           </ul>
         )}
+        <Pager
+          pager={runPager}
+          shown={runs.length}
+          total={runPage.total}
+          nextCursor={runPage.next_cursor}
+          label="evaluation runs"
+        />
       </Panel>
 
       {comparing ? (
@@ -289,7 +314,8 @@ export function EvaluationClient() {
       <BenchmarksPanel
         benchmarks={benchmarks}
         gates={gates}
-        usedKeys={new Set(runs.map((run) => run.benchmark))}
+        // From the server: the runs list is paged, so the page cannot tell.
+        usedKeys={new Set(benchmarks.filter((b) => (b.runs ?? 0) > 0).map((b) => b.key))}
         onDelete={(benchmark) =>
           act(
             () => deleteBenchmark(benchmark.benchmark_id, benchmark.version),

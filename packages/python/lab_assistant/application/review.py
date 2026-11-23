@@ -60,13 +60,25 @@ class ReviewService:
         work_id: UUID | None = None,
         limit: int = 50,
         include_invalid: bool = False,
+        after_id: UUID | None = None,
     ) -> list[ClaimReviewItem]:
-        """Claims awaiting review, newest revision first."""
+        """Claims awaiting review, one page by claim id after ``after_id``.
+
+        The queue is filtered in the query, so a page is full whenever that many
+        claims wait: filtering after the limit would show a short page, or none,
+        while hundreds were waiting behind approved ones.
+        """
         actor.require(Capability.REVIEW_CLAIMS)
         context = self._context
         items: list[ClaimReviewItem] = []
         async with context.uow_factory() as uow:
-            claims = await uow.claims.list_claims(actor.workspace_id, work_id=work_id, limit=limit)
+            claims = await uow.claims.list_review_queue(
+                actor.workspace_id,
+                work_id=work_id,
+                include_invalid=include_invalid,
+                limit=limit,
+                after_id=after_id,
+            )
             for claim in claims:
                 revisions = await uow.claims.list_revisions(actor.workspace_id, claim.id)
                 if not revisions:
@@ -114,6 +126,16 @@ class ReviewService:
                     )
                 )
         return items
+
+    async def queue_size(
+        self, actor: ActorContext, *, work_id: UUID | None = None, include_invalid: bool = False
+    ) -> int:
+        """How many claims ``queue`` would page through."""
+        actor.require(Capability.REVIEW_CLAIMS)
+        async with self._context.uow_factory() as uow:
+            return await uow.claims.count_review_queue(
+                actor.workspace_id, work_id=work_id, include_invalid=include_invalid
+            )
 
     async def decide(
         self,

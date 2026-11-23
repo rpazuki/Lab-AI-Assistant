@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { Pager } from "@/components/ui/Pager";
 import { SortHeader, TableSearch } from "@/components/ui/table";
 import {
   Alert,
@@ -14,8 +15,9 @@ import {
   rowList,
 } from "@/components/ui/primitives";
 import { correctionRate, decideReview, listReviewQueue } from "@/lib/api";
+import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
-import type { ReviewItem } from "@/types";
+import type { Page, ReviewItem } from "@/types";
 
 /**
  * Claim review.
@@ -27,8 +29,10 @@ import type { ReviewItem } from "@/types";
  * prevent.
  */
 export function ReviewClient() {
-  const [items, setItems] = useState<ReviewItem[]>([]);
+  const [page, setPage] = useState<Page<ReviewItem>>({ items: [], next_cursor: null, total: 0 });
+  const items = page.items;
   const [includeInvalid, setIncludeInvalid] = useState(true);
+  const pager = usePager(25);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [corrections, setCorrections] = useState<Record<string, string>>({});
@@ -37,17 +41,17 @@ export function ReviewClient() {
   const refresh = useCallback(async () => {
     try {
       const [queue, measured] = await Promise.all([
-        listReviewQueue(includeInvalid),
+        listReviewQueue(includeInvalid, { after: pager.cursor, limit: pager.pageSize }),
         // The rate is a secondary measure: the queue still loads without it.
         correctionRate().catch(() => null),
       ]);
-      setItems(queue);
+      setPage(queue);
       setRates(measured);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "the review queue could not be loaded");
     }
-  }, [includeInvalid]);
+  }, [includeInvalid, pager.cursor, pager.pageSize]);
 
   useEffect(() => {
     void refresh();
@@ -93,7 +97,10 @@ export function ReviewClient() {
             <input
               type="checkbox"
               checked={includeInvalid}
-              onChange={(event) => setIncludeInvalid(event.target.checked)}
+              onChange={(event) => {
+                setIncludeInvalid(event.target.checked);
+                pager.reset();
+              }}
             />
             show proposals that failed validation
           </label>
@@ -201,6 +208,13 @@ export function ReviewClient() {
             </li>
           ))}
         </ul>
+        <Pager
+          pager={pager}
+          shown={items.length}
+          total={page.total}
+          nextCursor={page.next_cursor}
+          label="values to review"
+        />
       </Panel>
 
       <CorrectionRates rates={rates} />

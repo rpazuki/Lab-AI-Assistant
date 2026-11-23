@@ -8,7 +8,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
     ...actual,
-    listSessions: vi.fn(async () => []),
+    listSessions: vi.fn(async () => ({ items: [], next_cursor: null, total: 0 })),
     getAllowance: vi.fn(async () => ({
       token_limit: 1_000_000,
       used_tokens: 1200,

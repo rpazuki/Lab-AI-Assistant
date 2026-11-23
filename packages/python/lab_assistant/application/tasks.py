@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -37,9 +38,30 @@ from lab_assistant.domain.states import TaskState
 from lab_assistant.domain.tasks import Task
 from lab_assistant.provenance.fingerprints import task_fingerprint
 
+
+class TaskQueue(StrEnum):
+    """The lists of tasks the operations page pages through."""
+
+    #: Ready to run, or held by a worker: what the stage age is measured on.
+    WAITING = "waiting"
+    #: Stopped until a person decides.
+    AWAITING_USER = "awaiting_user"
+    #: Out of retries; a person may put it back.
+    DEAD_LETTER = "dead_letter"
+
+
+QUEUE_STATES: dict[TaskQueue, tuple[str, ...]] = {
+    TaskQueue.WAITING: (TaskState.READY.value, TaskState.LEASED.value),
+    TaskQueue.AWAITING_USER: (TaskState.AWAITING_USER.value,),
+    TaskQueue.DEAD_LETTER: (TaskState.DEAD_LETTER.value,),
+}
+
+#: Rows of each list ``queue_snapshot`` carries, for the CLI and monitoring.
+SNAPSHOT_PAGE = 50
+
 _log = logging.getLogger(__name__)
 
-__all__ = ["HandlerRegistry", "TaskOrchestrator", "WorkerLoopResult"]
+__all__ = ["QUEUE_STATES", "HandlerRegistry", "TaskOrchestrator", "TaskQueue", "WorkerLoopResult"]
 
 
 def _legacy_actor_id(task: Task) -> UUID:
@@ -237,6 +259,8 @@ class TaskOrchestrator:
             inputs=task.inputs,
             run_id=task.run_id,
             idempotency_key=task.idempotency_key,
+            attempt=max(task.attempt, 1),
+            max_attempts=task.max_attempts,
         )
         # A completed task's stored result is returned rather than recomputed.
         if task.state is TaskState.SUCCEEDED and task.result:
@@ -428,37 +452,74 @@ class TaskOrchestrator:
         """Durable stage state for the operations page.
 
         Progress is read from task rows. Completion is never inferred from a
-        missing worker heartbeat.
+        missing worker heartbeat. Counts and per-stage ages are aggregated over
+        every task; ``awaiting_user`` and ``dead_letters`` are the first page of
+        each, oldest first, with ``page_queue`` for the rest.
         """
         context = self._context
         async with context.uow_factory() as uow:
             counts = await uow.tasks.count_by_state(workspace_id)
-            tasks = await uow.tasks.list_tasks(workspace_id, limit=500)
-        oldest: dict[str, str] = {}
-        awaiting: list[dict[str, Any]] = []
-        for task in tasks:
-            if task.state in (TaskState.READY, TaskState.LEASED) and task.created_at:
-                key = task.stage.value
-                current = oldest.get(key)
-                stamp = task.created_at.isoformat()
-                if current is None or stamp < current:
-                    oldest[key] = stamp
-            if task.state is TaskState.AWAITING_USER:
-                awaiting.append(
-                    {
-                        "task_id": str(task.id),
-                        "stage": task.stage.value,
-                        "action": task.human_action_required,
-                        "inputs": task.inputs,
-                    }
-                )
+            stages = await uow.tasks.tasks_by_stage(
+                workspace_id, states=QUEUE_STATES[TaskQueue.WAITING]
+            )
+        awaiting = await self.page_queue(
+            workspace_id=workspace_id, queue=TaskQueue.AWAITING_USER, limit=SNAPSHOT_PAGE
+        )
+        dead = await self.page_queue(
+            workspace_id=workspace_id, queue=TaskQueue.DEAD_LETTER, limit=SNAPSHOT_PAGE
+        )
         return {
             "counts": counts,
-            "oldest_pending_by_stage": oldest,
-            "awaiting_user": awaiting,
-            "dead_letters": [
-                {"task_id": str(t.id), "stage": t.stage.value, "error": t.error_detail}
-                for t in tasks
-                if t.state is TaskState.DEAD_LETTER
+            "oldest_pending_by_stage": {
+                stage: oldest.isoformat() for stage, _, oldest in stages if oldest is not None
+            },
+            "waiting_by_stage": [
+                {
+                    "stage": stage,
+                    "count": count,
+                    "oldest": oldest.isoformat() if oldest else None,
+                }
+                for stage, count, oldest in stages
             ],
+            "awaiting_user": awaiting["items"],
+            "dead_letters": dead["items"],
+        }
+
+    async def page_queue(
+        self,
+        *,
+        workspace_id: UUID,
+        queue: TaskQueue,
+        stage: str | None = None,
+        limit: int = 50,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> dict[str, Any]:
+        """One page of a queue the operations page lists, oldest first.
+
+        Oldest first because each list is about what has waited: the task at the
+        top has waited longest. The cursor is the last row's ``created_at|id``.
+        """
+        states = QUEUE_STATES[queue]
+        async with self._context.uow_factory() as uow:
+            tasks = await uow.tasks.page_tasks(
+                workspace_id, states=states, stage=stage, limit=limit, after=after
+            )
+            total = await uow.tasks.count_tasks(workspace_id, states=states, stage=stage)
+        last = tasks[-1] if len(tasks) == limit and tasks[-1].created_at else None
+        return {
+            "items": [
+                {
+                    "task_id": str(task.id),
+                    "stage": task.stage.value,
+                    "state": task.state.value,
+                    "created_at": task.created_at.isoformat() if task.created_at else None,
+                    "attempt": task.attempt,
+                    "action": task.human_action_required,
+                    "error": task.error_detail,
+                    "inputs": task.inputs,
+                }
+                for task in tasks
+            ],
+            "total": total,
+            "next_cursor": f"{last.created_at.isoformat()}|{last.id}" if last else None,
         }

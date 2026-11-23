@@ -14,7 +14,7 @@ Conventions the whole API keeps:
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -36,6 +36,7 @@ from lab_assistant.application.chat import ChatService
 from lab_assistant.application.datasheets import DatasheetService
 from lab_assistant.application.discovery import DiscoveryService
 from lab_assistant.application.export import ExportService
+from lab_assistant.application.fetching import FetchQueue
 from lab_assistant.application.reconciliation import IdentityService
 from lab_assistant.application.refresh import RefreshService
 from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseService
@@ -45,8 +46,11 @@ from lab_assistant.application.review_history import ReviewHistoryService
 from lab_assistant.application.scope_deletion import ScopeDeletionService
 from lab_assistant.application.scopes import ScopeService
 from lab_assistant.application.screening import ScreeningService
+from lab_assistant.application.tasks import TaskQueue
 from lab_assistant.application.usage import UsageService
 from lab_assistant.contracts.errors import NotFound, PolicyDenied, ValidationFailure
+from lab_assistant.contracts.events import AuditAction
+from lab_assistant.contracts.stage import StageName
 from lab_assistant.domain.chat import UsageTotals
 from lab_assistant.domain.claims import ReviewDecision
 from lab_assistant.domain.installation import InstallationCapability
@@ -314,12 +318,22 @@ async def list_members(actor: CurrentActor, container: Container) -> dict[str, A
 
 @router.get("/members/{user_id}/sessions")
 async def member_sessions(
-    user_id: UUID, actor: CurrentActor, container: Container
+    user_id: UUID,
+    actor: CurrentActor,
+    container: Container,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
-    """A member's conversations, for an admin. Audited; see `UsageService`."""
-    sessions = await UsageService(container.context).member_sessions(actor, user_id=user_id)
+    """A member's conversations, newest first, for an admin. Audited; see `UsageService`."""
+    sessions, total = await UsageService(container.context).member_sessions(
+        actor, user_id=user_id, limit=limit, before=_history_cursor(after)
+    )
     return {
-        "items": [{**_session_json(session), "deleted": session.is_deleted} for session in sessions]
+        "items": [
+            {**_session_json(session), "deleted": session.is_deleted} for session in sessions
+        ],
+        "total": total,
+        "next_cursor": _newest_cursor(sessions, limit, lambda s: s.updated_at, lambda s: s.id),
     }
 
 
@@ -522,9 +536,17 @@ async def list_sessions(
     actor: CurrentActor,
     container: Container,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    after: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
-    sessions = await ChatService(container.context).list_sessions(actor, limit=limit)
-    return {"items": [_session_json(session) for session in sessions], "next_cursor": None}
+    """The caller's conversations, newest first, a page at a time."""
+    sessions, total = await ChatService(container.context).list_sessions(
+        actor, limit=limit, before=_history_cursor(after)
+    )
+    return {
+        "items": [_session_json(session) for session in sessions],
+        "total": total,
+        "next_cursor": _newest_cursor(sessions, limit, lambda s: s.updated_at, lambda s: s.id),
+    }
 
 
 @router.get("/chat/sessions/{session_id}")
@@ -892,10 +914,21 @@ async def start_discovery(
 
 
 @router.get("/discovery-runs")
-async def list_discovery_runs(actor: CurrentActor, container: Container) -> dict[str, Any]:
+async def list_discovery_runs(
+    actor: CurrentActor,
+    container: Container,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """Discovery runs, newest first, a page at a time."""
     async with container.context.uow_factory() as uow:
-        runs = await uow.observations.list_runs(actor.workspace_id)
+        runs = await uow.observations.list_runs(
+            actor.workspace_id, limit=limit, before=_history_cursor(after)
+        )
+        total = await uow.observations.count_runs(actor.workspace_id)
     return {
+        "total": total,
+        "next_cursor": _newest_cursor(runs, limit, lambda r: r.started_at, lambda r: r.id),
         "items": [
             {
                 "id": str(run.id),
@@ -917,7 +950,7 @@ async def list_discovery_runs(actor: CurrentActor, container: Container) -> dict
                 "metrics": run.metrics,
             }
             for run in runs
-        ]
+        ],
     }
 
 
@@ -1128,7 +1161,7 @@ async def bulk_relevance(
     Preview first (``apply`` false): how many match and ten of them. An apply
     changes up to 1,000 and returns ``remaining``; repeat it until that is 0.
     """
-    return await BulkReviewService(container.context).bulk_relevance(
+    answer = await BulkReviewService(container.context).bulk_relevance(
         actor,
         rule,
         relevance=payload.relevance,
@@ -1136,6 +1169,9 @@ async def bulk_relevance(
         apply=payload.apply,
         step_id=payload.step_id,
     )
+    if payload.apply and answer.get("applied") and _includes(payload.relevance):
+        await _plan_included(container, actor, reason="bulk_relevance")
+    return answer
 
 
 def _queue_cursor(value: str | None) -> tuple[float, UUID] | None:
@@ -1315,9 +1351,12 @@ async def apply_scope_rules(
     payload: ApplyRulesRequest = Body(default_factory=ApplyRulesRequest),
 ) -> dict[str, Any]:
     """Make up to 1,000 of the preview's changes; repeat until ``remaining`` is 0."""
-    return await ScreeningService(container.context).apply(
+    answer = await ScreeningService(container.context).apply(
         actor, scope_version_id, step_id=payload.step_id
     )
+    if answer.get("applied"):
+        await _plan_included(container, actor, reason="scope_rules")
+    return answer
 
 
 def _history_cursor(value: str | None) -> tuple[datetime, UUID] | None:
@@ -1328,6 +1367,18 @@ def _history_cursor(value: str | None) -> tuple[datetime, UUID] | None:
         return datetime.fromisoformat(at), UUID(last)
     except ValueError as error:
         raise ValidationFailure("after must be a next_cursor this endpoint returned") from error
+
+
+#: Where a row without a timestamp sorts in a newest-first page, as the adapters say.
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _newest_cursor(rows: list[Any], limit: int, at: Any, ident: Any) -> str | None:
+    """The cursor after a full newest-first page: its last row's ``time|id``."""
+    if len(rows) < limit or not rows:
+        return None
+    last = rows[-1]
+    return f"{(at(last) or _EPOCH).isoformat()}|{ident(last)}"
 
 
 @router.get("/review/history")
@@ -1387,7 +1438,47 @@ async def set_relevance(
         reason_code=payload.reason_code,
         note=payload.note,
     )
+    if work.relevance.is_included:
+        await _plan_included(container, actor, reason="relevance_set")
     return {"work_id": str(work.id), "relevance": work.relevance.value}
+
+
+def _includes(relevance: Any) -> bool:
+    value = getattr(relevance, "value", relevance)
+    try:
+        return RelevanceState(value).is_included
+    except ValueError:
+        return False
+
+
+async def _plan_included(container: Any, actor: Any, *, reason: str) -> None:
+    """Queue planning for what was just included, where this installation fetches."""
+    from contextlib import suppress
+
+    from lab_assistant.contracts.errors import LabAssistantError
+
+    # An installation that does not acquire sources plans nothing; the relevance
+    # change itself stands either way.
+    with suppress(LabAssistantError):
+        await FetchQueue(container.context, container.orchestrator).plan_included(
+            actor, reason=reason
+        )
+
+
+@router.post(
+    "/acquisition-plans/fetch-included",
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
+async def fetch_included(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """Plan every included paper without a plan, and try waiting fetches again.
+
+    Waiting fetches go back in the queue only when an automatic route is left; a
+    paper only a person can supply stays waiting for that person.
+    """
+    queue = FetchQueue(container.context, container.orchestrator)
+    retried = await queue.retry_waiting(actor)
+    task = await queue.plan_included(actor, reason="fetch_included")
+    return {**retried, "planning_task_id": str(task.id)}
 
 
 @router.post("/decisions/merge", dependencies=[requires(InstallationCapability.CURATE_CORPUS)])
@@ -1494,7 +1585,6 @@ async def assisted_upload(
         attestation=attestation,
         declared_media_type=upload.content_type,
     )
-    from lab_assistant.contracts.stage import StageName
     from lab_assistant.domain.assets import MalwareScanStatus
 
     # Parsing is only queued for an asset that actually passed scanning. Queuing it
@@ -1673,8 +1763,17 @@ async def start_extraction_run(
 
 
 @router.get("/extraction/runs")
-async def list_extraction_runs(actor: CurrentActor, container: Container) -> dict[str, Any]:
-    return {"items": await DatasheetService(container.context).list_runs(actor)}
+async def list_extraction_runs(
+    actor: CurrentActor,
+    container: Container,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """Extraction runs, newest first, a page at a time."""
+    items, next_cursor, total = await DatasheetService(container.context).list_runs(
+        actor, limit=limit, after=after
+    )
+    return {"items": items, "total": total, "next_cursor": next_cursor}
 
 
 @router.post(
@@ -1703,35 +1802,23 @@ async def delete_extraction_run(
     return Response(status_code=204)
 
 
-def _wide_rows(long_form: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, str]]]:
-    import csv
-    import io
-
-    from lab_assistant.application.export import _wide_csv
-
-    reader = csv.DictReader(io.StringIO(_wide_csv(long_form).decode("utf-8")))
-    return list(reader.fieldnames or []), list(reader)
-
-
 @router.get("/extraction/rows")
 async def extraction_rows(
     actor: CurrentActor,
     container: Container,
     template: Annotated[str | None, Query(max_length=300)] = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
-    """The working datasheet: current claim revisions, long and wide."""
-    long_form = await DatasheetService(container.context).rows(actor, template=template)
-    columns, wide = _wide_rows(long_form)
-    statuses: dict[str, int] = {}
-    for row in long_form:
-        statuses[row["review_status"]] = statuses.get(row["review_status"], 0) + 1
-    return {
-        "template": long_form[0]["template_version"] if long_form else template,
-        "claims": len(long_form),
-        "review_status": statuses,
-        "long_form": long_form,
-        "wide": {"columns": columns, "rows": wide},
-    }
+    """The working datasheet, a page of wide rows at a time; counts over all of it.
+
+    ``q`` keeps the rows holding every word in any column. The CSV downloads stay
+    whole: they are the sheet, not a view of it.
+    """
+    return await DatasheetService(container.context).sheet_page(
+        actor, template=template, words=(q or "").split(), limit=limit, after=after
+    )
 
 
 @router.get("/extraction/rows.csv")
@@ -1764,11 +1851,17 @@ async def review_queue(
     work_id: Annotated[UUID | None, Query()] = None,
     include_invalid: Annotated[bool, Query()] = False,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[UUID | None, Query()] = None,
 ) -> dict[str, Any]:
-    items = await ReviewService(container.context).queue(
-        actor, work_id=work_id, limit=limit, include_invalid=include_invalid
+    """Values waiting for review, a page at a time, ordered by claim."""
+    service = ReviewService(container.context)
+    items = await service.queue(
+        actor, work_id=work_id, limit=limit, include_invalid=include_invalid, after_id=after
     )
+    total = await service.queue_size(actor, work_id=work_id, include_invalid=include_invalid)
     return {
+        "total": total,
+        "next_cursor": str(items[-1].claim.id) if len(items) == limit else None,
         "items": [
             {
                 "claim_id": str(item.claim.id),
@@ -1788,7 +1881,7 @@ async def review_queue(
                 "conflicting_revisions": [str(i) for i in item.conflicting_revision_ids],
             }
             for item in items
-        ]
+        ],
     }
 
 
@@ -1861,11 +1954,22 @@ async def draft_release(
 
 
 @router.get("/corpus-releases")
-async def list_releases(actor: CurrentActor, container: Container) -> dict[str, Any]:
+async def list_releases(
+    actor: CurrentActor,
+    container: Container,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """Releases, newest first, a page at a time; every alias, whichever page."""
     async with container.context.uow_factory() as uow:
-        releases = await uow.releases.list_releases(actor.workspace_id)
+        releases = await uow.releases.list_releases(
+            actor.workspace_id, limit=limit, before=_history_cursor(after)
+        )
+        total = await uow.releases.count_releases(actor.workspace_id)
         aliases = await uow.releases.list_aliases(actor.workspace_id)
     return {
+        "total": total,
+        "next_cursor": _newest_cursor(releases, limit, lambda r: r.created_at, lambda r: r.id),
         "items": [
             {
                 "id": str(release.id),
@@ -2180,12 +2284,20 @@ async def list_evaluation_runs(
     actor: CurrentActor,
     container: Container,
     release_id: Annotated[UUID | None, Query()] = None,
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    after: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
-    rows = await EvaluationService(container.context).list_runs(
-        actor, release_id=release_id, limit=limit
+    """Evaluation runs, newest first, a page at a time."""
+    rows, total = await EvaluationService(container.context).list_runs(
+        actor, release_id=release_id, limit=limit, before=_history_cursor(after)
     )
-    return {"items": [run_json(row) for row in rows]}
+    return {
+        "items": [run_json(row) for row in rows],
+        "total": total,
+        "next_cursor": _newest_cursor(
+            rows, limit, lambda row: row.get("created_at"), lambda row: row["id"]
+        ),
+    }
 
 
 @router.post(
@@ -2342,9 +2454,24 @@ async def evaluation_reviewers(actor: CurrentActor, container: Container) -> dic
 
 
 @router.get("/evaluation/reviews/mine")
-async def my_evaluation_reviews(actor: CurrentActor, container: Container) -> dict[str, Any]:
-    items = await EvaluationWorkbench(container.context).my_reviews(actor)
-    return {"items": items, "scores": list(REVIEW_SCORES), "flags": list(REVIEW_FLAGS)}
+async def my_evaluation_reviews(
+    actor: CurrentActor,
+    container: Container,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """The caller's answer reviews, unfinished first, a page at a time."""
+    items, next_cursor, total, to_do = await EvaluationWorkbench(container.context).my_reviews(
+        actor, limit=limit, after=after
+    )
+    return {
+        "items": items,
+        "total": total,
+        "to_do": to_do,
+        "next_cursor": next_cursor,
+        "scores": list(REVIEW_SCORES),
+        "flags": list(REVIEW_FLAGS),
+    }
 
 
 @router.put(
@@ -2386,6 +2513,26 @@ async def task_snapshot(actor: CurrentActor, container: Container) -> dict[str, 
     return await container.orchestrator.queue_snapshot(workspace_id=actor.workspace_id)
 
 
+@router.get("/operations/queue")
+async def task_queue(
+    actor: CurrentActor,
+    container: Container,
+    queue: Annotated[TaskQueue, Query()],
+    stage: Annotated[StageName | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[str | None, Query()] = None,
+) -> dict[str, Any]:
+    """One page of waiting, awaiting-a-person or dead-lettered tasks, oldest first."""
+    actor.require(Capability.VIEW_OPERATIONS)
+    return await container.orchestrator.page_queue(
+        workspace_id=actor.workspace_id,
+        queue=queue,
+        stage=stage.value if stage else None,
+        limit=limit,
+        after=_history_cursor(after),
+    )
+
+
 @router.post(
     "/operations/tasks/{task_id}/retry",
     dependencies=[requires(InstallationCapability.RUN_WORKERS)],
@@ -2402,11 +2549,27 @@ async def retry_task(task_id: UUID, actor: CurrentActor, container: Container) -
 async def audit_events(
     actor: CurrentActor,
     container: Container,
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    after: Annotated[str | None, Query()] = None,
+    action: Annotated[list[AuditAction] | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict[str, Any]:
+    """The audit trail, newest first, a page at a time.
+
+    ``q`` keeps events whose action, actor type, subject, reason or metadata hold
+    every word, case-insensitively; ``action`` keeps those actions only.
+    """
     actor.require(Capability.VIEW_OPERATIONS)
+    ws = actor.workspace_id
+    actions = [a.value for a in action] if action else None
+    words = (q or "").split()
     async with container.context.uow_factory() as uow:
-        events = await uow.audit.list_events(actor.workspace_id, limit=limit)
+        events = await uow.audit.page_events(
+            ws, actions=actions, words=words, limit=limit, before=_history_cursor(after)
+        )
+        total = await uow.audit.count_events(ws, actions=actions, words=words)
+        by_action = await uow.audit.count_events_by_action(ws)
+    last = events[-1] if len(events) == limit else None
     return {
         "items": [
             {
@@ -2421,7 +2584,10 @@ async def audit_events(
                 "integrity_hash": event.integrity_hash,
             }
             for event in events
-        ]
+        ],
+        "total": total,
+        "next_cursor": f"{last.occurred_at.isoformat()}|{last.id}" if last else None,
+        "action_counts": by_action,
     }
 
 

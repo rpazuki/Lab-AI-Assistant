@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Pager } from "@/components/ui/Pager";
 import {
   Alert,
   Button,
@@ -24,7 +25,8 @@ import {
   resolveCitation,
   sendFeedback,
 } from "@/lib/api";
-import type { Allowance, AskEvent, ChatMessage, ChatSession, Citation, SourceBlock } from "@/types";
+import { usePager } from "@/lib/usePager";
+import type { Allowance, AskEvent, ChatMessage, ChatSession, Citation, Page, SourceBlock } from "@/types";
 
 interface Turn {
   question: string;
@@ -48,7 +50,9 @@ interface Turn {
  * cannot.
  */
 export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [sessionPage, setSessionPage] = useState<Page<ChatSession>>({ items: [], next_cursor: null, total: 0 });
+  const sessions = sessionPage.items;
+  const sessionPager = usePager(20);
   const [sessionId, setSessionId] = useState<string | null>(initialSessionId ?? null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [question, setQuestion] = useState("");
@@ -78,11 +82,11 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
 
   const refreshSessions = useCallback(async () => {
     try {
-      setSessions(await listSessions());
+      setSessionPage(await listSessions({ after: sessionPager.cursor, limit: sessionPager.pageSize }));
     } catch {
       // The sidebar is not worth failing the page for.
     }
-  }, []);
+  }, [sessionPager.cursor, sessionPager.pageSize]);
 
   useEffect(() => {
     void refreshSessions();
@@ -203,7 +207,9 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
               const session = await createSession();
               setSessionId(session.id);
               setTurns([]);
-              void refreshSessions();
+              // The new session is the newest, so it is on the first page.
+              if (sessionPager.page > 0) sessionPager.reset();
+              else void refreshSessions();
             }}
           >
             New
@@ -259,6 +265,13 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
             ))}
           </ul>
         )}
+        <Pager
+          pager={sessionPager}
+          shown={sessions.length}
+          total={sessionPage.total}
+          nextCursor={sessionPage.next_cursor}
+          label="sessions"
+        />
       </Panel>
 
       <div className="space-y-4">

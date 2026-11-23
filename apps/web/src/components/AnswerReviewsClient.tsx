@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { Pager } from "@/components/ui/Pager";
 import { Alert, Button, Empty, Field, Panel, StateChip } from "@/components/ui/primitives";
 import { listMyAnswerReviews, submitAnswerReview } from "@/lib/api";
-import type { AnswerReview } from "@/types";
+import { usePager } from "@/lib/usePager";
+import type { AnswerReview, Page } from "@/types";
 
 const label = (name: string) => name.replace(/_/g, " ");
 
@@ -21,28 +23,31 @@ const textareaClass =
  * answer. A submitted review can be revised; the latest submission counts.
  */
 export function AnswerReviewsClient() {
-  const [items, setItems] = useState<AnswerReview[] | null>(null);
+  const [page, setPage] = useState<(Page<AnswerReview> & { to_do: number }) | null>(null);
+  const items = page?.items ?? null;
+  const pager = usePager(10);
   const [scores, setScores] = useState<string[]>([]);
   const [flags, setFlags] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const body = await listMyAnswerReviews();
-      setItems(body.items);
+      const body = await listMyAnswerReviews({ after: pager.cursor, limit: pager.pageSize });
+      setPage(body);
       setScores(body.scores);
       setFlags(body.flags);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "reviews could not be loaded");
     }
-  }, []);
+  }, [pager.cursor, pager.pageSize]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const waiting = (items ?? []).filter((item) => item.status === "assigned").length;
+  // Over every review, not only this page: unfinished ones come first.
+  const waiting = page?.to_do ?? 0;
 
   return (
     <div className="space-y-4">
@@ -60,11 +65,22 @@ export function AnswerReviewsClient() {
       ) : (
         <>
           <p className="text-sm text-muted">
-            {waiting} waiting, {items.length - waiting} graded.
+            {waiting} waiting, {(page?.total ?? 0) - waiting} graded.
           </p>
           {items.map((item) => (
             <ReviewCard key={item.id} item={item} scores={scores} flags={flags} onSaved={refresh} />
           ))}
+          {page ? (
+            <div className="overflow-hidden rounded-card border border-border bg-surface">
+              <Pager
+                pager={pager}
+                shown={page.items.length}
+                total={page.total}
+                nextCursor={page.next_cursor}
+                label="answer reviews"
+              />
+            </div>
+          ) : null}
         </>
       )}
     </div>

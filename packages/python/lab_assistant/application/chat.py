@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -105,11 +106,22 @@ class ChatService:
             await uow.commit()
         return session
 
-    async def list_sessions(self, actor: ActorContext, *, limit: int = 50) -> list[ChatSession]:
+    async def list_sessions(
+        self,
+        actor: ActorContext,
+        *,
+        limit: int = 50,
+        before: tuple[datetime, UUID] | None = None,
+    ) -> tuple[list[ChatSession], int]:
+        """The caller's conversations, newest first, one page, and how many there are."""
         actor.require(Capability.ASK)
+        ws, user = actor.workspace_id, actor.user_id
         async with self._context.uow_factory() as uow:
-            sessions = await uow.chat.list_sessions(actor.workspace_id, actor.user_id, limit=limit)
-        return [session for session in sessions if not session.is_deleted]
+            sessions = await uow.chat.list_sessions(
+                ws, user, limit=limit, before=before, include_deleted=False
+            )
+            total = await uow.chat.count_sessions(ws, user, include_deleted=False)
+        return sessions, total
 
     async def get_session(
         self, actor: ActorContext, *, session_id: UUID

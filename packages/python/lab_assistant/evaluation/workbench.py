@@ -470,20 +470,38 @@ class EvaluationWorkbench:
             await uow.commit()
         return created
 
-    async def my_reviews(self, actor: ActorContext) -> list[dict[str, Any]]:
-        """The caller's assignments, each with the question, answer and metrics."""
+    async def my_reviews(
+        self, actor: ActorContext, *, limit: int = 50, after: str | None = None
+    ) -> tuple[list[dict[str, Any]], str | None, int, int]:
+        """The caller's assignments, each with the question, answer and metrics.
+
+        Unfinished first; within each, in the order they were assigned. One page,
+        with the cursor to the next, how many there are, and how many are still
+        to do. Only the page's runs are read.
+        """
+        from lab_assistant.application.pagination import slice_page
+
         actor.require(Capability.REVIEW_CLAIMS)
+
+        def key(row: dict[str, Any]) -> str:
+            done = 1 if row.get("status") == "submitted" else 0
+            at = row.get("created_at")
+            stamp = at.isoformat() if hasattr(at, "isoformat") else str(at or "")
+            return f"{done}|{stamp}|{row['id']}"
+
         async with self._context.uow_factory() as uow:
             rows = await uow.evaluations.list_reviews(actor.workspace_id, assigned_to=actor.user_id)
+            ordered = sorted(rows, key=key)
+            page, next_cursor = slice_page(ordered, key=key, limit=limit, after=after)
             runs: dict[str, dict[str, Any]] = {}
             items = []
-            for row in rows:
-                key = str(row["run_id"])
-                if key not in runs:
-                    runs[key] = await self._run(uow, actor, UUID(key))
-                items.append(review_json(row, _case_of(runs[key], row["case_id"])))
-        # Unfinished first; within each, in the order they were assigned.
-        return sorted(items, key=lambda item: item["status"] == "submitted")
+            for row in page:
+                run_key = str(row["run_id"])
+                if run_key not in runs:
+                    runs[run_key] = await self._run(uow, actor, UUID(run_key))
+                items.append(review_json(row, _case_of(runs[run_key], row["case_id"])))
+        to_do = sum(1 for row in rows if row.get("status") != "submitted")
+        return items, next_cursor, len(rows), to_do
 
     async def submit_review(
         self,

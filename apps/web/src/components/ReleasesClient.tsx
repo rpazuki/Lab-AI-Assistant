@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
+import { Pager } from "@/components/ui/Pager";
 import { Alert, Button, Empty, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
 import {
   ApiError,
@@ -19,7 +20,8 @@ import {
   validateRelease,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
-import type { GateStatus, Release } from "@/types";
+import { usePager } from "@/lib/usePager";
+import type { GateStatus, Page, Release } from "@/types";
 
 /** A release the worker is still validating, indexing or publishing. */
 function inProgress(release: Release): boolean {
@@ -38,7 +40,9 @@ function inProgress(release: Release): boolean {
  * changes an alias, not a row.
  */
 export function ReleasesClient() {
-  const [releases, setReleases] = useState<Release[]>([]);
+  const [page, setPage] = useState<Page<Release>>({ items: [], next_cursor: null, total: 0 });
+  const releases = page.items;
+  const pager = usePager(20);
   const [aliases, setAliases] = useState<
     { alias: string; release_id: string | null; previous_release_id: string | null }[]
   >([]);
@@ -55,8 +59,8 @@ export function ReleasesClient() {
 
   const refresh = useCallback(async () => {
     try {
-      const body = await listReleases();
-      setReleases(body.items);
+      const body = await listReleases({ after: pager.cursor, limit: pager.pageSize });
+      setPage(body);
       setAliases(body.aliases);
       // Required benchmarks, for the releases that could be published next.
       const candidates = body.items.filter((release) => release.status === "approved");
@@ -72,9 +76,14 @@ export function ReleasesClient() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "releases could not be loaded");
     }
-  }, []);
+  }, [pager.cursor, pager.pageSize]);
 
   const live = useLiveRefresh(refresh, { active: releases.some(inProgress) });
+  const reload = live.refresh;
+  // Another page loads at once rather than at the next scheduled refresh.
+  useEffect(() => {
+    void reload();
+  }, [refresh, reload]);
 
   /**
    * Publish, and when the refusal is a required benchmark rather than the release
@@ -313,6 +322,13 @@ export function ReleasesClient() {
             );
           })}
         </ul>
+        <Pager
+          pager={pager}
+          shown={releases.length}
+          total={page.total}
+          nextCursor={page.next_cursor}
+          label="releases"
+        />
       </Panel>
     </div>
   );

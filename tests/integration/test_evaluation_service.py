@@ -243,7 +243,7 @@ class TestRuns:
                 version=row["version"],
                 release_id=stack["release_id"],
             )
-        assert await service.list_runs(steward) == []
+        assert await service.list_runs(steward) == ([], 0)
 
     async def test_the_run_executes_as_the_member_who_asked(self, stack) -> None:
         """Retrieval honours the requester's grants, so the run records who."""
@@ -480,7 +480,8 @@ class TestHumanReview:
         assert len(again) == 1
         assert {row["case_id"] for row in created} != {row["case_id"] for row in again}
 
-        [first, _second] = await workbench.my_reviews(steward)
+        (first, _second), _, total, to_do = await workbench.my_reviews(steward)
+        assert (total, to_do) == (2, 2)
         assert first["case"]["question"] and first["case"]["answer"]
         submitted = await workbench.submit_review(
             steward,
@@ -497,8 +498,13 @@ class TestHumanReview:
         assert summary["mean_scores"]["correctness"] == 4
         assert summary["mean_scores"]["usefulness"] is None
         assert summary["flag_counts"]["corpus_gap"] == 1
-        mine = await workbench.my_reviews(steward)
+        mine, _, _, to_do = await workbench.my_reviews(steward)
         assert [item["status"] for item in mine] == ["assigned", "submitted"]
+        assert to_do == 1
+        # One a page: the unfinished one first, then the cursor reaches the other.
+        [page], after, _, _ = await workbench.my_reviews(steward, limit=1)
+        [rest], end, _, _ = await workbench.my_reviews(steward, limit=1, after=after)
+        assert (page["status"], rest["status"], end) == ("assigned", "submitted", None)
 
     async def test_a_researcher_cannot_be_a_reviewer(self, stack) -> None:
         run = await self._generation_run(stack)

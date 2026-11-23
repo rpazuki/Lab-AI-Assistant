@@ -42,6 +42,7 @@ from lab_assistant.application.archive_control import (
     read_policy_head,
 )
 from lab_assistant.application.context import ServiceContext
+from lab_assistant.application.pagination import every_session
 from lab_assistant.application.ports import ArchiveControlStore, ArchiveDeletionStore
 from lab_assistant.contracts.archive import ArtifactRef, SnapshotManifest, content_location
 from lab_assistant.contracts.archive_policy import PolicyCheckpoint
@@ -321,7 +322,7 @@ class RetentionPlanner:
         """Every release a conversation pinned, answered from, or cited."""
         cited: set[UUID] = set()
         async with self._context.uow_factory() as uow:
-            for session in await uow.chat.list_workspace_sessions(workspace_id):
+            for session in await every_session(uow, workspace_id):
                 if session.pinned_release_id:
                     cited.add(session.pinned_release_id)
                 for message in await uow.chat.list_messages(workspace_id, session.id):

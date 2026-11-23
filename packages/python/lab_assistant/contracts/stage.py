@@ -94,6 +94,12 @@ class StageCommand(BaseModel):
     #: Token/request budget for stages that call an external provider.
     budget: dict[str, int] = Field(default_factory=dict)
     correlation_id: str | None = None
+    #: Which delivery this is, of how many the task may have. Facts about the
+    #: delivery, not the work: never part of the fingerprint. A handler uses them
+    #: to retry a passing failure while deliveries remain and to fall back once
+    #: they are spent.
+    attempt: int = 1
+    max_attempts: int = 1
 
 
 class TaskRequest(BaseModel):

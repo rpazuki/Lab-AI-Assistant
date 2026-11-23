@@ -10,7 +10,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...actual,
     listScopes: vi.fn(),
-    listDiscoveryRuns: vi.fn(async () => []),
+    listDiscoveryRuns: vi.fn(async () => ({ items: [], next_cursor: null, total: 0 })),
     createScope: vi.fn(async () => ({ id: "v2", version: 2, checksum: "c" })),
     updateScopeDraft: vi.fn(async () => ({ id: "v1", version: 1, checksum: "c" })),
     deleteScopeDraft: vi.fn(async () => undefined),
@@ -33,6 +33,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 const api = await import("@/lib/api");
+
+/** A one-page answer from a paged endpoint. */
+const page = <T,>(items: T[]) => ({ items, next_cursor: null, total: items.length });
 
 function scope(overrides: Partial<ScopeVersion> = {}): ScopeVersion {
   return {
@@ -141,14 +144,14 @@ describe("CollectionSetup", () => {
         ],
       };
       vi.mocked(api.listDiscoveryRuns)
-        .mockResolvedValueOnce([searching])
-        .mockResolvedValue([
+        .mockResolvedValueOnce(page([searching]))
+        .mockResolvedValue(page([
           {
             ...searching,
             status: "degraded",
             connectors: [{ ...searching.connectors[0]!, outcome: "succeeded", records_seen: 90 }],
           },
-        ]);
+        ]));
       render(<CollectionSetup />);
 
       expect(await screen.findByText("20")).toBeInTheDocument();

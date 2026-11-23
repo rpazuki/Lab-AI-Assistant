@@ -12,12 +12,15 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...actual,
     listScopes: vi.fn(async () => []),
-    listDiscoveryRuns: vi.fn(async () => []),
+    listDiscoveryRuns: vi.fn(async () => ({ items: [], next_cursor: null, total: 0 })),
     deleteDiscoveryRun: vi.fn(async () => undefined),
   };
 });
 
 const api = await import("@/lib/api");
+
+/** A one-page answer from a paged endpoint. */
+const page = <T,>(items: T[]) => ({ items, next_cursor: null, total: items.length });
 
 function run(id: string, status: string, records: number): DiscoveryRun {
   return {
@@ -45,12 +48,12 @@ describe("Delete is offered only where the server would allow it", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("offers it for stopped runs and frozen runs that found nothing", async () => {
-    vi.mocked(api.listDiscoveryRuns).mockResolvedValue([
+    vi.mocked(api.listDiscoveryRuns).mockResolvedValue(page([
       run("degraded-run", "degraded", 2000),
       run("running-run", "running", 10),
       run("frozen-full", "frozen", 3130),
       run("frozen-empty", "frozen", 0),
-    ]);
+    ]));
     render(<CollectionSetup />);
     expect(await screen.findByRole("button", { name: "Delete discovery run degraded" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete discovery run frozen-e" })).toBeInTheDocument();
@@ -59,7 +62,7 @@ describe("Delete is offered only where the server would allow it", () => {
   });
 
   it("asks first, then deletes and reloads", async () => {
-    vi.mocked(api.listDiscoveryRuns).mockResolvedValue([run("degraded-run", "degraded", 5)]);
+    vi.mocked(api.listDiscoveryRuns).mockResolvedValue(page([run("degraded-run", "degraded", 5)]));
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<CollectionSetup />);

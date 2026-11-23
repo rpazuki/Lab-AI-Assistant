@@ -19,7 +19,7 @@ import {
   row,
   rowList,
 } from "@/components/ui/primitives";
-import { assistedUpload, listPlans } from "@/lib/api";
+import { assistedUpload, fetchIncluded, listPlans } from "@/lib/api";
 import { statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { usePager } from "@/lib/usePager";
@@ -81,6 +81,8 @@ export function CollectionsClient() {
   const [planStatus, setPlanStatus] = useState("");
   const planPager = usePager();
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [queuing, setQueuing] = useState(false);
   const [uploadFor, setUploadFor] = useState<AcquisitionPlan | null>(null);
 
   const refresh = useCallback(async () => {
@@ -123,7 +125,39 @@ export function CollectionsClient() {
       <CandidateReview live={live.live} />
 
       <Panel title="Acquisition queue" flush aside={<LiveStatus {...live} />}>
+        {notice ? (
+          <div className="px-5 pt-3">
+            <Alert tone="success" role="status">
+              {notice}
+            </Alert>
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-2.5">
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={queuing}
+            onClick={async () => {
+              setQueuing(true);
+              setNotice(null);
+              try {
+                const done = await fetchIncluded();
+                setNotice(
+                  `Planning queued for every included paper without a plan. ` +
+                    `${done.requeued.toLocaleString()} waiting fetches will be tried again; ` +
+                    `${done.kept_for_a_person.toLocaleString()} can only come from an upload.`,
+                );
+                setError(null);
+              } catch (caught) {
+                setError(caught instanceof Error ? caught.message : "fetching was not queued");
+              } finally {
+                setQueuing(false);
+              }
+              live.kick();
+            }}
+          >
+            Fetch included papers
+          </Button>
           <StatusFilter
             label="Status"
             kind="acquisition"

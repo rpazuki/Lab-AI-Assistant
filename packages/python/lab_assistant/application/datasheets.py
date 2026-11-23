@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import random
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -37,6 +39,7 @@ from lab_assistant.contracts.extraction import TemplateVersionSpec
 from lab_assistant.contracts.stage import StageName, TaskRequest
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.scope import ApprovalState, ConfigKind, ConfigVersion
+from lab_assistant.domain.tasks import Task
 from lab_assistant.domain.workspace import Capability
 
 __all__ = ["DatasheetService", "Estimate", "active_template", "template_json"]
@@ -412,11 +415,35 @@ class DatasheetService:
             await uow.commit()
         return {"run_id": str(run_id), "template": key, "tasks": len(tasks), "rerun": rerun}
 
-    async def list_runs(self, actor: ActorContext) -> list[dict[str, Any]]:
-        """Extraction batches, newest first, with their tasks counted by state."""
+    async def list_runs(
+        self, actor: ActorContext, *, limit: int = 50, after: str | None = None
+    ) -> tuple[list[dict[str, Any]], str | None, int]:
+        """Extraction batches, newest first, with their tasks counted by state.
+
+        A run is its tasks, so every extraction task is read, a page at a time:
+        reading a fixed number of the oldest tasks lost every run past them.
+        Returns one page of runs, the cursor to the next, and how many there are.
+        """
+        from lab_assistant.application.pagination import slice_page
+        from lab_assistant.domain.states import TaskState
+
         actor.require(Capability.RUN_EXTRACTION)
+        every_state = [state.value for state in TaskState]
+        tasks: list[Task] = []
+        cursor: tuple[datetime, UUID] | None = None
         async with self._context.uow_factory() as uow:
-            tasks = await uow.tasks.list_tasks(actor.workspace_id, limit=5000)
+            while True:
+                page = await uow.tasks.page_tasks(
+                    actor.workspace_id,
+                    states=every_state,
+                    stage=StageName.EXTRACTION.value,
+                    limit=2_000,
+                    after=cursor,
+                )
+                tasks.extend(page)
+                if len(page) < 2_000 or page[-1].created_at is None:
+                    break
+                cursor = (page[-1].created_at, page[-1].id)
         runs: dict[UUID, dict[str, Any]] = {}
         for task in tasks:
             if task.stage is not StageName.EXTRACTION or task.run_id is None:
@@ -440,13 +467,15 @@ class DatasheetService:
                 run["created_at"] = task.created_at
             if task.error_detail and len(run["errors"]) < 5:
                 run["errors"].append(task.error_detail[:300])
-        ordered = sorted(
-            runs.values(),
-            key=lambda run: (run["created_at"] is not None, run["created_at"]),
-            reverse=True,
-        )
+
+        def key(run: dict[str, Any]) -> str:
+            at = run["created_at"]
+            return f"{at.isoformat() if at else ''}|{run['run_id']}"
+
+        ordered = sorted(runs.values(), key=key, reverse=True)
+        shown, next_cursor = slice_page(ordered, key=key, limit=limit, after=after, descending=True)
         terminal = {"succeeded", "failed", "dead_letter", "cancelled", "quarantined"}
-        return [
+        items = [
             {
                 **run,
                 "states": dict(run["states"]),
@@ -454,8 +483,9 @@ class DatasheetService:
                 "finished": all(state in terminal for state in run["states"]),
                 "created_at": run["created_at"].isoformat() if run["created_at"] else None,
             }
-            for run in ordered
+            for run in shown
         ]
+        return items, next_cursor, len(ordered)
 
     async def cancel_run(self, actor: ActorContext, *, run_id: UUID) -> int:
         actor.require(Capability.RUN_EXTRACTION)
@@ -512,6 +542,62 @@ class DatasheetService:
         return len(tasks)
 
     # ── the working sheet ───────────────────────────────────────────────────
+    async def sheet_page(
+        self,
+        actor: ActorContext,
+        *,
+        template: str | None,
+        words: Sequence[str] = (),
+        limit: int = 50,
+        after: str | None = None,
+    ) -> dict[str, Any]:
+        """One page of the working sheet's wide rows, one row per (work, experiment).
+
+        The counts are over the whole sheet. ``words`` keep the rows holding every
+        word, case-insensitively, in any column, as a table search does, so a
+        search covers every row and not only the page on screen. ``long_form`` is
+        the claims of the rows on this page.
+        """
+        from lab_assistant.application.export import wide_rows
+        from lab_assistant.application.pagination import slice_page
+
+        long_form = await self.rows(actor, template=template)
+        statuses: dict[str, int] = {}
+        for row in long_form:
+            statuses[row["review_status"]] = statuses.get(row["review_status"], 0) + 1
+        columns, wide = wide_rows(long_form)
+        wanted = [word.casefold() for word in words if word.strip()]
+        if wanted:
+            shown = [c for c in columns if c != "revision_ids"]
+            wide = [
+                row
+                for row in wide
+                if all(
+                    word in " ".join(str(row.get(c, "")) for c in shown).casefold()
+                    for word in wanted
+                )
+            ]
+
+        def key(row: dict[str, Any]) -> str:
+            return f"{row['work_id']}|{row['experiment_id']}"
+
+        page, next_cursor = slice_page(wide, key=key, limit=limit, after=after)
+        on_page = {(row["work_id"], row["experiment_id"]) for row in page}
+        return {
+            "template": long_form[0]["template_version"] if long_form else template,
+            "claims": len(long_form),
+            "review_status": statuses,
+            "long_form": [
+                row for row in long_form if (row["work_id"], row["experiment_id"]) in on_page
+            ],
+            "wide": {
+                "columns": columns,
+                "rows": page,
+                "total": len(wide),
+                "next_cursor": next_cursor,
+            },
+        }
+
     async def rows(self, actor: ActorContext, *, template: str | None) -> list[dict[str, Any]]:
         """The current revision of every claim the template produced, long form."""
         actor.require(Capability.RUN_EXTRACTION)

@@ -13,7 +13,7 @@ COPY workers/acquisition /app/workers/acquisition
 # `objectstore` (boto3) and `gcs` (google-cloud-storage) are the S3 and Google
 # Cloud Storage SDKs. Every image carries both, so moving between the filesystem,
 # S3 and GCS is a change to LAB_OBJECT_STORE_KIND, not a rebuild.
-RUN pip install -e "/app/packages/python[objectstore,gcs]" -e /app/services/api
+RUN pip install -e "/app/packages/python[parsers,objectstore,gcs]" -e /app/services/api
 
 # Non-root: a parser runs untrusted documents.
 RUN useradd --create-home --uid 10001 worker

@@ -21,7 +21,7 @@ landing between pages, which a numeric offset is not.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 __all__ = ["DEFAULT_PAGE_SIZE", "MAX_PAGES", "collect_pages", "iter_pages"]
@@ -73,3 +73,44 @@ async def collect_pages[T: _HasId](
 ) -> list[T]:
     """Every row, materialised. Use when the caller genuinely needs them all."""
     return [row async for row in iter_pages(fetch, page_size=page_size)]
+
+
+async def every_session(uow: Any, workspace_id: UUID) -> list[Any]:
+    """Every member's conversations, for what must see all of them (retraction, retention)."""
+    return await collect_pages(
+        lambda after, size: uow.chat.list_workspace_sessions(
+            workspace_id, limit=size, after_id=after
+        )
+    )
+
+
+async def every_release(uow: Any, workspace_id: UUID) -> list[Any]:
+    """Every release, newest first, for what must see all of them."""
+    releases = await collect_pages(
+        lambda after, size: uow.releases.list_all_releases(workspace_id, limit=size, after_id=after)
+    )
+    return sorted(
+        releases,
+        key=lambda release: (release.created_at is not None, release.created_at),
+        reverse=True,
+    )
+
+
+def slice_page[T](
+    rows: Sequence[T],
+    *,
+    key: Callable[[T], str],
+    limit: int,
+    after: str | None,
+    descending: bool = False,
+) -> tuple[list[T], str | None]:
+    """One page of a list built in memory, with the cursor to the next.
+
+    ``rows`` must already be ordered by ``key`` (descending when ``descending``),
+    and ``key`` must be unique, so the cursor is the last row's key and a page
+    resumes after it even when rows were added or removed in between.
+    """
+    if after is not None:
+        rows = [row for row in rows if (key(row) < after if descending else key(row) > after)]
+    page = list(rows[:limit])
+    return page, key(page[-1]) if len(rows) > limit and page else None

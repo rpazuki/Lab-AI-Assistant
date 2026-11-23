@@ -35,7 +35,7 @@ from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.discovery import cursor_lineage_key
-from lab_assistant.application.pagination import collect_pages
+from lab_assistant.application.pagination import collect_pages, every_session
 from lab_assistant.application.reconciliation import refresh_summaries
 from lab_assistant.contracts.errors import NotFound, StateTransitionError, ValidationFailure
 from lab_assistant.contracts.events import ActorType, AuditAction
@@ -287,7 +287,7 @@ class ScopeDeletionService:
                     blockers.append(
                         f"the “{alias.alias}” alias serves a release that holds its papers"
                     )
-            for session in await uow.chat.list_workspace_sessions(ws):
+            for session in await every_session(uow, ws):
                 if session.pinned_release_id in going_ids:
                     blockers.append("a conversation is pinned to a release that holds its papers")
                     break

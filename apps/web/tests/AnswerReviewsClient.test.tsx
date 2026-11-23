@@ -40,7 +40,7 @@ const FLAGS = ["hallucination", "citation_issue", "corpus_gap", "retrieval_issue
 describe("AnswerReviewsClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(api.listMyAnswerReviews).mockResolvedValue({ items: [ASSIGNED], scores: SCORES, flags: FLAGS });
+    vi.mocked(api.listMyAnswerReviews).mockResolvedValue({ items: [ASSIGNED], next_cursor: null, total: 1, to_do: 1, scores: SCORES, flags: FLAGS });
   });
 
   it("shows the question, the answer and what was measured", async () => {
@@ -74,7 +74,7 @@ describe("AnswerReviewsClient", () => {
   });
 
   it("says when nothing is waiting", async () => {
-    vi.mocked(api.listMyAnswerReviews).mockResolvedValue({ items: [], scores: SCORES, flags: FLAGS });
+    vi.mocked(api.listMyAnswerReviews).mockResolvedValue({ items: [], next_cursor: null, total: 0, to_do: 0, scores: SCORES, flags: FLAGS });
     render(<AnswerReviewsClient />);
     expect(await screen.findByText("No answer is waiting for your review.")).toBeInTheDocument();
   });

@@ -560,6 +560,15 @@ def _wide_csv(long_form: list[dict[str, Any]]) -> bytes:
     return _csv(rows, columns)
 
 
+def wide_rows(long_form: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, str]]]:
+    """The wide sheet as columns and rows, exactly as ``_wide_csv`` writes it."""
+    import csv
+    import io
+
+    reader = csv.DictReader(io.StringIO(_wide_csv(long_form).decode("utf-8")))
+    return list(reader.fieldnames or []), list(reader)
+
+
 def _maybe_xlsx(long_form: list[dict[str, Any]]) -> bytes | None:
     """Wide XLSX when openpyxl is installed; the CSV is always present."""
     try:

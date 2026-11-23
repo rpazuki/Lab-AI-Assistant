@@ -298,6 +298,8 @@ export interface Benchmark {
   thresholds: Record<string, number>;
   registered_by: string | null;
   created_at: string | null;
+  /** Runs measured against this version; one with runs cannot be deleted. */
+  runs?: number;
   definition?: Record<string, unknown>;
 }
 
@@ -364,11 +366,28 @@ export interface InvitationPreview {
   has_account: boolean;
 }
 
+/** The task lists the operations page pages through, oldest first. */
+export type TaskQueueName = "waiting" | "awaiting_user" | "dead_letter";
+
+export interface QueueTask {
+  task_id: string;
+  stage: string;
+  state: string;
+  created_at: string | null;
+  attempt: number;
+  action: string | null;
+  error: string | null;
+}
+
 export interface TaskSnapshot {
+  /** Tasks per state, over every task. */
   counts: Record<string, number>;
   oldest_pending_by_stage: Record<string, string>;
-  awaiting_user: { task_id: string; stage: string; action: string | null }[];
-  dead_letters: { task_id: string; stage: string; error: string | null }[];
+  /** Ready or leased tasks per stage, the longest-waiting stage first. */
+  waiting_by_stage: { stage: string; count: number; oldest: string | null }[];
+  /** The first page of each; `taskQueue` pages the rest. */
+  awaiting_user: QueueTask[];
+  dead_letters: QueueTask[];
 }
 
 export interface AuditEvent {
@@ -608,6 +627,8 @@ export interface WorkingSheet {
   template: string | null;
   claims: number;
   review_status: Record<string, number>;
+  /** The claims behind the rows on this page. */
   long_form: Record<string, string>[];
-  wide: { columns: string[]; rows: Record<string, string>[] };
+  /** One page of rows; `total` counts every row the search keeps. */
+  wide: { columns: string[]; rows: Record<string, string>[]; total: number; next_cursor: string | null };
 }

@@ -329,6 +329,7 @@
       "scope_rules_applied": "A steward re-applied an approved scope version's concepts and exclusion terms to the candidates.",
       "rights_decided": "What may be done with a paper's content was decided.",
       "acquisition_attempted": "A route was tried to fetch a paper's full text.",
+      "acquisition_requeued": "Fetches waiting for a person were put back in the queue, to try their automatic routes again.",
       "asset_registered": "A full-text file was stored.",
       "asset_quarantined": "A file failed a safety check and was quarantined.",
       "assisted_upload_accepted": "A file a person uploaded was accepted.",
