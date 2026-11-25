@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -177,5 +177,68 @@ describe("Parse quality on the Collections page", () => {
       require_reference_separation: false,
     });
     expect(await screen.findByText(/checked against them when you next press Fetch included papers/)).toBeInTheDocument();
+  });
+});
+
+describe("Uploading an authorised copy", () => {
+  const plan = {
+    plan_id: "plan-1",
+    work_id: "work-1",
+    paper: { title: "Lipids in Yarrowia", year: 2024, journal: null, first_author: null },
+    identifiers: [],
+    file: null,
+    status: "assisted",
+    routes: ["user_assisted"],
+    manifestation_ids: ["man-1"],
+    attempts: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listCandidates).mockResolvedValue({ items: [], next_cursor: null, total: 0 });
+    vi.mocked(api.listPlans).mockResolvedValue({
+      items: [plan] as never,
+      next_cursor: null,
+      total: 1,
+      status_counts: { assisted: 1 },
+    });
+  });
+
+  it("opens the form in the paper's own row, says why, and reports the result", async () => {
+    vi.spyOn(api, "assistedUpload").mockResolvedValue({
+      asset_id: "asset-1",
+      identity_verified: true,
+      malware_scan_status: "passed",
+    });
+    const user = userEvent.setup();
+    render(<CollectionsClient />);
+    await user.click(await screen.findByRole("button", { name: "Upload an authorised copy" }));
+
+    const form = screen.getByRole("region", { name: "Upload an authorised copy" });
+    // Inside the plan's row, not at the foot of the page.
+    expect(form.closest("li")).toHaveTextContent("Lipids in Yarrowia");
+    expect(form).toHaveTextContent(/only an upload can bring it in/);
+
+    await user.upload(
+      within(form).getByLabelText("File"),
+      new File(["%PDF-1.7"], "paper.pdf", { type: "application/pdf" }),
+    );
+    await user.type(within(form).getByPlaceholderText("How was this copy obtained?"), "Library copy");
+    await user.click(within(form).getByRole("button", { name: "Upload" }));
+
+    expect(api.assistedUpload).toHaveBeenCalledWith(
+      "plan-1",
+      expect.objectContaining({ manifestationId: "man-1", attestation: "Library copy" }),
+    );
+    expect(await screen.findByText(/Uploaded for “Lipids in Yarrowia”: identity confirmed/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Upload an authorised copy" })).not.toBeInTheDocument();
+  });
+
+  it("closes again from the same button", async () => {
+    const user = userEvent.setup();
+    render(<CollectionsClient />);
+    await user.click(await screen.findByRole("button", { name: "Upload an authorised copy" }));
+    await user.click(screen.getByRole("button", { name: "Close the upload" }));
+    expect(screen.queryByRole("region", { name: "Upload an authorised copy" })).not.toBeInTheDocument();
   });
 });

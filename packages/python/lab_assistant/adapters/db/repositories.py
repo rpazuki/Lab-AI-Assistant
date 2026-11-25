@@ -1497,13 +1497,19 @@ class _Assets(_Base):
             .subquery()
         )
         latest = select(ranked.c.plan_id, ranked.c.outcome).where(ranked.c.rank == 1).subquery()
+        # Grouped by the bare column: Postgres binds each "none" literal as its
+        # own parameter, so a COALESCE in both SELECT and GROUP BY never matches.
         result = await self._c.execute(
-            select(func.coalesce(latest.c.outcome, "none"), func.count())
+            select(latest.c.outcome, func.count())
             .select_from(p.outerjoin(latest, latest.c.plan_id == p.c.id))
             .where(p.c.workspace_id == workspace_id, p.c.status == status)
-            .group_by(func.coalesce(latest.c.outcome, "none"))
+            .group_by(latest.c.outcome)
         )
-        return {str(outcome): int(count) for outcome, count in result.all()}
+        counts: dict[str, int] = {}
+        for outcome, count in result.all():
+            key = str(outcome) if outcome is not None else "none"
+            counts[key] = counts.get(key, 0) + int(count)
+        return counts
 
     async def add_attempt(self, attempt: AcquisitionAttempt) -> None:
         await self._upsert(ATTEMPTS, attempt)

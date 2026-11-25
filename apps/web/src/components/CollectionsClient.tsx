@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { BulkImport } from "@/components/BulkImport";
 import { CandidateReview } from "@/components/CandidateReview";
@@ -16,13 +16,12 @@ import {
   Empty,
   Field,
   Input,
-  Panel,
   StateChip,
   row,
   rowList,
 } from "@/components/ui/primitives";
 import { assistedUpload, fetchIncluded, listPlans } from "@/lib/api";
-import { statusGroup } from "@/lib/statuses";
+import { describeStatus, statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { PAGE_SIZES, usePager } from "@/lib/usePager";
 import type { AcquisitionPlan, Page } from "@/types";
@@ -230,8 +229,16 @@ export function CollectionsClient() {
                   routes: {plan.routes.join(" → ")}
                 </span>
                 {plan.status === "assisted" || plan.status === "failed" ? (
-                  <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setUploadFor(plan)}>
-                    Upload an authorised copy
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto"
+                    aria-expanded={uploadFor?.plan_id === plan.plan_id}
+                    onClick={() =>
+                      setUploadFor(uploadFor?.plan_id === plan.plan_id ? null : plan)
+                    }
+                  >
+                    {uploadFor?.plan_id === plan.plan_id ? "Close the upload" : "Upload an authorised copy"}
                   </Button>
                 ) : null}
               </div>
@@ -272,6 +279,19 @@ export function CollectionsClient() {
                   ))}
                 </ul>
               ) : null}
+              {uploadFor?.plan_id === plan.plan_id ? (
+                // In the paper's own row: opened at the foot of the page, it
+                // was out of sight and the button seemed to do nothing.
+                <AssistedUploadForm
+                  plan={plan}
+                  onCancel={() => setUploadFor(null)}
+                  onDone={(message) => {
+                    setUploadFor(null);
+                    setNotice(message);
+                    live.kick();
+                  }}
+                />
+              ) : null}
             </li>
           ))}
         </ul>
@@ -293,37 +313,61 @@ export function CollectionsClient() {
         onImported={() => live.kick()}
       />
 
-      {uploadFor ? (
-        <AssistedUploadForm
-          plan={uploadFor}
-          onDone={() => {
-            setUploadFor(null);
-            live.kick();
-          }}
-        />
-      ) : null}
     </div>
   );
 }
 
-function AssistedUploadForm({ plan, onDone }: { plan: AcquisitionPlan; onDone: () => void }) {
+/** Why no route fetched this paper, from its latest attempt. */
+function whyUpload(plan: AcquisitionPlan): string {
+  const latest = plan.attempts[plan.attempts.length - 1];
+  if (!latest?.outcome) {
+    return (
+      "No route may fetch this paper automatically: its licence is unknown or does not allow " +
+      "keeping a copy, so only an upload can bring it in."
+    );
+  }
+  return describeStatus("acquisition_outcome", latest.outcome) ?? `The last route answered ${latest.outcome}.`;
+}
+
+function AssistedUploadForm({
+  plan,
+  onDone,
+  onCancel,
+}: {
+  plan: AcquisitionPlan;
+  onDone: (message: string) => void;
+  onCancel: () => void;
+}) {
   const [file, setFile] = useState<File | null>(null);
   const [accessBasis, setAccessBasis] = useState("institutional_subscription_copy");
   const [attestation, setAttestation] = useState("");
   const [result, setResult] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    box.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+    box.current?.querySelector<HTMLInputElement>('input[type="file"]')?.focus();
+  }, []);
 
   return (
-    <Panel title={`Assisted acquisition — ${plan.paper?.title ?? `paper ${plan.work_id.slice(0, 8)}`}`}>
+    <div
+      ref={box}
+      role="region"
+      aria-label="Upload an authorised copy"
+      className="mt-3 rounded-control border border-border bg-surface-subtle p-4"
+    >
       <Alert tone="info" className="mb-4">
-        Automation stopped because no permitted route returned this content. Uploading an
-        authorised copy runs the same integrity, malware, identity, and rights checks as an
-        automatic fetch, and the queued work resumes.
+        {whyUpload(plan)} An uploaded copy goes through the same integrity, malware, identity and
+        rights checks as a fetched one, and then on to parsing.
       </Alert>
       <form
         className="max-w-xl space-y-4"
         onSubmit={async (event) => {
           event.preventDefault();
           if (!file || !attestation) return;
+          setSending(true);
+          setResult(null);
           try {
             const uploaded = await assistedUpload(plan.plan_id, {
               manifestationId: plan.manifestation_ids[0] ?? "",
@@ -331,13 +375,15 @@ function AssistedUploadForm({ plan, onDone }: { plan: AcquisitionPlan; onDone: (
               attestation,
               file,
             });
-            setResult(
-              `accepted: identity ${uploaded.identity_verified ? "verified" : "unverified"}, ` +
-                `malware scan ${uploaded.malware_scan_status}`,
+            onDone(
+              `Uploaded for “${plan.paper?.title ?? `paper ${plan.work_id.slice(0, 8)}`}”: ` +
+                `identity ${uploaded.identity_verified ? "confirmed" : "not confirmed"}, ` +
+                `malware scan ${uploaded.malware_scan_status}.`,
             );
-            onDone();
           } catch (caught) {
             setResult(caught instanceof Error ? caught.message : "the upload was rejected");
+          } finally {
+            setSending(false);
           }
         }}
       >
@@ -358,11 +404,20 @@ function AssistedUploadForm({ plan, onDone }: { plan: AcquisitionPlan; onDone: (
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           className="block text-sm text-muted file:mr-3 file:rounded-control file:border file:border-border-strong file:bg-surface file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-ink hover:file:bg-surface-subtle"
         />
-        <Button type="submit" disabled={!file || !attestation}>
-          Upload
-        </Button>
-        {result ? <p className="text-sm text-ink">{result}</p> : null}
+        <div className="flex gap-2">
+          <Button type="submit" disabled={!file || !attestation || sending}>
+            {sending ? "Uploading…" : "Upload"}
+          </Button>
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
+        {result ? (
+          <Alert tone="danger" role="alert">
+            {result}
+          </Alert>
+        ) : null}
       </form>
-    </Panel>
+    </div>
   );
 }

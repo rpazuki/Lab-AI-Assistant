@@ -634,7 +634,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             title: "How to upload a paper the system could not fetch",
             needs: STEWARD,
             steps: [
-              "Under **Acquisition queue**, find a plan marked assisted or failed and select **Upload an authorised copy**.",
+              "Under **Acquisition queue**, find a plan marked assisted or failed and select **Upload an authorised copy**. The form opens under that paper.",
               "Check the **Access basis** (for example an institutional subscription).",
               "In **Attestation**, say how the copy was obtained.",
               "Choose the file and select **Upload**.",
