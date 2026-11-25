@@ -266,6 +266,53 @@ class _Lab:
             await uow.commit()
         return work.id
 
+    async def learn(self, work_id: UUID, doi: str, **facts: Any) -> None:
+        """A later discovery run's record of a paper already found."""
+        context = self.harness.context
+        now = context.now()
+        request_id, observation_id = context.new_id(), context.new_id()
+        async with context.uow_factory() as uow:
+            await uow.observations.add_request(
+                SourceRequest(
+                    id=request_id,
+                    workspace_id=self.ws,
+                    discovery_run_id=self.run_id,
+                    connector_id="fixture",
+                    connector_version="1.1.0",
+                    request_fingerprint=str(request_id),
+                    method="GET",
+                    canonical_url_redacted="https://example.invalid/q2",
+                    requested_at=now,
+                )
+            )
+            await uow.observations.add_observation(
+                SourceObservation(
+                    id=observation_id,
+                    workspace_id=self.ws,
+                    source_request_id=request_id,
+                    source_record_locator=f"doi:{doi}",
+                    parser_id="p",
+                    parser_version="1",
+                    schema_version="1",
+                    observed_at=now,
+                )
+            )
+            await uow.observations.add_assertions(
+                [
+                    SourceAssertion(
+                        id=context.new_id(),
+                        workspace_id=self.ws,
+                        source_observation_id=observation_id,
+                        subject_hint=f"doi:{doi}",
+                        predicate=Predicate(name),
+                        value_json=value,
+                        work_id=work_id,
+                    )
+                    for name, value in facts.items()
+                ]
+            )
+            await uow.commit()
+
     async def plan(self, work_id: UUID, routes: tuple[AcquisitionRoute, ...]) -> AcquisitionPlan:
         context = self.harness.context
         manifestation = Manifestation(
@@ -628,7 +675,7 @@ class TestTryingAgain:
 
         queue = FetchQueue(context, lab.harness.orchestrator)
         done = await queue.retry_waiting(lab.actor)
-        assert done == {"requeued": 1, "kept_for_a_person": 1, "already_tried": 0}
+        assert done == {"requeued": 1, "replanned": 0, "kept_for_a_person": 1, "already_tried": 0}
         async with context.uow_factory() as uow:
             again = await uow.tasks.get(lab.ws, tasks[automatic.id])
             kept = await uow.tasks.get(lab.ws, tasks[upload_only.id])
@@ -657,6 +704,7 @@ class TestTryingAgain:
         # A second press sends nothing to the sources: the answer would be the same.
         assert await queue.retry_waiting(lab.actor) == {
             "requeued": 0,
+            "replanned": 0,
             "kept_for_a_person": 1,
             "already_tried": 1,
         }
@@ -707,3 +755,73 @@ class TestCollectionProgress:
         assert view["acquisition"]["waiting_reasons"] == outcomes
         assert view["acquisition"]["identity"]["identifier"] >= 1
         assert len(view["daily"]) == 30 and view["daily"][-1]["found"] == 3
+
+
+class TestReplanningUploadOnly:
+    """A paper planned for upload only gets the open routes once discovery finds an open licence."""
+
+    async def waiting(self, lab, plan) -> UUID:
+        context = lab.harness.context
+        task = Task(
+            id=context.new_id(),
+            workspace_id=lab.ws,
+            stage=StageName.ACQUISITION,
+            state=TaskState.AWAITING_USER,
+            input_fingerprint=str(context.new_id()),
+            inputs={"plan_id": str(plan.id)},
+            attempt=1,
+            human_action_required="assisted acquisition required",
+            created_at=context.now(),
+        )
+        async with context.uow_factory() as uow:
+            await uow.tasks.add(task)
+            stored = await uow.assets.get_plan(lab.ws, plan.id)
+            stored.status = "assisted"
+            stored.version += 1
+            await uow.assets.update_plan(stored)
+            await uow.commit()
+        return task.id
+
+    async def test_an_open_licence_found_later_queues_the_paper_again(self, lab) -> None:
+        context = lab.harness.context
+        work = await lab.paper("10.9/licensed")
+        plan = await lab.plan(work, (AcquisitionRoute.USER_ASSISTED,))
+        task_id = await self.waiting(lab, plan)
+        queue = FetchQueue(context, lab.harness.orchestrator)
+
+        # No licence yet: it stays with a person, and no rights decision is written.
+        async with context.uow_factory() as uow:
+            before = len(await uow.policies.list_rights_decisions(lab.ws))
+        assert (await queue.retry_waiting(lab.actor))["kept_for_a_person"] == 1
+        async with context.uow_factory() as uow:
+            assert len(await uow.policies.list_rights_decisions(lab.ws)) == before
+
+        # A rerun's source records an open licence for it.
+        await lab.learn(work, "10.9/licensed", licence="cc-by-4.0")
+        done = await queue.retry_waiting(lab.actor)
+        assert done["replanned"] == 1 and done["requeued"] == 1 and done["kept_for_a_person"] == 0
+        async with context.uow_factory() as uow:
+            stored = await uow.assets.get_plan(lab.ws, plan.id)
+            task = await uow.tasks.get(lab.ws, task_id)
+        assert stored.status == "planned"
+        assert AcquisitionRoute.OPEN_REPOSITORY in stored.route_order
+        assert stored.route_order[-1] is AcquisitionRoute.USER_ASSISTED
+        assert task.state is TaskState.READY and task.attempt == 0
+
+        # And the open route now fetches it.
+        await lab.fetch(stored)
+        assert await lab.status(plan) == "acquired"
+
+    async def test_a_licence_that_forbids_keeping_a_copy_changes_nothing(self, lab) -> None:
+        context = lab.harness.context
+        work = await lab.paper("10.9/unlicensed")
+        plan = await lab.plan(work, (AcquisitionRoute.USER_ASSISTED,))
+        task_id = await self.waiting(lab, plan)
+        await lab.learn(work, "10.9/unlicensed", licence="all-rights-reserved")
+        done = await FetchQueue(context, lab.harness.orchestrator).retry_waiting(lab.actor)
+        assert done["replanned"] == 0 and done["kept_for_a_person"] == 1
+        async with context.uow_factory() as uow:
+            stored = await uow.assets.get_plan(lab.ws, plan.id)
+            task = await uow.tasks.get(lab.ws, task_id)
+        assert stored.route_order == (AcquisitionRoute.USER_ASSISTED,)
+        assert task.state is TaskState.AWAITING_USER

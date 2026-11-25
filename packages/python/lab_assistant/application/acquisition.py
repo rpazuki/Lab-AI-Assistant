@@ -13,6 +13,7 @@ that leaves the queue behind.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -63,10 +64,13 @@ from lab_assistant.provenance.fingerprints import task_fingerprint
 
 __all__ = [
     "PERMITTED_MEDIA_TYPES",
+    "PLAN_ACTIONS",
     "AcquisitionHandler",
     "AcquisitionPlanningHandler",
     "AcquisitionService",
     "detect_media_type",
+    "manifestation_kind",
+    "route_ladder",
 ]
 
 IMPLEMENTATION_VERSION = "acquisition/2"
@@ -577,6 +581,42 @@ def _pdf_head_text(content: bytes, *, pages: int = 3) -> str:
     return "\n".join(texts)
 
 
+#: What a plan asks to do with the paper it fetches.
+PLAN_ACTIONS = frozenset(
+    {
+        PolicyAction.STORE_CONTENT,
+        PolicyAction.PROCESS_LOCAL,
+        PolicyAction.CREATE_EMBEDDINGS_LOCAL,
+        PolicyAction.INDEX,
+        PolicyAction.QUERY,
+        PolicyAction.DISPLAY_EXCERPT,
+        PolicyAction.EXPORT_EVIDENCE,
+    }
+)
+
+
+def manifestation_kind(full_text_location: Any) -> ManifestationKind:
+    """What discovery says the full text is: PMC XML, a publisher PDF, or only an abstract."""
+    if isinstance(full_text_location, str) and "pmc" in full_text_location.lower():
+        return ManifestationKind.PMC_XML
+    if full_text_location:
+        return ManifestationKind.PUBLISHER_PDF
+    return ManifestationKind.ABSTRACT_ONLY
+
+
+def route_ladder(
+    decision: RightsDecision, kind: ManifestationKind, *, now: datetime
+) -> list[AcquisitionRoute]:
+    """The routes tried in order: open ones only when the licence allows keeping a copy."""
+    routes: list[AcquisitionRoute] = []
+    if decision.permits(PolicyAction.STORE_CONTENT, now=now):
+        if kind is ManifestationKind.PMC_XML:
+            routes.append(AcquisitionRoute.OPEN_ACCESS_API)
+        routes.append(AcquisitionRoute.OPEN_REPOSITORY)
+    routes.append(AcquisitionRoute.USER_ASSISTED)
+    return routes
+
+
 class AcquisitionPlanningHandler:
     """Stage 3: freeze a plan per included work, with rights decided first."""
 
@@ -635,13 +675,7 @@ class AcquisitionPlanningHandler:
             assertions = assertion_index[work.id]
             licence = _first_value(assertions, "licence")
             full_text_location = _first_value(assertions, "full_text_location")
-            kind = (
-                ManifestationKind.PMC_XML
-                if isinstance(full_text_location, str) and "pmc" in full_text_location.lower()
-                else ManifestationKind.PUBLISHER_PDF
-                if full_text_location
-                else ManifestationKind.ABSTRACT_ONLY
-            )
+            kind = manifestation_kind(full_text_location)
 
             async with context.uow_factory() as uow:
                 existing = await uow.assets.list_manifestations(workspace_id, work.id)
@@ -663,17 +697,7 @@ class AcquisitionPlanningHandler:
                     await uow.assets.add_manifestation(manifestation)
                     await uow.commit()
 
-            requested_actions = frozenset(
-                {
-                    PolicyAction.STORE_CONTENT,
-                    PolicyAction.PROCESS_LOCAL,
-                    PolicyAction.CREATE_EMBEDDINGS_LOCAL,
-                    PolicyAction.INDEX,
-                    PolicyAction.QUERY,
-                    PolicyAction.DISPLAY_EXCERPT,
-                    PolicyAction.EXPORT_EVIDENCE,
-                }
-            )
+            requested_actions = PLAN_ACTIONS
             decision = await self._service.decide_rights(
                 actor,
                 subject_type="manifestation",
@@ -696,12 +720,7 @@ class AcquisitionPlanningHandler:
                 metadata_only += 1
                 continue
 
-            route_order: list[AcquisitionRoute] = []
-            if decision.permits(PolicyAction.STORE_CONTENT, now=context.now()):
-                if kind is ManifestationKind.PMC_XML:
-                    route_order.append(AcquisitionRoute.OPEN_ACCESS_API)
-                route_order.append(AcquisitionRoute.OPEN_REPOSITORY)
-            route_order.append(AcquisitionRoute.USER_ASSISTED)
+            route_order = route_ladder(decision, kind, now=context.now())
             if not decision.permits(PolicyAction.STORE_CONTENT, now=context.now()):
                 metadata_only += 1
 

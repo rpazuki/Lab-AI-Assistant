@@ -166,7 +166,10 @@ export function CollectionsClient() {
                 const done = await fetchIncluded();
                 setNotice(
                   `Planning queued for any included paper without a plan. ` +
-                    `${done.requeued.toLocaleString()} fetches will be tried again. ` +
+                    `${done.requeued.toLocaleString()} fetches will be tried again` +
+                    (done.replanned
+                      ? `, ${done.replanned.toLocaleString()} of them papers that now have an open licence. `
+                      : ". ") +
                     `${done.already_tried.toLocaleString()} were already tried by the current fetcher ` +
                     `and stay with a person; ` +
                     `${done.kept_for_a_person.toLocaleString()} can only come from an upload. ` +
@@ -187,7 +190,8 @@ export function CollectionsClient() {
           <span className="max-w-xl text-xs text-muted">
             Plans included papers that have no plan, tries again the fetches that failed on a fault
             or that no source answered, checks files again that an older identity rule could not tie
-            to their paper, and checks degraded documents against the parse limits below. Pressing it
+            to their paper, gives the open routes to upload-only papers that discovery now records
+            an open licence for, and checks degraded documents against the parse limits below. Pressing it
             again does nothing twice: a planned paper is not planned again, and a paper every source
             already answered stays with a person.
           </span>

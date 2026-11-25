@@ -23,7 +23,12 @@ answer:
   title, and a preprint of it): the stored file is checked again without being
   fetched again.
 
-A paper whose only route is a person's upload is never queued again here.
+A paper whose only route is a person's upload is planned again when discovery
+now records a licence that allows keeping a copy (a later run found an open
+licence the first did not): it gets the open routes and goes back in the queue.
+Until then it waits for an upload. The licence is checked against the rights
+policy without writing anything first, so a press over thousands of upload-only
+papers records a rights decision only for the ones that now pass.
 """
 
 from __future__ import annotations
@@ -32,16 +37,25 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from lab_assistant.application.acquisition import IDENTITY_RULE
+from lab_assistant.application.acquisition import (
+    IDENTITY_RULE,
+    PLAN_ACTIONS,
+    AcquisitionService,
+    manifestation_kind,
+    route_ladder,
+)
 from lab_assistant.application.acquisition import IMPLEMENTATION_VERSION as FETCHER_VERSION
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.contracts.errors import AcquisitionOutcome, ErrorClass
 from lab_assistant.contracts.events import ActorType, AuditAction
+from lab_assistant.contracts.policy import PolicyAction
 from lab_assistant.contracts.stage import StageName
+from lab_assistant.domain.assets import AcquisitionRoute, ManifestationKind
 from lab_assistant.domain.installation import InstallationCapability
-from lab_assistant.domain.states import TaskState
+from lab_assistant.domain.states import RightsState, TaskState
 from lab_assistant.domain.tasks import Task
 from lab_assistant.domain.workspace import Capability
+from lab_assistant.policy.rights import RightsRequest
 
 __all__ = ["FetchQueue"]
 
@@ -138,6 +152,7 @@ class FetchQueue:
         actor.require(Capability.ACQUIRE)
         context = self._context
         ws = actor.workspace_id
+        upload_only: list[tuple[UUID, UUID]] = []
         requeued = kept = tried = 0
         after: tuple[datetime, UUID] | None = None
         while True:
@@ -156,8 +171,11 @@ class FetchQueue:
                 for task in page:
                     plan_id = task.inputs.get("plan_id")
                     plan = await uow.assets.get_plan(ws, UUID(str(plan_id))) if plan_id else None
-                    if plan is None or not any(route.is_automatic for route in plan.route_order):
+                    if plan is None:
                         kept += 1
+                        continue
+                    if not any(route.is_automatic for route in plan.route_order):
+                        upload_only.append((task.id, plan.id))
                         continue
                     if task.state is TaskState.FAILED and not await _recheckable(
                         uow, ws, task, plan.work_id
@@ -169,24 +187,19 @@ class FetchQueue:
                     ):
                         tried += 1
                         continue
-                    task.state = TaskState.READY
-                    task.attempt = 0
-                    task.not_before = None
-                    task.human_action_required = None
-                    task.error_class = None
-                    task.error_detail = None
-                    task.completed_at = None
-                    task.version += 1
-                    await uow.tasks.update(task)
-                    if plan.status != "planned":
-                        plan.status = "planned"
-                        plan.version += 1
-                        await uow.assets.update_plan(plan)
+                    await _requeue(uow, task, plan)
                     requeued += 1
                 await uow.commit()
             if len(page) < _PAGE or page[-1].created_at is None:
                 break
             after = (page[-1].created_at, page[-1].id)
+        replanned = 0
+        for task_id, plan_id in upload_only:
+            if await self._replan(actor, task_id, plan_id):
+                replanned += 1
+            else:
+                kept += 1
+        requeued += replanned
         async with context.uow_factory() as uow:
             await uow.audit.append(
                 context.audit.build(
@@ -200,10 +213,144 @@ class FetchQueue:
                     reason_code="retry_waiting_fetches",
                     metadata={
                         "requeued": requeued,
+                        "replanned": replanned,
                         "kept_for_a_person": kept,
                         "already_tried": tried,
                     },
                 )
             )
             await uow.commit()
-        return {"requeued": requeued, "kept_for_a_person": kept, "already_tried": tried}
+        return {
+            "requeued": requeued,
+            "replanned": replanned,
+            "kept_for_a_person": kept,
+            "already_tried": tried,
+        }
+
+    async def _replan(self, actor: ActorContext, task_id: UUID, plan_id: UUID) -> bool:
+        """Give an upload-only plan the open routes, if discovery now records an open licence.
+
+        Each licence any source gave is checked against the rights policy without
+        writing anything; only one that allows keeping a copy is decided on the
+        record, and only then does the plan change. Returns whether it did.
+        """
+        context = self._context
+        ws = actor.workspace_id
+        async with context.uow_factory() as uow:
+            plan = await uow.assets.get_plan(ws, plan_id)
+            work = await uow.works.get(ws, plan.work_id) if plan is not None else None
+            if plan is None or work is None or not plan.manifestation_ids:
+                return False
+            manifestation = await uow.assets.get_manifestation(ws, plan.manifestation_ids[0])
+            assertions = await uow.observations.list_assertions(ws, work_id=plan.work_id)
+        if manifestation is None:
+            return False
+        licences = {
+            str(value): assertion.id
+            for assertion in assertions
+            if assertion.predicate.value == "licence"
+            and isinstance(value := assertion.normalised_value_json or assertion.value_json, str)
+        }
+        location = next(
+            (
+                a.normalised_value_json or a.value_json
+                for a in assertions
+                if a.predicate.value == "full_text_location"
+                and (a.normalised_value_json or a.value_json)
+            ),
+            None,
+        )
+        kind = manifestation_kind(location)
+        route = (
+            AcquisitionRoute.OPEN_ACCESS_API
+            if kind is ManifestationKind.PMC_XML
+            else AcquisitionRoute.OPEN_REPOSITORY
+        )
+        actions = plan.requested_actions or PLAN_ACTIONS
+        for licence, assertion_id in sorted(licences.items()):
+            verdict = context.rights_policy.evaluate(
+                RightsRequest(
+                    workspace_id=ws,
+                    subject_type="manifestation",
+                    subject_id=manifestation.id,
+                    licence_expression=licence,
+                    access_basis=str(location) if location else None,
+                    route=route,
+                    content_kind=work.work_kind.value,
+                    requested_actions=actions,
+                    evidence_assertion_ids=(assertion_id,),
+                    now=context.now(),
+                )
+            )
+            if (
+                verdict.state in (RightsState.PROHIBITED, RightsState.UNKNOWN)
+                or PolicyAction.STORE_CONTENT not in verdict.allowed_actions
+            ):
+                continue
+            decision = await AcquisitionService(context).decide_rights(
+                actor,
+                subject_type="manifestation",
+                subject_id=manifestation.id,
+                licence_expression=licence,
+                access_basis=str(location) if location else None,
+                route=route,
+                content_kind=work.work_kind.value,
+                requested_actions=actions,
+                evidence_assertion_ids=(assertion_id,),
+            )
+            routes = route_ladder(decision, kind, now=context.now())
+            if not any(r.is_automatic for r in routes):
+                continue
+            async with context.uow_factory() as uow:
+                plan = await uow.assets.get_plan(ws, plan_id)
+                task = await uow.tasks.get(ws, task_id)
+                if plan is None or task is None:
+                    return False
+                if (
+                    kind is not ManifestationKind.ABSTRACT_ONLY
+                    and manifestation.manifestation_kind
+                    in (ManifestationKind.ABSTRACT_ONLY, ManifestationKind.UNKNOWN)
+                ):
+                    # Discovery now knows where the full text is.
+                    await uow.assets.add_manifestation(
+                        manifestation.model_copy(update={"manifestation_kind": kind})
+                    )
+                plan.route_order = tuple(routes)
+                await _requeue(uow, task, plan, force_plan=True)
+                await uow.audit.append(
+                    context.audit.build(
+                        workspace_id=ws,
+                        actor_type=ActorType.USER,
+                        actor_id=actor.user_id,
+                        action=AuditAction.ACQUISITION_REQUEUED,
+                        subject_type="acquisition_plan",
+                        subject_id=plan.id,
+                        previous_hash=await uow.audit.latest_hash(ws),
+                        reason_code="replanned_open_licence",
+                        metadata={
+                            "licence": licence,
+                            "rights_decision_id": str(decision.id),
+                            "routes": [r.value for r in routes],
+                        },
+                    )
+                )
+                await uow.commit()
+            return True
+        return False
+
+
+async def _requeue(uow: Any, task: Any, plan: Any, *, force_plan: bool = False) -> None:
+    """Put a fetch back in the queue as if new, and its plan back to planned."""
+    task.state = TaskState.READY
+    task.attempt = 0
+    task.not_before = None
+    task.human_action_required = None
+    task.error_class = None
+    task.error_detail = None
+    task.completed_at = None
+    task.version += 1
+    await uow.tasks.update(task)
+    if force_plan or plan.status != "planned":
+        plan.status = "planned"
+        plan.version += 1
+        await uow.assets.update_plan(plan)

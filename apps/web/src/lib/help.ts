@@ -628,7 +628,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Under **Acquisition queue**, select **Fetch included papers**.",
               "Every included paper without a plan is planned, and every fetch that is waiting or ran out of retries, and still has an open route, is tried again. The message says how many were queued and how many can only come from an upload.",
             ],
-            note: "Pressing it again plans only papers included since; retries fetches that ran out of retries on a fault or that a source never answered (rate-limited or down); checks again, without fetching, a stored file an older identity rule could not tie to its paper; and checks degraded documents against the **Parse quality** limits. A paper every source already answered stays waiting for a person, so the same sources are not asked the same question again; upload it instead.",
+            note: "Pressing it again plans only papers included since; retries fetches that ran out of retries on a fault or that a source never answered (rate-limited or down); checks again, without fetching, a stored file an older identity rule could not tie to its paper; gives the open routes to an upload-only paper once discovery records an open licence for it (after a later run, say); and checks degraded documents against the **Parse quality** limits. A paper every source already answered stays waiting for a person, so the same sources are not asked the same question again; upload it instead.",
           },
           {
             title: "How to upload a paper the system could not fetch",

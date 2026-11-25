@@ -114,6 +114,7 @@ describe("Fetching included papers", () => {
     vi.mocked(api.listCandidates).mockResolvedValue({ items: [], next_cursor: null, total: 0 });
     vi.mocked(api.fetchIncluded).mockResolvedValue({
       requeued: 1425,
+      replanned: 300,
       kept_for_a_person: 6467,
       already_tried: 12,
       planning_task_id: "t1",
@@ -125,7 +126,7 @@ describe("Fetching included papers", () => {
     await user.click(await screen.findByRole("button", { name: "Fetch included papers" }));
     expect(api.fetchIncluded).toHaveBeenCalledTimes(1);
     expect(
-      await screen.findByText(/1,425 fetches will be tried again\. 12 were already tried .* 6,467 can only come from an upload/),
+      await screen.findByText(/1,425 fetches will be tried again, 300 of them papers that now have an open licence\. 12 were already tried .* 6,467 can only come from an upload/),
     ).toBeInTheDocument();
   });
 });

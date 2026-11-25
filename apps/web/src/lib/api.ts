@@ -475,6 +475,8 @@ export const setParseLimits = (limits: ParseLimits) =>
 export const fetchIncluded = () =>
   request<{
     requeued: number;
+    /** Upload-only papers given the open routes: discovery now records an open licence. */
+    replanned: number;
     kept_for_a_person: number;
     already_tried: number;
     planning_task_id: string;

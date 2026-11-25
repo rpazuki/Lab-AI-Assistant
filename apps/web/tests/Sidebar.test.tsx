@@ -104,7 +104,7 @@ describe("Sidebar", () => {
     render(<Sidebar />);
     await screen.findByRole("button", { name: "Sign out" });
     expect(sections()).toEqual([
-      "Ask", "Analytics", "Collections", "Review", "Datasheets", "Answer reviews", "Releases",
+      "Ask", "Analytics", "Collections", "Collection progress", "Review", "Datasheets", "Answer reviews", "Releases",
       "Evaluation",
       "Members", "Operations", "How-to guides",
     ]);
