@@ -252,6 +252,7 @@ class ReleaseService:
             if release.status not in (
                 ReleaseState.DRAFT,
                 ReleaseState.VALIDATING,
+                ReleaseState.VALIDATED,
                 ReleaseState.REJECTED,
             ):
                 raise StateTransitionError(
@@ -359,7 +360,9 @@ class ReleaseService:
                 validated_at=context.now(),
             )
             release.gate_results = dict(gates)
-            release.status = ReleaseState.APPROVED if report.passed else ReleaseState.REJECTED
+            # Passing every gate makes a release validated, not approved: approval
+            # is a person's decision, recorded with their name by ``approve``.
+            release.status = ReleaseState.VALIDATED if report.passed else ReleaseState.REJECTED
             release.version += 1
             await uow.releases.update(release)
             # No column points at the validation report, so without this row
@@ -399,7 +402,7 @@ class ReleaseService:
             release = await uow.releases.get(actor.workspace_id, release_id)
             if release is None:
                 raise NotFound(f"release {release_id} not found")
-            if release.status is not ReleaseState.APPROVED:
+            if release.status is not ReleaseState.VALIDATED:
                 raise StateTransitionError(
                     f"release must be validated before approval (state {release.status.value})"
                 )
@@ -408,6 +411,7 @@ class ReleaseService:
                 raise ValidationFailure(
                     "release has failed gates", context={"failed_gates": failed}
                 )
+            release.transition_to(ReleaseState.APPROVED)
             release.approved_by = actor.user_id
             release.evaluation_run_id = evaluation_run_id
             release.version += 1
@@ -643,7 +647,11 @@ class ReleaseService:
             release = await uow.releases.get(actor.workspace_id, release_id)
             if release is None:
                 raise NotFound(f"release {release_id} not found")
-            if release.status not in (ReleaseState.DRAFT, ReleaseState.REJECTED):
+            if release.status not in (
+                ReleaseState.DRAFT,
+                ReleaseState.VALIDATED,
+                ReleaseState.REJECTED,
+            ):
                 raise StateTransitionError(
                     f"a {release.status.value} release cannot be deleted; "
                     "only a draft or rejected one can",

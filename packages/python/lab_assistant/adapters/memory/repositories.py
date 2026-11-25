@@ -85,6 +85,20 @@ def _check_workspace(workspace_id: UUID, row: Any) -> None:
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
+def utc_text(moment: datetime | None) -> str:
+    """A time as ``YYYY-MM-DD HH:MM:SS`` in UTC, as the SQL adapter writes it for a search."""
+    if moment is None:
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def all_words(text: str, words: Sequence[str]) -> bool:
+    folded = text.casefold()
+    return all(word.casefold() in folded for word in words)
+
+
 def newest_page(
     rows: Sequence[Any],
     at: Any,
@@ -1724,13 +1738,34 @@ class _Tasks:
             counts[task.state.value] = counts.get(task.state.value, 0) + 1
         return dict(sorted(counts.items()))
 
-    def _matching(self, workspace_id: UUID, states: Sequence[str], stage: str | None) -> list[Task]:
+    def _matching(
+        self,
+        workspace_id: UUID,
+        states: Sequence[str],
+        stage: str | None,
+        words: Sequence[str] = (),
+    ) -> list[Task]:
+        def text(task: Task) -> str:
+            return " ".join(
+                [
+                    str(task.id),
+                    task.stage.value,
+                    task.state.value,
+                    task.human_action_required or "",
+                    task.error_detail or "",
+                    json.dumps(task.inputs, sort_keys=True, default=str),
+                    utc_text(task.created_at),
+                    utc_text(task.completed_at),
+                ]
+            )
+
         return [
             task
             for task in self._db.tasks.values()
             if task.workspace_id == workspace_id
             and task.state.value in states
             and (stage is None or task.stage.value == stage)
+            and (not words or all_words(text(task), words))
         ]
 
     async def page_tasks(
@@ -1741,20 +1776,26 @@ class _Tasks:
         stage: str | None = None,
         limit: int = 50,
         after: tuple[datetime, UUID] | None = None,
+        words: Sequence[str] = (),
     ) -> list[Task]:
         def key(task: Task) -> tuple[datetime, str]:
             return (task.created_at or datetime.min.replace(tzinfo=UTC), str(task.id))
 
-        tasks = sorted(self._matching(workspace_id, states, stage), key=key)
+        tasks = sorted(self._matching(workspace_id, states, stage, words), key=key)
         if after is not None:
             at, last = after
             tasks = [task for task in tasks if key(task) > (at, str(last))]
         return tasks[:limit]
 
     async def count_tasks(
-        self, workspace_id: UUID, *, states: Sequence[str], stage: str | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        states: Sequence[str],
+        stage: str | None = None,
+        words: Sequence[str] = (),
     ) -> int:
-        return len(self._matching(workspace_id, states, stage))
+        return len(self._matching(workspace_id, states, stage, words))
 
     async def tasks_by_stage(
         self, workspace_id: UUID, *, states: Sequence[str]
@@ -1858,6 +1899,7 @@ class _Audit:
                     str(event.subject_id or ""),
                     event.reason_code or "",
                     json.dumps(event.metadata, sort_keys=True, default=str),
+                    utc_text(event.occurred_at),
                 ]
             ).lower()
 

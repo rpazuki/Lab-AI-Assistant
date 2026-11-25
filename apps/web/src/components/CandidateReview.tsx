@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { LiveStatus } from "@/components/ui/LiveStatus";
-import { Pager } from "@/components/ui/Pager";
-import { Alert, Button, Empty, Input, Panel, StateChip, row, rowList } from "@/components/ui/primitives";
+import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { PageCount, Pager } from "@/components/ui/Pager";
+import { Alert, Button, Empty, Input, StateChip, row, rowList } from "@/components/ui/primitives";
 import { bulkRelevance, candidateFacets, listCandidates, setRelevance } from "@/lib/api";
 import { statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
-import { usePager } from "@/lib/usePager";
+import { PAGE_SIZES, usePager } from "@/lib/usePager";
 import type { Candidate, CandidateFacets, CandidateFilters, Page } from "@/types";
 
 const EMPTY_PAGE: Page<Candidate> = { items: [], next_cursor: null, total: 0 };
@@ -135,7 +136,13 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
   const incomplete = facets !== null && facets.summarised < facets.works;
 
   return (
-    <Panel title="Candidates" flush aside={<LiveStatus {...live} />}>
+    <CollapsiblePanel
+      title="Candidates"
+      storageKey="collections.candidates"
+      flush
+      count={<PageCount pager={pager} shown={page.items.length} total={page.total} label="candidates" />}
+      aside={<LiveStatus {...live} />}
+    >
       <form
         className="space-y-3 border-b border-border px-5 py-3"
         onSubmit={(event) => {
@@ -428,7 +435,8 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
         total={page.total}
         nextCursor={page.next_cursor}
         label="candidates"
+        sizes={PAGE_SIZES}
       />
-    </Panel>
+    </CollapsiblePanel>
   );
 }

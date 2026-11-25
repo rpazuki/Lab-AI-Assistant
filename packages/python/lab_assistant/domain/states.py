@@ -100,6 +100,8 @@ class ReviewState(StrEnum):
 class ReleaseState(StrEnum):
     DRAFT = "draft"
     VALIDATING = "validating"
+    #: Every gate passed; waiting for a person to approve it.
+    VALIDATED = "validated"
     REJECTED = "rejected"
     APPROVED = "approved"
     PUBLISHING = "publishing"

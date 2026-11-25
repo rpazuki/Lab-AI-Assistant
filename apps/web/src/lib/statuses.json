@@ -194,8 +194,9 @@
     "values": {
       "draft": "Assembled from approved material and not yet validated.",
       "validating": "Its gates are being checked.",
+      "validated": "Its gates passed. It waits for a person to approve it; nothing is indexed or served yet.",
       "rejected": "Validation found blockers. Fix them and draft again.",
-      "approved": "Its gates passed. It is indexed for search, then can be published.",
+      "approved": "A person approved it. It is indexed for search, then can be published.",
       "publishing": "Being made the release that Ask and Analytics serve.",
       "published": "The release being served now. It never changes.",
       "superseded": "Was published; a newer release has replaced it. Still available for rollback.",

@@ -65,12 +65,12 @@ describe("The candidate list is read a page at a time", () => {
   it("shows one page and the total, and moves between pages", async () => {
     const user = userEvent.setup();
     render(<CollectionsClient />);
-    expect(await screen.findByText("1–50 of 51 candidates")).toBeInTheDocument();
+    expect(await screen.findAllByText("1–50 of 51 candidates")).toHaveLength(2); // at the top and under the list
     expect(screen.queryByText("Paper 51")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Next page of candidates" }));
     expect(await screen.findByText("Paper 51")).toBeInTheDocument();
-    expect(screen.getByText("51–51 of 51 candidates")).toBeInTheDocument();
+    expect(screen.getAllByText("51–51 of 51 candidates")).toHaveLength(2);
     expect(screen.queryByText("Paper 1")).toBeNull();
     expect(api.listCandidates).toHaveBeenLastCalledWith(
       expect.objectContaining({ after: "work-50", limit: 50 }),
@@ -83,7 +83,7 @@ describe("The candidate list is read a page at a time", () => {
   it("filters on the server and starts again from the first page", async () => {
     const user = userEvent.setup();
     render(<CollectionsClient />);
-    await screen.findByText("1–50 of 51 candidates");
+    await screen.findAllByText("1–50 of 51 candidates");
     await user.click(screen.getByRole("button", { name: "Next page of candidates" }));
     await screen.findByText("Paper 51");
 
@@ -102,6 +102,7 @@ describe("Fetching included papers", () => {
     vi.mocked(api.fetchIncluded).mockResolvedValue({
       requeued: 1425,
       kept_for_a_person: 6467,
+      already_tried: 12,
       planning_task_id: "t1",
     });
     const user = userEvent.setup();
@@ -109,7 +110,32 @@ describe("Fetching included papers", () => {
     await user.click(await screen.findByRole("button", { name: "Fetch included papers" }));
     expect(api.fetchIncluded).toHaveBeenCalledTimes(1);
     expect(
-      await screen.findByText(/1,425 waiting fetches will be tried again; 6,467 can only come from an upload/),
+      await screen.findByText(/1,425 fetches will be tried again\. 12 were already tried .* 6,467 can only come from an upload/),
     ).toBeInTheDocument();
+  });
+});
+
+describe("Long lists on the Collections page", () => {
+  it("say how many rows they hold at the top, set rows per page, and fold away", async () => {
+    vi.mocked(api.listCandidates).mockImplementation(async (options = {}) => ({
+      items: Array.from({ length: Math.min(options.limit ?? 50, 51) }, (_, i) => candidate(i + 1)),
+      next_cursor: (options.limit ?? 50) < 51 ? "more" : null,
+      total: 51,
+    }));
+    const user = userEvent.setup();
+    render(<CollectionsClient />);
+    expect(await screen.findAllByText("1–50 of 51 candidates")).toHaveLength(2);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Rows per page of candidates" }), "10");
+    await waitFor(() => expect(api.listCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 10 })));
+    expect(await screen.findAllByText("1–10 of 51 candidates")).toHaveLength(2);
+
+    const hide = screen.getByRole("button", { name: "Hide Candidates" });
+    expect(hide).toHaveAttribute("aria-expanded", "true");
+    await user.click(hide);
+    expect(screen.getByRole("button", { name: "Show Candidates" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("combobox", { name: "Rows per page of candidates" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Hide Acquisition queue" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide Duplicates and identity conflicts" })).toBeInTheDocument();
   });
 });

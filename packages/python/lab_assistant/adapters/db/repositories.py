@@ -18,6 +18,8 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import String, and_, cast, delete, func, insert, literal_column, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.functions import FunctionElement
 
 from lab_assistant.adapters.db import tables as t
 from lab_assistant.adapters.db.mapper import Mapper, uuid_list, uuid_or_none
@@ -71,6 +73,36 @@ from lab_assistant.domain.workspace import Group, Invitation, Membership, User, 
 
 #: Where a row without a timestamp sorts in a newest-first page: last.
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+class utc_text(FunctionElement):
+    """A timestamp as ``YYYY-MM-DD HH:MM:SS`` in UTC: how the pages show and search a time."""
+
+    type = String()
+    inherit_cache = True
+
+
+@compiles(utc_text, "postgresql")
+def _utc_text_postgres(element: Any, compiler: Any, **kw: Any) -> str:
+    column = compiler.process(element.clauses, **kw)
+    return f"to_char(({column}) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
+
+
+@compiles(utc_text)
+def _utc_text_sqlite(element: Any, compiler: Any, **kw: Any) -> str:
+    column = compiler.process(element.clauses, **kw)
+    return f"strftime('%Y-%m-%d %H:%M:%S', {column})"
+
+
+def _all_words(parts: Sequence[Any], words: Sequence[str]) -> list[Any]:
+    """Conditions that every word appears, case-insensitively, in the joined parts."""
+    joined = func.coalesce(parts[0], "")
+    for part in parts[1:]:
+        joined = joined + " " + func.coalesce(part, "")
+    text = func.lower(joined)
+    return [text.contains(word.lower(), autoescape=True) for word in words]
+
+
 #: A claim whose current revision is in one of these has left the review queue.
 APPROVED_REVIEW_STATES = tuple(state.value for state in ReviewState if state.is_approved)
 
@@ -1948,11 +1980,30 @@ class _Tasks(_Base):
         return {row[0]: row[1] for row in sorted(result.all())}
 
     def _task_conditions(
-        self, workspace_id: UUID, states: Sequence[str], stage: str | None
+        self,
+        workspace_id: UUID,
+        states: Sequence[str],
+        stage: str | None,
+        words: Sequence[str] = (),
     ) -> list[Any]:
-        conditions = [t.tasks.c.workspace_id == workspace_id, t.tasks.c.state.in_(list(states))]
+        tasks = t.tasks
+        conditions = [tasks.c.workspace_id == workspace_id, tasks.c.state.in_(list(states))]
         if stage is not None:
-            conditions.append(t.tasks.c.stage == stage)
+            conditions.append(tasks.c.stage == stage)
+        if words:
+            conditions += _all_words(
+                [
+                    cast(tasks.c.id, String),
+                    tasks.c.stage,
+                    tasks.c.state,
+                    tasks.c.human_action_required,
+                    tasks.c.error_detail,
+                    cast(tasks.c.inputs, String),
+                    utc_text(tasks.c.created_at),
+                    utc_text(tasks.c.completed_at),
+                ],
+                words,
+            )
         return conditions
 
     async def page_tasks(
@@ -1963,9 +2014,10 @@ class _Tasks(_Base):
         stage: str | None = None,
         limit: int = 50,
         after: tuple[datetime, UUID] | None = None,
+        words: Sequence[str] = (),
     ) -> list[Task]:
         tasks = t.tasks
-        conditions = self._task_conditions(workspace_id, states, stage)
+        conditions = self._task_conditions(workspace_id, states, stage, words)
         if after is not None:
             at, last = after
             conditions.append(
@@ -1977,12 +2029,17 @@ class _Tasks(_Base):
         return TASKS.from_rows(result.mappings().all())
 
     async def count_tasks(
-        self, workspace_id: UUID, *, states: Sequence[str], stage: str | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        states: Sequence[str],
+        stage: str | None = None,
+        words: Sequence[str] = (),
     ) -> int:
         result = await self._c.execute(
             select(func.count())
             .select_from(t.tasks)
-            .where(*self._task_conditions(workspace_id, states, stage))
+            .where(*self._task_conditions(workspace_id, states, stage, words))
         )
         return int(result.scalar() or 0)
 
@@ -2108,20 +2165,19 @@ class _Audit(_Base):
         if actions:
             conditions.append(a.c.action.in_(list(actions)))
         if words:
-            # ``||`` on both dialects; every word must appear, as in a table search.
-            parts = [
-                a.c.action,
-                a.c.actor_type,
-                a.c.subject_type,
-                func.coalesce(cast(a.c.subject_id, String), ""),
-                func.coalesce(a.c.reason_code, ""),
-                func.coalesce(cast(a.c.metadata_json, String), ""),
-            ]
-            joined = parts[0]
-            for part in parts[1:]:
-                joined = joined + " " + part
-            text = func.lower(joined)
-            conditions.extend(text.contains(word.lower(), autoescape=True) for word in words)
+            # Every word must appear, as in a table search, the time included.
+            conditions += _all_words(
+                [
+                    a.c.action,
+                    a.c.actor_type,
+                    a.c.subject_type,
+                    cast(a.c.subject_id, String),
+                    a.c.reason_code,
+                    cast(a.c.metadata_json, String),
+                    utc_text(a.c.occurred_at),
+                ],
+                words,
+            )
         return conditions
 
     async def page_events(

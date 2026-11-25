@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -493,18 +493,22 @@ class TaskOrchestrator:
         stage: str | None = None,
         limit: int = 50,
         after: tuple[datetime, UUID] | None = None,
+        words: Sequence[str] = (),
     ) -> dict[str, Any]:
         """One page of a queue the operations page lists, oldest first.
 
         Oldest first because each list is about what has waited: the task at the
         top has waited longest. The cursor is the last row's ``created_at|id``.
+        ``words`` search every task in the queue, not the page (see ``page_tasks``).
         """
         states = QUEUE_STATES[queue]
         async with self._context.uow_factory() as uow:
             tasks = await uow.tasks.page_tasks(
-                workspace_id, states=states, stage=stage, limit=limit, after=after
+                workspace_id, states=states, stage=stage, limit=limit, after=after, words=words
             )
-            total = await uow.tasks.count_tasks(workspace_id, states=states, stage=stage)
+            total = await uow.tasks.count_tasks(
+                workspace_id, states=states, stage=stage, words=words
+            )
         last = tasks[-1] if len(tasks) == limit and tasks[-1].created_at else None
         return {
             "items": [
@@ -513,6 +517,7 @@ class TaskOrchestrator:
                     "stage": task.stage.value,
                     "state": task.state.value,
                     "created_at": task.created_at.isoformat() if task.created_at else None,
+                    "completed_at": task.completed_at.isoformat() if task.completed_at else None,
                     "attempt": task.attempt,
                     "action": task.human_action_required,
                     "error": task.error_detail,

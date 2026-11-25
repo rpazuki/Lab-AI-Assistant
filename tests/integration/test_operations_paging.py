@@ -8,7 +8,7 @@ share a timestamp.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -152,3 +152,35 @@ class TestAuditTrail:
         async with lab.harness.context.uow_factory() as uow:
             counts = await uow.audit.count_events_by_action(lab.ws)
         assert counts["scope_deleted"] == 3
+
+
+class TestSearchingTheLists:
+    async def test_words_and_times_search_every_task_not_the_page(self, lab) -> None:  # noqa: F811
+        ids = await _add_tasks(
+            lab,
+            [(StageName.ACQUISITION, TaskState.AWAITING_USER, m) for m in (0, 61, 125)]
+            + [(StageName.RECONCILIATION, TaskState.AWAITING_USER, 0)],
+        )
+        orchestrator = lab.harness.orchestrator
+        async with lab.harness.context.uow_factory() as uow:
+            later = await uow.tasks.get(lab.ws, ids[2])
+        stamp = later.created_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
+
+        async def search(*words: str) -> tuple[set[str], int]:
+            page = await orchestrator.page_queue(
+                workspace_id=lab.ws, queue=TaskQueue.AWAITING_USER, limit=1, words=words
+            )
+            return {item["task_id"] for item in page["items"]}, page["total"]
+
+        assert (await search("ACQUISITION"))[1] == 3  # every match counted, one shown
+        assert await search(stamp) == ({str(ids[2])}, 1)  # the time as the page shows it
+        assert await search("approve", "reconciliation") == ({str(ids[3])}, 1)
+        assert await search(str(ids[1])) == ({str(ids[1])}, 1)
+
+    async def test_the_audit_log_searches_its_times(self, lab) -> None:  # noqa: F811
+        await TestAuditTrail()._append(lab, AuditAction.SCOPE_APPROVED, "dated")
+        async with lab.harness.context.uow_factory() as uow:
+            [event] = await uow.audit.page_events(lab.ws, words=["dated"], limit=5)
+            stamp = event.occurred_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
+            found = await uow.audit.count_events(lab.ws, words=[stamp, "dated"])
+        assert found == 1

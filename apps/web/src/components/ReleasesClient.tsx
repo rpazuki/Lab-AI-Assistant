@@ -243,7 +243,12 @@ export function ReleasesClient() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    disabled={release.status !== "approved"}
+                    disabled={release.status !== "validated"}
+                    title={
+                      release.status === "validated"
+                        ? undefined
+                        : "Validate it first: a release is approved by a person, once its gates pass"
+                    }
                     onClick={() => run("approve", () => approveRelease(release.id))}
                   >
                     Approve and index
@@ -277,7 +282,9 @@ export function ReleasesClient() {
                   >
                     Build export
                   </Button>
-                  {release.status === "draft" || release.status === "rejected" ? (
+                  {release.status === "draft" ||
+                  release.status === "validated" ||
+                  release.status === "rejected" ? (
                     <DeleteButton
                       what={`release ${release.name}@${release.semantic_version}`}
                       consequence="It was never approved, so nothing was served from it; it is refused while another release, an evaluation run or a conversation points at it."

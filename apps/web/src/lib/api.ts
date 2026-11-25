@@ -459,7 +459,12 @@ export const mergeWorks = (keepWorkId: string, mergeWorkId: string, reasonCode: 
  * have an automatic route back in the queue.
  */
 export const fetchIncluded = () =>
-  request<{ requeued: number; kept_for_a_person: number; planning_task_id: string }>(
+  request<{
+    requeued: number;
+    kept_for_a_person: number;
+    already_tried: number;
+    planning_task_id: string;
+  }>(
     "/acquisition-plans/fetch-included",
     { method: "POST" },
   );
@@ -685,7 +690,10 @@ export const retryTask = (taskId: string) =>
   });
 
 /** One page of a task queue, oldest first; `stage` narrows it to one stage. */
-export const taskQueue = (queue: TaskQueueName, options: PageRequest & { stage?: string | null } = {}) =>
+export const taskQueue = (
+  queue: TaskQueueName,
+  options: PageRequest & { stage?: string | null; q?: string | null } = {},
+) =>
   request<Page<QueueTask>>(`/operations/queue${queryString({ queue, ...options })}`);
 
 /**

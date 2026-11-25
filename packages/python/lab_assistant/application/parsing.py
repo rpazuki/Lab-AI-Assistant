@@ -17,6 +17,7 @@ from lab_assistant.application.acquisition import parse_readiness
 from lab_assistant.application.context import ServiceContext
 from lab_assistant.application.objects import register_object
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
+from lab_assistant.contracts.canonical import fingerprint as make_fingerprint
 from lab_assistant.contracts.errors import ErrorClass, NotFound, PolicyDenied
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.contracts.parsing import NodeKind, RenditionDocument
@@ -92,6 +93,18 @@ class ParsingHandler:
 
         async with context.uow_factory() as uow:
             previous = await uow.renditions.find_parse_run_by_fingerprint(workspace_id, fingerprint)
+            if previous is not None and previous.asset_id != asset.id:
+                # The same bytes under another asset (one file fetched for two
+                # papers): this asset's run is its own, with its own fingerprint.
+                # Reusing the shared one inserted a second row with the same
+                # fingerprint, which the database refused, and the task died.
+                fingerprint = make_fingerprint(
+                    kind="parse_run_for_asset",
+                    parts={"parse_run": fingerprint, "asset_id": str(asset.id)},
+                )
+                previous = await uow.renditions.find_parse_run_by_fingerprint(
+                    workspace_id, fingerprint
+                )
             if previous is not None and previous.status == "succeeded":
                 renditions = await uow.renditions.list_renditions(workspace_id, asset_id=asset_id)
                 existing = next((r for r in renditions if r.parse_run_id == previous.id), None)
@@ -135,7 +148,9 @@ class ParsingHandler:
             )
 
         run = ParseRun(
-            id=context.new_id(),
+            # A retry after a failed or interrupted run takes that run's row: the
+            # fingerprint is unique, so a new row for the same input is refused.
+            id=previous.id if previous is not None else context.new_id(),
             workspace_id=workspace_id,
             asset_id=asset.id,
             parser_id=parser.parser_id,
@@ -146,7 +161,10 @@ class ParsingHandler:
             started_at=context.now(),
         )
         async with context.uow_factory() as uow:
-            await uow.renditions.add_parse_run(run)
+            if previous is not None:
+                await uow.renditions.update_parse_run(run)
+            else:
+                await uow.renditions.add_parse_run(run)
             await uow.commit()
 
         try:

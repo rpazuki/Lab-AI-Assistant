@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { LiveStatus } from "@/components/ui/LiveStatus";
-import { Pager } from "@/components/ui/Pager";
-import { Alert, Button, Empty, Input, Panel } from "@/components/ui/primitives";
+import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { PageCount, Pager } from "@/components/ui/Pager";
+import { Alert, Button, Empty, Input } from "@/components/ui/primitives";
 import {
   applyMergeRule,
   dismissDuplicate,
@@ -13,7 +14,7 @@ import {
   previewMergeRule,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
-import { usePager } from "@/lib/usePager";
+import { PAGE_SIZES, usePager } from "@/lib/usePager";
 import type { DuplicateProposal, MergePlan, MergeRule, Page, PaperSummary } from "@/types";
 
 /** The cautious rule: exact titles, same year, no contradicting authors or DOIs. */
@@ -174,7 +175,12 @@ export function DuplicateReview({
   }
 
   return (
-    <Panel title="Duplicates and identity conflicts" flush aside={<LiveStatus {...live} />}>
+    <CollapsiblePanel
+      title="Duplicates and identity conflicts"
+      storageKey="collections.duplicates"
+      flush
+      aside={<LiveStatus {...live} />}
+    >
       <div className="space-y-3 border-b border-border px-5 py-4">
         {conflicts > 0 ? (
           <Alert tone="danger">
@@ -320,6 +326,7 @@ export function DuplicateReview({
 
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-2.5 text-sm">
         <h3 className="font-semibold text-heading">Pairs to review</h3>
+        <PageCount pager={pager} shown={pairs.items.length} total={pairs.total} label="duplicate pairs" />
         <label className="ml-auto flex items-center gap-1.5 text-xs text-muted">
           Similarity at least
           <select
@@ -374,7 +381,8 @@ export function DuplicateReview({
         total={pairs.total}
         nextCursor={pairs.next_cursor}
         label="duplicate pairs"
+        sizes={PAGE_SIZES}
       />
-    </Panel>
+    </CollapsiblePanel>
   );
 }

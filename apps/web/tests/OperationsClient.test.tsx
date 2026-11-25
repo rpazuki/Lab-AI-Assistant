@@ -81,20 +81,41 @@ describe("the operations page", () => {
     const user = userEvent.setup();
     render(<OperationsClient />);
     expect(await screen.findByText("1–10 of 12 waiting tasks")).toBeInTheDocument();
-    expect(api.taskQueue).toHaveBeenCalledWith("waiting", { stage: null, after: null, limit: 10 });
+    expect(api.taskQueue).toHaveBeenCalledWith("waiting", { stage: null, after: null, limit: 10, q: null });
 
     await user.click(screen.getByRole("button", { name: "Next page of waiting tasks" }));
     expect(await screen.findByText("11–12 of 12 waiting tasks")).toBeInTheDocument();
-    expect(api.taskQueue).toHaveBeenCalledWith("waiting", { stage: null, after: "c10", limit: 10 });
+    expect(api.taskQueue).toHaveBeenCalledWith("waiting", { stage: null, after: "c10", limit: 10, q: null });
 
     // Choosing a stage starts again at its first page.
     const stage = screen.getByRole("combobox", { name: "Waiting tasks in stage" });
     expect(within(stage).getByRole("option", { name: /acquisition \(3, oldest/ })).toBeInTheDocument();
     await user.selectOptions(stage, "acquisition");
     await waitFor(() =>
-      expect(api.taskQueue).toHaveBeenCalledWith("waiting", { stage: "acquisition", after: null, limit: 10 }),
+      expect(api.taskQueue).toHaveBeenCalledWith("waiting", { stage: "acquisition", after: null, limit: 10, q: null }),
     );
     expect(await screen.findByText("3 waiting tasks")).toBeInTheDocument();
+  });
+
+  it("gives every task list a When column and a search the server runs, dates included", async () => {
+    const user = userEvent.setup();
+    render(<OperationsClient />);
+    await screen.findByText("1–10 of 12 waiting tasks");
+    const waiting = screen.getAllByRole("table")[0]!;
+    expect(within(waiting).getByRole("columnheader", { name: /When/ })).toBeInTheDocument();
+    expect(within(waiting).getAllByText("2026-11-01 00:00 UTC").length).toBeGreaterThan(0);
+
+    await user.type(screen.getByRole("searchbox", { name: "Search dead letters" }), "2026-11-01{Enter}");
+    await waitFor(() =>
+      expect(api.taskQueue).toHaveBeenCalledWith("dead_letter", {
+        stage: null,
+        after: null,
+        limit: 10,
+        q: "2026-11-01",
+      }),
+    );
+    expect(screen.getByRole("searchbox", { name: "Search waiting tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "Search tasks waiting for a person" })).toBeInTheDocument();
   });
 
   it("asks the server for each page of the audit log and searches every event", async () => {

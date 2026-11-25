@@ -536,7 +536,12 @@ async def test_full_lifecycle_acceptance_scenario() -> None:
 
     report = await releases.validate(steward_actor, release_id=release.id)
     assert report.passed, report.failures
+    # Passing validation is not approval: it waits, unapproved, for a person.
+    async with context.uow_factory() as uow:
+        validated = await uow.releases.get(workspace.id, release.id)
+    assert validated.status is ReleaseState.VALIDATED and validated.approved_by is None
     _approved, next_tasks = await releases.approve(steward_actor, release_id=release.id)
+    assert _approved.status is ReleaseState.APPROVED and _approved.approved_by == steward.id
     await harness.orchestrator.submit_requests(
         next_tasks, workspace_id=workspace.id, actor_id=steward.id
     )

@@ -28,8 +28,12 @@ __all__ = [
 #: The only legal state transitions (data model §13.1).
 _ALLOWED_TRANSITIONS: dict[ReleaseState, frozenset[ReleaseState]] = {
     ReleaseState.DRAFT: frozenset({ReleaseState.VALIDATING, ReleaseState.WITHDRAWN}),
+    # Passing validation is not approval: a person approves a validated release.
     ReleaseState.VALIDATING: frozenset(
-        {ReleaseState.APPROVED, ReleaseState.REJECTED, ReleaseState.DRAFT}
+        {ReleaseState.VALIDATED, ReleaseState.REJECTED, ReleaseState.DRAFT}
+    ),
+    ReleaseState.VALIDATED: frozenset(
+        {ReleaseState.APPROVED, ReleaseState.VALIDATING, ReleaseState.WITHDRAWN}
     ),
     ReleaseState.REJECTED: frozenset({ReleaseState.DRAFT, ReleaseState.WITHDRAWN}),
     ReleaseState.APPROVED: frozenset({ReleaseState.PUBLISHING, ReleaseState.REJECTED}),

@@ -155,7 +155,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "Sorting and searching tables",
         about: [
           "Every table can be sorted by any of its columns. A table of events or anything dated starts newest first; others start in a useful order, such as the most-used first.",
-          "A table with more than ten rows shows a search box above it. Only the rows containing every word you type stay, and the count beside the box says how many match. A long list is shown a page at a time, with **Previous** and **Next** and a count such as “51–100 of 3,420”; there, sorting by a header orders the page on screen, and a search box with a **Search** button looks through every row, not only the page.",
+          "A table with more than ten rows shows a search box above it. Only the rows containing every word you type stay, and the count beside the box says how many match. A long list is shown a page at a time, with **Previous** and **Next** and a count such as “51–100 of 3,420”, which some lists also show at the top beside a **Rows** menu (10 to 200 a page). There, sorting by a header orders the page on screen, and a search box with a **Search** button looks through every row, not only the page. Times are shown and searched in UTC, as `2026-11-23 16:17`: type a day, or a day and a time. A long panel can be folded to its title with the arrow beside it, and stays folded on this browser.",
         ],
         howTos: [
           {
@@ -628,7 +628,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Under **Acquisition queue**, select **Fetch included papers**.",
               "Every included paper without a plan is planned, and every fetch that is waiting or ran out of retries, and still has an open route, is tried again. The message says how many were queued and how many can only come from an upload.",
             ],
-            note: "Asking twice plans nothing twice: a paper that already has a plan is skipped.",
+            note: "Pressing it again plans only papers included since, and retries only fetches that ran out of retries on a fault or that the current fetcher has not tried. A paper the current fetcher already tried and handed to a person stays waiting, so the same sources are not asked the same question again; upload it instead.",
           },
           {
             title: "How to upload a paper the system could not fetch",
@@ -832,7 +832,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "Drafting, validating and approving",
         about: [
           "A release is a frozen, citable snapshot of the collection: its papers, their parsed texts and the reviewed claims. Ask answers only from the release being served, so nothing changes under a reader's feet.",
-          "A draft is validated against its gates (for example, every claim reviewed); approving it builds the search index.",
+          "A draft is validated against its gates (for example, every claim reviewed). Passing them makes it **validated**, not approved: a person approves it with **Approve and index**, which records who approved it and builds the search index. A draft, validated or rejected release can be deleted; once approved it is indexed and kept.",
         ],
         howTos: [
           {
@@ -841,7 +841,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             steps: [
               "Select **Draft from approved material**.",
               "Select **Validate** on the draft and read its gate results.",
-              "When the gates pass, select **Approve and index**.",
+              "When the gates pass it shows as validated. Select **Approve and index** to approve it.",
             ],
           },
         ],
@@ -1099,7 +1099,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         statuses: ["task"],
         title: "The task queue",
         about: [
-          "Discovery, acquisition, parsing, extraction, indexing and evaluation all run as tasks on background workers. The tiles count tasks by state. **Waiting longest** lists the tasks ready to run or being run, the one that has waited longest first; its stage menu shows how many wait in each stage and for how long, so you can see where work is backing up. **Waiting for a person** lists tasks that need a decision. Every list shows 10 tasks at a time, with **Previous** and **Next**, and counts every task, not only those on screen. The page refreshes itself and stays on the page you are reading.",
+          "Discovery, acquisition, parsing, extraction, indexing and evaluation all run as tasks on background workers. The tiles count tasks by state. **Waiting longest** lists the tasks ready to run or being run, the one that has waited longest first; its stage menu shows how many wait in each stage and for how long, so you can see where work is backing up. **Waiting for a person** lists tasks that need a decision. Each list has a **When** column (in UTC) and a search over every task in it: words, a task id, or a date such as 2026-11-23. Every list shows 10 tasks at a time, with **Previous** and **Next**, and counts every task, not only those on screen. The page refreshes itself and stays on the page you are reading.",
           "A task that fails is retried automatically; one that keeps failing becomes a dead letter and stops, so a broken input never loops forever.",
         ],
         howTos: [

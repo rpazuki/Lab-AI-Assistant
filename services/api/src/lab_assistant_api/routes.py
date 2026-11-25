@@ -1556,13 +1556,24 @@ async def list_plans(
             actor.workspace_id, status=status, limit=limit, after_id=after
         )
         status_counts = await uow.assets.count_plans_by_status(actor.workspace_id)
+        # Which paper each plan is for: a plan id alone names nothing a person knows.
+        summaries = await uow.works.get_summaries(
+            actor.workspace_id, list(dict.fromkeys(plan.work_id for plan in plans))
+        )
         items = []
         for plan in plans:
             attempts = await uow.assets.list_attempts(actor.workspace_id, plan_id=plan.id)
+            identifiers = await uow.works.list_identifiers(actor.workspace_id, plan.work_id)
             items.append(
                 {
                     "plan_id": str(plan.id),
                     "work_id": str(plan.work_id),
+                    "paper": paper(plan.work_id, summaries.get(plan.work_id)),
+                    "identifiers": [
+                        {"scheme": i.scheme.value, "value": i.value_display}
+                        for i in identifiers
+                        if i.scheme.is_strong
+                    ],
                     "status": plan.status,
                     "routes": [route.value for route in plan.route_order],
                     "manifestation_ids": [str(i) for i in plan.manifestation_ids],
@@ -2549,8 +2560,13 @@ async def task_queue(
     stage: Annotated[StageName | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     after: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict[str, Any]:
-    """One page of waiting, awaiting-a-person or dead-lettered tasks, oldest first."""
+    """One page of waiting, awaiting-a-person or dead-lettered tasks, oldest first.
+
+    ``q`` keeps tasks holding every word in their id, stage, state, needed action,
+    last error, inputs, or times (``YYYY-MM-DD HH:MM`` in UTC).
+    """
     actor.require(Capability.VIEW_OPERATIONS)
     return await container.orchestrator.page_queue(
         workspace_id=actor.workspace_id,
@@ -2558,6 +2574,7 @@ async def task_queue(
         stage=stage.value if stage else None,
         limit=limit,
         after=_history_cursor(after),
+        words=(q or "").split(),
     )
 
 

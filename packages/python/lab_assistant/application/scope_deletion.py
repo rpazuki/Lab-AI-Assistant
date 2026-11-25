@@ -49,7 +49,7 @@ from lab_assistant.domain.workspace import Capability
 __all__ = ["ScopeDeletionPlan", "ScopeDeletionService"]
 
 #: A release in one of these states has never been indexed or served.
-_DELETABLE_RELEASES = frozenset({ReleaseState.DRAFT, ReleaseState.REJECTED})
+_DELETABLE_RELEASES = frozenset({ReleaseState.DRAFT, ReleaseState.VALIDATED, ReleaseState.REJECTED})
 
 #: Task inputs that name something a scope deletion removes.
 _TASK_REFERENCES = (

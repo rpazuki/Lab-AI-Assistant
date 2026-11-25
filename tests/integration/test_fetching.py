@@ -19,6 +19,7 @@ from test_scope_deletion import DeletionLab
 from lab_assistant.adapters.connectors.fake import FakeAcquisitionConnector
 from lab_assistant.adapters.db.engine import create_schema, make_engine
 from lab_assistant.adapters.db.repositories import sql_uow_factory
+from lab_assistant.application.acquisition import IMPLEMENTATION_VERSION as FETCHER_VERSION
 from lab_assistant.application.acquisition import AcquisitionHandler, AcquisitionPlanningHandler
 from lab_assistant.application.fetching import FetchQueue
 from lab_assistant.config import LabEnv, Settings
@@ -30,7 +31,13 @@ from lab_assistant.contracts.connector import (
 from lab_assistant.contracts.errors import ErrorClass
 from lab_assistant.contracts.policy import PolicyAction
 from lab_assistant.contracts.stage import StageCommand, StageName, StageStatus
-from lab_assistant.domain.assets import AcquisitionPlan, AcquisitionRoute, Manifestation
+from lab_assistant.domain.assets import (
+    AcquisitionAttempt,
+    AcquisitionOutcome,
+    AcquisitionPlan,
+    AcquisitionRoute,
+    Manifestation,
+)
 from lab_assistant.domain.identity import Work, WorkIdentifier, WorkKind
 from lab_assistant.domain.observation import (
     Predicate,
@@ -80,6 +87,10 @@ ACTIONS = frozenset(
 )
 
 
+#: One PDF that names both twin papers, fetched for each of them.
+TWIN = compressed_pdf("doi:10.9/twin-a and doi:10.9/twin-b")
+
+
 @dataclass
 class Recording(FakeAcquisitionConnector):
     """The fake acquirer, remembering every request it was given."""
@@ -103,6 +114,9 @@ async def lab(request, tmp_path):
             "doi:10.9/licensed": (compressed_pdf("doi:10.9/licensed"), "application/pdf", None),
             "doi:10.9/unlicensed": (compressed_pdf("doi:10.9/unlicensed"), "application/pdf", None),
             "pmcid:PMC77": (compressed_pdf("PMCID: PMC77"), "application/pdf", None),
+            # One file served for two papers: the same bytes under two assets.
+            "doi:10.9/twin-a": (TWIN, "application/pdf", None),
+            "doi:10.9/twin-b": (TWIN, "application/pdf", None),
         },
         failures={"doi:10.9/down": ErrorClass.SOURCE_UNAVAILABLE},
     )
@@ -309,6 +323,36 @@ class TestWhatTheFetchIsTold:
         assert (IdentifierScheme.PMCID, "PMC77") in sent
 
 
+class TestParsingWhatWasFetched:
+    async def test_the_same_bytes_for_two_papers_parse_twice_without_a_clash(self, lab) -> None:
+        """Both assets once shared one parse fingerprint, and the second insert died."""
+        from lab_assistant.application.parsing import ParsingHandler
+
+        assets = []
+        for doi in ("10.9/twin-a", "10.9/twin-b"):
+            plan = await lab.plan(await lab.paper(doi, licence="cc-by-4.0"), OPEN)
+            assert (await lab.fetch(plan)).status is StageStatus.SUCCEEDED
+            async with lab.harness.context.uow_factory() as uow:
+                [asset] = await uow.assets.list_assets(lab.ws, work_id=plan.work_id)
+            assets.append(asset)
+        assert assets[0].sha256 == assets[1].sha256
+
+        parse = ParsingHandler(lab.harness.context)
+        for asset in assets:
+            result = await parse.execute(
+                StageCommand(
+                    stage=StageName.PARSING,
+                    workspace_id=lab.ws,
+                    actor_id=lab.actor.user_id,
+                    inputs={"asset_id": str(asset.id)},
+                )
+            )
+            assert result.status in (StageStatus.SUCCEEDED, StageStatus.DEGRADED), result
+        async with lab.harness.context.uow_factory() as uow:
+            for asset in assets:
+                assert await uow.renditions.list_renditions(lab.ws, asset_id=asset.id)
+
+
 class TestAScannerThatCannotRun:
     async def test_leaves_the_file_unscanned_not_infected(self, lab) -> None:
         """A missing scanner reported "not clean", which quarantined every file."""
@@ -391,10 +435,56 @@ class TestTryingAgain:
                 tasks[plan.id] = task.id
             await uow.commit()
 
-        done = await FetchQueue(context, lab.harness.orchestrator).retry_waiting(lab.actor)
-        assert done == {"requeued": 1, "kept_for_a_person": 1}
+        queue = FetchQueue(context, lab.harness.orchestrator)
+        done = await queue.retry_waiting(lab.actor)
+        assert done == {"requeued": 1, "kept_for_a_person": 1, "already_tried": 0}
         async with context.uow_factory() as uow:
             again = await uow.tasks.get(lab.ws, tasks[automatic.id])
             kept = await uow.tasks.get(lab.ws, tasks[upload_only.id])
         assert again.state is TaskState.READY and again.attempt == 0
         assert kept.state is TaskState.AWAITING_USER
+
+        # The current fetcher tries it, every route fails, and it waits for a person.
+        async with context.uow_factory() as uow:
+            await uow.assets.add_attempt(
+                AcquisitionAttempt(
+                    id=context.new_id(),
+                    workspace_id=lab.ws,
+                    acquisition_plan_id=automatic.id,
+                    manifestation_id=automatic.manifestation_ids[0],
+                    connector_id="unpaywall",
+                    route=AcquisitionRoute.OPEN_REPOSITORY,
+                    outcome=AcquisitionOutcome.NOT_FOUND,
+                    worker_version=FETCHER_VERSION,
+                    requested_at=context.now(),
+                )
+            )
+            again.state = TaskState.AWAITING_USER
+            again.version += 1
+            await uow.tasks.update(again)
+            await uow.commit()
+        # A second press sends nothing to the sources: the answer would be the same.
+        assert await queue.retry_waiting(lab.actor) == {
+            "requeued": 0,
+            "kept_for_a_person": 1,
+            "already_tried": 1,
+        }
+
+        # But a source that was rate-limiting gave no answer: that paper is tried again.
+        async with context.uow_factory() as uow:
+            await uow.assets.add_attempt(
+                AcquisitionAttempt(
+                    id=context.new_id(),
+                    workspace_id=lab.ws,
+                    acquisition_plan_id=automatic.id,
+                    manifestation_id=automatic.manifestation_ids[0],
+                    connector_id="unpaywall",
+                    route=AcquisitionRoute.OPEN_REPOSITORY,
+                    attempt_number=2,
+                    outcome=AcquisitionOutcome.RATE_LIMITED_RETRYABLE,
+                    worker_version=FETCHER_VERSION,
+                    requested_at=context.now(),
+                )
+            )
+            await uow.commit()
+        assert (await queue.retry_waiting(lab.actor))["requeued"] == 1

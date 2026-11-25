@@ -8774,7 +8774,7 @@
     },
     "/api/v1/operations/queue": {
       "get": {
-        "description": "One page of waiting, awaiting-a-person or dead-lettered tasks, oldest first.",
+        "description": "One page of waiting, awaiting-a-person or dead-lettered tasks, oldest first.\n\n``q`` keeps tasks holding every word in their id, stage, state, needed action,\nlast error, inputs, or times (``YYYY-MM-DD HH:MM`` in UTC).",
         "operationId": "task_queue_api_v1_operations_queue_get",
         "parameters": [
           {
@@ -8827,6 +8827,23 @@
                 }
               ],
               "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
             }
           },
           {

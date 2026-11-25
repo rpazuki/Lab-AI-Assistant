@@ -7,7 +7,8 @@ import { CandidateReview } from "@/components/CandidateReview";
 import { CollectionSetup } from "@/components/CollectionSetup";
 import { DuplicateReview } from "@/components/DuplicateReview";
 import { LiveStatus } from "@/components/ui/LiveStatus";
-import { Pager } from "@/components/ui/Pager";
+import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { PageCount, Pager } from "@/components/ui/Pager";
 import {
   Alert,
   Button,
@@ -22,8 +23,16 @@ import {
 import { assistedUpload, fetchIncluded, listPlans } from "@/lib/api";
 import { statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
-import { usePager } from "@/lib/usePager";
+import { PAGE_SIZES, usePager } from "@/lib/usePager";
 import type { AcquisitionPlan, Page } from "@/types";
+
+/** A link for an identifier a person can follow. */
+function identifierLink(scheme: string, value: string): string | null {
+  if (scheme === "doi") return `https://doi.org/${value}`;
+  if (scheme === "pmid") return `https://pubmed.ncbi.nlm.nih.gov/${value}/`;
+  if (scheme === "pmcid") return `https://www.ncbi.nlm.nih.gov/pmc/articles/${value}/`;
+  return null;
+}
 
 /** Plans the worker is still fetching: nothing has answered yet. */
 const FETCHING = new Set(["unplanned", "planned"]);
@@ -124,7 +133,20 @@ export function CollectionsClient() {
 
       <CandidateReview live={live.live} />
 
-      <Panel title="Acquisition queue" flush aside={<LiveStatus {...live} />}>
+      <CollapsiblePanel
+        title="Acquisition queue"
+        storageKey="collections.acquisition"
+        flush
+        count={
+          <PageCount
+            pager={planPager}
+            shown={plans.items.length}
+            total={plans.total}
+            label="acquisition plans"
+          />
+        }
+        aside={<LiveStatus {...live} />}
+      >
         {notice ? (
           <div className="px-5 pt-3">
             <Alert tone="success" role="status">
@@ -143,8 +165,10 @@ export function CollectionsClient() {
               try {
                 const done = await fetchIncluded();
                 setNotice(
-                  `Planning queued for every included paper without a plan. ` +
-                    `${done.requeued.toLocaleString()} waiting fetches will be tried again; ` +
+                  `Planning queued for any included paper without a plan. ` +
+                    `${done.requeued.toLocaleString()} fetches will be tried again. ` +
+                    `${done.already_tried.toLocaleString()} were already tried by the current fetcher ` +
+                    `and stay with a person; ` +
                     `${done.kept_for_a_person.toLocaleString()} can only come from an upload.`,
                 );
                 setError(null);
@@ -158,6 +182,12 @@ export function CollectionsClient() {
           >
             Fetch included papers
           </Button>
+          <span className="max-w-xl text-xs text-muted">
+            Plans included papers that have no plan, and tries again the fetches that failed on a
+            fault or that the current fetcher has not tried. Pressing it again does nothing twice: a
+            planned paper is not planned again, and a paper the current fetcher already tried stays
+            with a person.
+          </span>
           <StatusFilter
             label="Status"
             kind="acquisition"
@@ -177,7 +207,7 @@ export function CollectionsClient() {
           {plans.items.map((plan) => (
             <li key={plan.plan_id} className={row}>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-xs">{plan.work_id.slice(0, 8)}</span>
+                <strong className="text-heading">{plan.paper?.title ?? "Untitled"}</strong>
                 <StateChip state={plan.status} kind="acquisition" />
                 <span className="text-xs text-muted">
                   routes: {plan.routes.join(" → ")}
@@ -188,6 +218,31 @@ export function CollectionsClient() {
                   </Button>
                 ) : null}
               </div>
+              <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-muted">
+                {[plan.paper?.journal, plan.paper?.year, plan.paper?.first_author]
+                  .filter(Boolean)
+                  .join(" · ")}
+                {(plan.identifiers ?? []).map((identifier) => {
+                  const href = identifierLink(identifier.scheme, identifier.value);
+                  const text = `${identifier.scheme.toUpperCase()} ${identifier.value}`;
+                  return href ? (
+                    <a
+                      key={text}
+                      className="font-mono text-link underline hover:no-underline"
+                      href={href}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {text}
+                    </a>
+                  ) : (
+                    <span key={text} className="font-mono">
+                      {text}
+                    </span>
+                  );
+                })}
+                <span className="font-mono">paper {plan.work_id.slice(0, 8)}</span>
+              </p>
               {plan.attempts.length > 0 ? (
                 <ul className="mt-2 space-y-0.5 text-xs text-muted">
                   {plan.attempts.map((attempt, index) => (
@@ -209,8 +264,9 @@ export function CollectionsClient() {
           total={plans.total}
           nextCursor={plans.next_cursor}
           label="acquisition plans"
+          sizes={PAGE_SIZES}
         />
-      </Panel>
+      </CollapsiblePanel>
 
       <BulkImport
         // The plans on the page above: filter the queue by status to choose from more.
@@ -238,7 +294,7 @@ function AssistedUploadForm({ plan, onDone }: { plan: AcquisitionPlan; onDone: (
   const [result, setResult] = useState<string | null>(null);
 
   return (
-    <Panel title={`Assisted acquisition — plan ${plan.plan_id.slice(0, 8)}`}>
+    <Panel title={`Assisted acquisition — ${plan.paper?.title ?? `paper ${plan.work_id.slice(0, 8)}`}`}>
       <Alert tone="info" className="mb-4">
         Automation stopped because no permitted route returned this content. Uploading an
         authorised copy runs the same integrity, malware, identity, and rights checks as an

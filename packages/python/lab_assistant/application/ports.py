@@ -1075,12 +1075,23 @@ class TaskRepository(Protocol):
         stage: str | None = None,
         limit: int = 50,
         after: tuple[datetime, UUID] | None = None,
+        words: Sequence[str] = (),
     ) -> list[Task]:
-        """Tasks in these states, oldest first, after the ``(created_at, id)`` cursor."""
+        """Tasks in these states, oldest first, after the ``(created_at, id)`` cursor.
+
+        ``words`` must all appear, case-insensitively, in the task's id, stage,
+        state, needed action, last error, inputs, or its times as
+        ``YYYY-MM-DD HH:MM:SS`` in UTC.
+        """
         ...
 
     async def count_tasks(
-        self, workspace_id: UUID, *, states: Sequence[str], stage: str | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        states: Sequence[str],
+        stage: str | None = None,
+        words: Sequence[str] = (),
     ) -> int: ...
     async def tasks_by_stage(
         self, workspace_id: UUID, *, states: Sequence[str]

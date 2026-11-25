@@ -5,6 +5,7 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { InfoTip } from "@/components/ui/InfoTip";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Pager } from "@/components/ui/Pager";
+import { ServerSearch } from "@/components/ui/ServerSearch";
 import { Alert, Button, Empty, Input, Panel, StateChip } from "@/components/ui/primitives";
 import { SortHeader } from "@/components/ui/table";
 import { listAuditEvents, retryTask, taskQueue, taskSnapshot } from "@/lib/api";
@@ -12,6 +13,7 @@ import { describeStatus } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
+import { utcWhen } from "@/lib/when";
 import type { AuditEvent, Page, QueueTask, TaskQueueName, TaskSnapshot } from "@/types";
 
 /** The task states worth a tile, in the order work moves through them. */
@@ -60,12 +62,21 @@ function useQueuePage(queue: TaskQueueName, tick: number, stage: string | null =
   const pager = usePager(QUEUE_PAGE);
   const [page, setPage] = useState<Page<QueueTask> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { cursor, pageSize } = pager;
+  const [query, setQuery] = useState("");
+  const { cursor, pageSize, reset } = pager;
+  // A search runs on the server over every task in the queue, from the first page.
+  const search = useCallback(
+    (words: string) => {
+      setQuery(words);
+      reset();
+    },
+    [reset],
+  );
   useEffect(() => {
     // Nothing until the page's first refresh, which moves `tick` to 1.
     if (tick === 0) return;
     let live = true;
-    taskQueue(queue, { stage, after: cursor, limit: pageSize })
+    taskQueue(queue, { stage, after: cursor, limit: pageSize, q: query || null })
       .then((next) => {
         if (!live) return;
         setPage(next);
@@ -77,8 +88,21 @@ function useQueuePage(queue: TaskQueueName, tick: number, stage: string | null =
     return () => {
       live = false;
     };
-  }, [queue, stage, cursor, pageSize, tick]);
-  return { pager, page, error };
+  }, [queue, stage, cursor, pageSize, tick, query]);
+  return { pager, page, error, query, search };
+}
+
+/** The search box above a task list. */
+function QueueSearch({ label, query, onSearch }: { label: string; query: string; onSearch: (q: string) => void }) {
+  return (
+    <ServerSearch
+      label={label}
+      placeholder="Words, a task id, or a date such as 2026-11-23"
+      query={query}
+      onSearch={onSearch}
+      className="border-b border-border px-5 py-2.5"
+    />
+  );
 }
 
 function QueueError({ error }: { error: string | null }) {
@@ -194,12 +218,13 @@ export function OperationsClient() {
 /** Tasks ready to run or held by a worker, the one that has waited longest first. */
 function WaitingLongest({ stages, tick }: { stages: TaskSnapshot["waiting_by_stage"]; tick: number }) {
   const [stage, setStage] = useState<string>("");
-  const { pager, page, error } = useQueuePage("waiting", tick, stage || null);
+  const { pager, page, error, query, search } = useQueuePage("waiting", tick, stage || null);
   const table = useTable(page?.items ?? [], {
     columns: {
       task: (task) => task.task_id,
       stage: (task) => task.stage,
       state: (task) => task.state,
+      when: (task) => task.created_at,
       since: (task) => task.created_at,
     },
   });
@@ -228,11 +253,12 @@ function WaitingLongest({ stages, tick }: { stages: TaskSnapshot["waiting_by_sta
       }
     >
       <QueueError error={error} />
+      <QueueSearch label="waiting tasks" query={query} onSearch={search} />
       {page === null ? (
         <p className="px-5 py-3 text-sm text-muted">Loading…</p>
       ) : page.total === 0 ? (
         <div className="px-5 py-3">
-          <Empty>Nothing is waiting to run.</Empty>
+          <Empty>{query ? "No waiting task holds every word." : "Nothing is waiting to run."}</Empty>
         </div>
       ) : (
         <table className="data-table">
@@ -247,6 +273,9 @@ function WaitingLongest({ stages, tick }: { stages: TaskSnapshot["waiting_by_sta
               <SortHeader table={table} column="state">
                 State
               </SortHeader>
+              <SortHeader table={table} column="when">
+                When
+              </SortHeader>
               <SortHeader table={table} column="since" numeric>
                 Waiting
               </SortHeader>
@@ -260,6 +289,7 @@ function WaitingLongest({ stages, tick }: { stages: TaskSnapshot["waiting_by_sta
                 <td>
                   <StateChip state={task.state} kind="task" />
                 </td>
+                <td className="whitespace-nowrap text-xs text-muted">{utcWhen(task.created_at)}</td>
                 <td className="numeric" title={task.created_at ?? undefined}>
                   {ago(task.created_at)}
                 </td>
@@ -277,23 +307,25 @@ function WaitingLongest({ stages, tick }: { stages: TaskSnapshot["waiting_by_sta
 
 /** Tasks stopped until a person decides, the longest-waiting first. */
 function WaitingForPerson({ tick }: { tick: number }) {
-  const { pager, page, error } = useQueuePage("awaiting_user", tick);
+  const { pager, page, error, query, search } = useQueuePage("awaiting_user", tick);
   const table = useTable(page?.items ?? [], {
     columns: {
       task: (task) => task.task_id,
       stage: (task) => task.stage,
       needs: (task) => task.action,
+      when: (task) => task.created_at,
       since: (task) => task.created_at,
     },
   });
   return (
     <Panel title="Waiting for a person" flush>
       <QueueError error={error} />
+      <QueueSearch label="tasks waiting for a person" query={query} onSearch={search} />
       {page === null ? (
         <p className="px-5 py-3 text-sm text-muted">Loading…</p>
       ) : page.total === 0 ? (
         <div className="px-5 py-3">
-          <Empty>No task needs a decision.</Empty>
+          <Empty>{query ? "No task waiting for a person holds every word." : "No task needs a decision."}</Empty>
         </div>
       ) : (
         <table className="data-table">
@@ -308,6 +340,9 @@ function WaitingForPerson({ tick }: { tick: number }) {
               <SortHeader table={table} column="needs">
                 Needs
               </SortHeader>
+              <SortHeader table={table} column="when">
+                When
+              </SortHeader>
               <SortHeader table={table} column="since" numeric>
                 Waiting
               </SortHeader>
@@ -319,6 +354,7 @@ function WaitingForPerson({ tick }: { tick: number }) {
                 <td className="font-mono text-xs">{task.task_id.slice(0, 8)}</td>
                 <td className="font-mono text-xs">{task.stage}</td>
                 <td>{task.action ?? "—"}</td>
+                <td className="whitespace-nowrap text-xs text-muted">{utcWhen(task.created_at)}</td>
                 <td className="numeric" title={task.created_at ?? undefined}>
                   {ago(task.created_at)}
                 </td>
@@ -349,18 +385,24 @@ function DeadLetters({
   busy: string | null;
   onRetry: (taskId: string) => void;
 }) {
-  const { pager, page, error } = useQueuePage("dead_letter", tick);
+  const { pager, page, error, query, search } = useQueuePage("dead_letter", tick);
   const table = useTable(page?.items ?? [], {
-    columns: { task: (task) => task.task_id, stage: (task) => task.stage, error: (task) => task.error },
+    columns: {
+      task: (task) => task.task_id,
+      stage: (task) => task.stage,
+      when: (task) => task.completed_at ?? task.created_at,
+      error: (task) => task.error,
+    },
   });
   return (
     <Panel title="Dead letters" flush>
       <QueueError error={error} />
+      <QueueSearch label="dead letters" query={query} onSearch={search} />
       {page === null ? (
         <p className="px-5 py-3 text-sm text-muted">Loading…</p>
       ) : page.total === 0 ? (
         <div className="px-5 py-3">
-          <Empty>No task has exhausted its retries.</Empty>
+          <Empty>{query ? "No dead letter holds every word." : "No task has exhausted its retries."}</Empty>
         </div>
       ) : (
         <table className="data-table">
@@ -371,6 +413,9 @@ function DeadLetters({
               </SortHeader>
               <SortHeader table={table} column="stage">
                 Stage
+              </SortHeader>
+              <SortHeader table={table} column="when">
+                When
               </SortHeader>
               <SortHeader table={table} column="error">
                 Last error
@@ -385,6 +430,12 @@ function DeadLetters({
               <tr key={task.task_id}>
                 <td className="font-mono text-xs">{task.task_id.slice(0, 8)}</td>
                 <td className="font-mono text-xs">{task.stage}</td>
+                <td
+                  className="whitespace-nowrap text-xs text-muted"
+                  title={task.completed_at ? "When it ran out of retries" : "When it was queued"}
+                >
+                  {utcWhen(task.completed_at ?? task.created_at)}
+                </td>
                 <td className="max-w-md break-words text-xs text-danger-strong">{task.error ?? "—"}</td>
                 <td>
                   <div className="flex justify-end">
@@ -486,7 +537,7 @@ function AuditLog({ tick }: { tick: number }) {
         <Input
           type="search"
           aria-label="Search audit events"
-          placeholder="Words in the action, subject or details"
+          placeholder="Words in the action, subject or details, or a date such as 2026-11-23"
           className="w-full max-w-xs"
           value={typed}
           onChange={(event) => setTyped(event.target.value)}
@@ -546,7 +597,7 @@ function AuditLog({ tick }: { tick: number }) {
               {table.rows.map((event) => (
                 <tr key={event.id}>
                   <td className="whitespace-nowrap text-xs text-muted" title={event.occurred_at}>
-                    {new Date(event.occurred_at).toLocaleString()}
+                    {utcWhen(event.occurred_at)}
                   </td>
                   <td>
                     <StateChip state={event.action} kind="audit_action" />

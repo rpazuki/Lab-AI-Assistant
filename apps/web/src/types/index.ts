@@ -213,6 +213,10 @@ export interface Candidate {
 export interface AcquisitionPlan {
   plan_id: string;
   work_id: string;
+  /** The paper the plan fetches: title, year, journal. */
+  paper?: PaperSummary;
+  /** Its DOI, PMID and PMCID. */
+  identifiers?: { scheme: string; value: string }[];
   status: string;
   routes: string[];
   manifestation_ids: string[];
@@ -376,6 +380,8 @@ export interface QueueTask {
   stage: string;
   state: string;
   created_at: string | null;
+  /** When it ended: for a dead letter, when it ran out of retries. */
+  completed_at?: string | null;
   attempt: number;
   action: string | null;
   error: string | null;
