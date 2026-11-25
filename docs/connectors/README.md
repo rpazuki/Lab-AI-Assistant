@@ -56,6 +56,18 @@ itself: discovery acquires a slot before each page, the row is locked while it i
 spent, and an upstream `Retry-After` holds every worker off rather than only the one
 that saw it (ADR-0018). A declared limit nobody acquires against is documentation.
 
+A connector that follows links to many sites (the open-access resolver downloading
+from publishers) is paced **per site**, not per connector: the fetch hands it a
+`SiteGate` (`RateLimiter.per_site`), and every request to a host spends that host's
+budget (`site|<host>`, one at a time, `LAB_ACQUISITION_SITE_REQUESTS_PER_SECOND`).
+A site that pushes back (429, or a Cloudflare/Akamai bot check's 403 or 503) gets a
+strike and rests, `LAB_ACQUISITION_SITE_REST_SECONDS` doubling per strike in a row up
+to `LAB_ACQUISITION_SITE_REST_CAP_SECONDS`; a success clears its strikes. A fetch
+whose site is busy or resting is **deferred**: nothing is sent, no attempt is
+recorded, and the task is queued again without spending one of its tries. After
+`LAB_ACQUISITION_SITE_BLOCK_STRIKES` in a row, a resting site's papers go to a person
+as blocked. Each attempt records `source_host`, which Collection progress groups by.
+
 ## What a deployment actually has
 
 `live_connector_registry(settings)` builds the registry for the API, the workers, and

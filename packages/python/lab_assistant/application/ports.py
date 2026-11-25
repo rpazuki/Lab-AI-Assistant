@@ -685,8 +685,14 @@ class WorkRepository(Protocol):
         """Works with no summary, or one written before ``relevance_text`` existed."""
         ...
 
-    async def human_relevance_work_ids(self, workspace_id: UUID) -> set[UUID]:
-        """Works whose relevance a person has set, one by one or by a filter."""
+    async def human_relevance_work_ids(
+        self, workspace_id: UUID, *, one_at_a_time_only: bool = False
+    ) -> set[UUID]:
+        """Works whose relevance a person has set, one by one or by a filter.
+
+        ``one_at_a_time_only`` leaves out decisions made in bulk with a filter
+        (reason ``steward_rule``), so a work only a filter decided is not counted.
+        """
         ...
 
     async def add_review_step(self, step: ReviewStep) -> None: ...
@@ -792,6 +798,12 @@ class AssetRepository(Protocol):
     async def count_plans_by_status(self, workspace_id: UUID) -> dict[str, int]: ...
     async def latest_outcomes(self, workspace_id: UUID, *, status: str) -> dict[str, int]:
         """Plans in ``status`` by their latest attempt's outcome; ``none`` when never tried."""
+        ...
+
+    async def outcomes_by_site(
+        self, workspace_id: UUID, *, worker_version: str
+    ) -> dict[str, dict[str, int]]:
+        """How each site answered this fetcher version: outcome counts per host."""
         ...
 
     async def add_attempt(self, attempt: AcquisitionAttempt) -> None: ...
@@ -1113,6 +1125,7 @@ class TaskRepository(Protocol):
     ) -> list[Task]: ...
     async def get_rate_budget(self, key: str, *, for_update: bool = False) -> RateBudget | None: ...
     async def upsert_rate_budget(self, budget: RateBudget) -> None: ...
+    async def list_rate_budgets(self, *, prefix: str) -> list[RateBudget]: ...
 
 
 @runtime_checkable

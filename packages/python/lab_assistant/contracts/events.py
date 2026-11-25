@@ -81,6 +81,8 @@ class AuditAction(StrEnum):
     ASSET_IDENTITY_CONFIRMED = "asset_identity_confirmed"
     #: The parse-quality limits were changed, or degraded documents re-checked against them.
     PARSE_LIMITS_CHANGED = "parse_limits_changed"
+    ABSTRACT_FALLBACK_CHANGED = "abstract_fallback_changed"
+    ABSTRACT_DOCUMENTS_BUILT = "abstract_documents_built"
     ASSET_REGISTERED = "asset_registered"
     ASSET_QUARANTINED = "asset_quarantined"
     ASSISTED_UPLOAD_ACCEPTED = "assisted_upload_accepted"

@@ -7,10 +7,14 @@ why, then an apply in chunks that the page repeats until nothing remains.
 
 What the rules may change: a candidate still unreviewed, or one an earlier rule
 decided (reconciliation, or an earlier application of a scope's rules). What they
-never change: a candidate a person decided, one by one or with a filter, and a
-merged record. Each change is a decision that names the scope version and the
-reason ("concept_score:1.00", "exclusion_term:plant"), and the whole application
-is one step in the review history.
+never change: a candidate a person decided one by one, and a merged record. A
+candidate decided in bulk with a filter is left alone too, unless the steward
+asks to re-screen those (``include_filter_decisions``): a filter on titles was
+chosen before the abstracts arrived, and the rules read the abstract.
+
+Each change is a decision that names the scope version and the reason
+("concept_score:1.00", "exclusion_term:plant"), and the whole application is one
+step in the review history.
 """
 
 from __future__ import annotations
@@ -76,6 +80,10 @@ class ScreeningPlan:
     considered: int = 0
     #: Decided by a person: left alone.
     decided_by_person: int = 0
+    #: Whether candidates decided by a filter are re-screened (not left alone).
+    include_filter_decisions: bool = False
+    #: Of those re-screened, how many a filter had decided.
+    filter_decided: int = 0
     #: Not yet indexed for the rules (the backfill has not reached them).
     not_indexed: int = 0
     #: What the rules say, over every candidate they may decide.
@@ -98,6 +106,8 @@ class ScreeningPlan:
             "scope": scope_rules(self.scope),
             "considered": self.considered,
             "decided_by_person": self.decided_by_person,
+            "include_filter_decisions": self.include_filter_decisions,
+            "filter_decided": self.filter_decided,
             "not_indexed": self.not_indexed,
             "unchanged": self.unchanged,
             "changes": len(self.changes),
@@ -144,7 +154,13 @@ class ScreeningService:
             )
         return scope
 
-    async def plan(self, actor: ActorContext, scope_version_id: UUID) -> ScreeningPlan:
+    async def plan(
+        self,
+        actor: ActorContext,
+        scope_version_id: UUID,
+        *,
+        include_filter_decisions: bool = False,
+    ) -> ScreeningPlan:
         """Score every candidate the rules may decide. Changes nothing."""
         async with self._context.uow_factory() as uow:
             scope = await self._approved(uow, actor, scope_version_id)
@@ -155,12 +171,24 @@ class ScreeningService:
                 page_size=5_000,
             )
             active = [work for work in works if work.is_active]
-            protected = await uow.works.human_relevance_work_ids(actor.workspace_id)
+            protected = await uow.works.human_relevance_work_ids(
+                actor.workspace_id, one_at_a_time_only=include_filter_decisions
+            )
+            by_filter = (
+                await uow.works.human_relevance_work_ids(actor.workspace_id) - protected
+                if include_filter_decisions
+                else set()
+            )
             summaries = await uow.works.get_summaries(
                 actor.workspace_id, [w.id for w in active if w.id not in protected]
             )
 
-        plan = ScreeningPlan(scope=scope, considered=len(active))
+        plan = ScreeningPlan(
+            scope=scope,
+            considered=len(active),
+            include_filter_decisions=include_filter_decisions,
+            filter_decided=sum(1 for w in active if w.id in by_filter),
+        )
         for work in sorted(active, key=lambda w: str(w.id)):
             if work.id in protected:
                 plan.decided_by_person += 1
@@ -187,12 +215,19 @@ class ScreeningService:
         return plan
 
     async def apply(
-        self, actor: ActorContext, scope_version_id: UUID, *, step_id: UUID | None = None
+        self,
+        actor: ActorContext,
+        scope_version_id: UUID,
+        *,
+        step_id: UUID | None = None,
+        include_filter_decisions: bool = False,
     ) -> dict[str, Any]:
         """Make up to ``RELEVANCE_CHUNK`` of the plan's changes; report what is left."""
         self._context.require_installation(InstallationCapability.CURATE_CORPUS)
         actor.require(Capability.DECIDE_IDENTITY)
-        plan = await self.plan(actor, scope_version_id)
+        plan = await self.plan(
+            actor, scope_version_id, include_filter_decisions=include_filter_decisions
+        )
         if not plan.scope.concepts:
             raise ValidationFailure(
                 "this scope version defines no concepts, so its rules decide nothing; "
@@ -200,7 +235,7 @@ class ScreeningService:
             )
         context = self._context
         chosen = plan.changes[:RELEVANCE_CHUNK]
-        rules = scope_rules(plan.scope)
+        rules = {**scope_rules(plan.scope), "include_filter_decisions": include_filter_decisions}
         counts: dict[str, int] = {}
         async with context.uow_factory() as uow:
             now = context.now()

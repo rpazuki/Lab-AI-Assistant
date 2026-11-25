@@ -41,12 +41,14 @@ from lab_assistant.domain.assets import (
 from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback, MessageRole, UsageTotals
 from lab_assistant.domain.claims import Claim, ClaimRevision, Entity, Experiment, Review
 from lab_assistant.domain.identity import (
+    FILTER_DECISION_REASON,
     IdentityDecision,
     IdentityDecisionType,
     Work,
     WorkIdentifier,
     WorkRelation,
 )
+from lab_assistant.domain.language import UNKNOWN_LANGUAGE
 from lab_assistant.domain.objects import ObjectRecord
 from lab_assistant.domain.observation import (
     DiscoveryRun,
@@ -688,12 +690,15 @@ class _Observations:
 def _facets(summaries: list[WorkSummary], *, works: int) -> dict[str, Any]:
     kinds: dict[str, int] = defaultdict(int)
     sources: dict[str, int] = defaultdict(int)
+    languages: dict[str, int] = defaultdict(int)
     years = [s.year for s in summaries if s.year is not None]
     for summary in summaries:
         kinds[summary.resource_kind or ""] += 1
+        languages[summary.language or UNKNOWN_LANGUAGE] += 1
         for source in summary.sources.split():
             sources[source] += 1
     return {
+        "languages": dict(sorted(languages.items(), key=lambda kv: -kv[1])),
         "kinds": dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
         "sources": dict(sorted(sources.items(), key=lambda kv: -kv[1])),
         "year_min": min(years) if years else None,
@@ -899,19 +904,23 @@ class _Works:
                 and (
                     (summary := self._db.summaries.get(w.id)) is None
                     or summary.relevance_text is None
+                    or summary.text_search is None
                 )
             ),
             key=str,
         )
         return missing[:limit]
 
-    async def human_relevance_work_ids(self, workspace_id: UUID) -> set[UUID]:
+    async def human_relevance_work_ids(
+        self, workspace_id: UUID, *, one_at_a_time_only: bool = False
+    ) -> set[UUID]:
         return {
             work_id
             for d in self._db.identity_decisions.values()
             if d.workspace_id == workspace_id
             and d.decision_type is IdentityDecisionType.SET_RELEVANCE
             and d.decided_by_type == "human"
+            and not (one_at_a_time_only and d.reason_code == FILTER_DECISION_REASON)
             for work_id in d.subject_work_ids
         }
 
@@ -1175,6 +1184,21 @@ class _Assets:
             outcome = attempt.outcome.value if attempt and attempt.outcome else "none"
             counts[outcome] += 1
         return dict(counts)
+
+    async def outcomes_by_site(
+        self, workspace_id: UUID, *, worker_version: str
+    ) -> dict[str, dict[str, int]]:
+        sites: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for attempt in self._db.attempts.values():
+            if (
+                attempt.workspace_id != workspace_id
+                or attempt.worker_version != worker_version
+                or not attempt.source_host
+                or attempt.outcome is None
+            ):
+                continue
+            sites[attempt.source_host][attempt.outcome.value] += 1
+        return {host: dict(counts) for host, counts in sites.items()}
 
     async def add_attempt(self, attempt: AcquisitionAttempt) -> None:
         self._db.attempts[attempt.id] = attempt
@@ -1873,6 +1897,9 @@ class _Tasks:
 
     async def upsert_rate_budget(self, budget: RateBudget) -> None:
         self._db.rate_budgets[budget.key] = budget
+
+    async def list_rate_budgets(self, *, prefix: str) -> list[RateBudget]:
+        return [b for key, b in sorted(self._db.rate_budgets.items()) if key.startswith(prefix)]
 
 
 class _Audit:

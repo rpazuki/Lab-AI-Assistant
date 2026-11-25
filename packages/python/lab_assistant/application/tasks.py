@@ -308,6 +308,8 @@ class TaskOrchestrator:
                 current.result = result.model_dump(mode="json")
             elif result.status is StageStatus.CANCELLED:
                 current.cancel(now=context.now())
+            elif result.status is StageStatus.DEFERRED:
+                current.defer(now=context.now(), seconds=result.retry_after_seconds or 60)
             else:
                 current.fail(
                     now=context.now(),

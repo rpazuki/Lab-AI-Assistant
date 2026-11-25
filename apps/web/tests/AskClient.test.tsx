@@ -83,6 +83,38 @@ describe("AskClient", () => {
     expect(screen.getByText("E0123456789")).toBeInTheDocument();
   });
 
+  it("marks a source that is only the paper's abstract, and says so above them", async () => {
+    vi.mocked(api.ask).mockImplementation(async (_session, _question, onEvent) => {
+      onEvent({
+        type: "sources",
+        data: {
+          release_id: "r1",
+          classification: "evidence",
+          sources: [
+            {
+              handle: "E0000000001",
+              title: "Honeybee sterols from yeast",
+              year: 2025,
+              source_label: "doi:10.1038/x",
+              locator: null,
+              display_restricted: false,
+              abstract_only: true,
+              snippet: "Colonies fed on it raised more brood.",
+            },
+          ],
+          claims: [],
+        },
+      });
+    });
+
+    render(<AskClient />);
+    await userEvent.type(screen.getByLabelText(/question/i), "What do honeybees need?");
+    await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
+
+    expect(await screen.findByText(/Some of these sources are abstracts only/)).toBeInTheDocument();
+    expect(screen.getByText("abstract_only")).toBeInTheDocument();
+  });
+
   it("streams tokens into the answer and offers each citation", async () => {
     vi.mocked(api.ask).mockImplementation(async (_session, _question, onEvent) => {
       onEvent({ type: "token", data: "Strain YL-A reached 0.42 g/g " });

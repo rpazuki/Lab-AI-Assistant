@@ -304,6 +304,15 @@ class Settings(BaseSettings):
     # further; a run of more than one page needs one (free, openalex.org/settings/api).
     openalex_api_key: str | None = None
     live_source_tests_enabled: bool = False
+    # Fetching full text from publisher sites. Each site gets its own budget, so a
+    # publisher with thousands of papers is asked slowly while others are fetched
+    # meanwhile. A site that pushes back (429, a bot wall) rests, twice as long
+    # each time in a row, up to the cap; after ``block_strikes`` in a row its
+    # papers go to a person as "the site forbids automated downloads".
+    acquisition_site_requests_per_second: float = 0.5
+    acquisition_site_rest_seconds: int = 300
+    acquisition_site_rest_cap_seconds: int = 86_400
+    acquisition_site_block_strikes: int = 6
 
     # ── staged controls (scale §3.2) ────────────────────────────────────────
     # Each of these is a real control that starts at a proportionate depth. The

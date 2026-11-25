@@ -10,6 +10,7 @@
  */
 
 import type {
+  AbstractFallback,
   AcquisitionPlan,
   Allowance,
   AnswerReview,
@@ -45,9 +46,9 @@ import type {
   QueueTask,
   Release,
   ReleaseGate,
-  Reviewer,
   ReviewItem,
   ReviewStep,
+  Reviewer,
   RunComparison,
   RunReviewSummary,
   ScopeDeletionPlan,
@@ -74,8 +75,45 @@ export class ApiError extends Error {
   }
 }
 
+/** What a person reads when the browser got no answer at all. */
+export const UNREACHABLE =
+  "The server could not be reached: the connection dropped, or the app is restarting " +
+  "after an update. Try again in a minute.";
+
+/**
+ * The browser's own fetch, with a network failure said in words.
+ *
+ * A dropped connection rejects with a bare "Failed to fetch", which says nothing
+ * a person can act on. A read (GET) is tried once more after a moment, since
+ * asking twice changes nothing; a change is not, because the first may have
+ * arrived and been applied.
+ */
+async function reach(url: string, init: RequestInit): Promise<Response> {
+  const method = (init.method ?? "GET").toUpperCase();
+  try {
+    return await fetch(url, init);
+  } catch (first) {
+    if (first instanceof DOMException && first.name === "AbortError") throw first;
+    if (method === "GET") {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        return await fetch(url, init);
+      } catch {
+        // Fall through to the message below.
+      }
+    }
+    throw new ApiError({
+      type: "about:blank",
+      title: "server unreachable",
+      status: 0,
+      detail: UNREACHABLE,
+      error_class: "source_unavailable",
+    });
+  }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(appPath(`/api/backend${path}`), {
+  const response = await reach(appPath(`/api/backend${path}`), {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -348,8 +386,12 @@ export interface PageRequest {
 }
 
 function filterQuery(filters: CandidateFilters): Record<string, string | number | null | undefined> {
-  const { has_abstract, ...rest } = filters;
-  return { ...rest, has_abstract: has_abstract === null || has_abstract === undefined ? null : String(has_abstract) };
+  const { has_abstract, in_abstract, ...rest } = filters;
+  return {
+    ...rest,
+    has_abstract: has_abstract === null || has_abstract === undefined ? null : String(has_abstract),
+    in_abstract: in_abstract ? "true" : null,
+  };
 }
 
 /** One page of candidates matching the filters. */
@@ -419,14 +461,24 @@ export const applyMergeRule = (rule: MergeRule, stepId: string | null = null) =>
   });
 
 /** What applying an approved scope version's rules would change now. Changes nothing. */
-export const previewScopeRules = (scopeVersionId: string) =>
-  request<ScopeRulesPlan>(`/scopes/${scopeVersionId}/rules/preview`, { method: "POST" });
+export const previewScopeRules = (scopeVersionId: string, includeFilterDecisions = false) =>
+  request<ScopeRulesPlan>(
+    `/scopes/${scopeVersionId}/rules/preview${includeFilterDecisions ? "?include_filter_decisions=true" : ""}`,
+    { method: "POST" },
+  );
 
 /** Make up to 1,000 of the preview's changes; repeat until `remaining` is 0. */
-export const applyScopeRules = (scopeVersionId: string, stepId: string | null = null) =>
+export const applyScopeRules = (
+  scopeVersionId: string,
+  stepId: string | null = null,
+  includeFilterDecisions = false,
+) =>
   request<{ applied: number; remaining: number; step_id: string }>(
     `/scopes/${scopeVersionId}/rules/apply`,
-    { method: "POST", body: JSON.stringify({ step_id: stepId }) },
+    {
+      method: "POST",
+      body: JSON.stringify({ step_id: stepId, include_filter_decisions: includeFilterDecisions }),
+    },
   );
 
 /** What deleting this version's whole scope would remove, and what stops it. Changes nothing. */
@@ -462,6 +514,19 @@ export const collectionProgress = () => request<CollectionProgress>("/collection
 
 /** The adjustable parse-quality limits, each format's default, and why documents degrade. */
 export const getParseQuality = () => request<ParseQuality>("/parse-quality-limits");
+
+/** Whether abstracts stand in for full texts nobody could fetch, and for how many papers. */
+export const getAbstractFallback = () => request<AbstractFallback>("/abstract-fallback");
+
+/** A steward's choice; off takes abstracts out of the next release. */
+export const setAbstractFallback = (enabled: boolean) =>
+  request<AbstractFallback>("/abstract-fallback", { method: "PUT", body: JSON.stringify({ enabled }) });
+
+/** Build up to 500 abstract documents; repeat until `remaining` is 0. */
+export const buildAbstractDocuments = () =>
+  request<{ built: number; remaining: number; enabled: number }>("/abstract-fallback/build", {
+    method: "POST",
+  });
 
 /** New parse-quality limits; degraded documents are checked again on the next fetch press. */
 export const setParseLimits = (limits: ParseLimits) =>
@@ -513,7 +578,7 @@ export async function assistedUpload(
   body.set("access_basis", form.accessBasis);
   body.set("attestation", form.attestation);
   body.set("upload", form.file);
-  const response = await fetch(appPath(`/api/backend/assisted-acquisitions/${planId}`), {
+  const response = await reach(appPath(`/api/backend/assisted-acquisitions/${planId}`), {
     method: "POST",
     body,
   });

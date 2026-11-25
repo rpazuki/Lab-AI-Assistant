@@ -104,6 +104,9 @@ class EvidenceBlock(BaseModel):
     locator: str | None = None
     #: True when policy allows only a bounded excerpt or locator-only display.
     display_restricted: bool = False
+    #: True when the block is from the paper's abstract, standing in for a full
+    #: text nobody could fetch: an answer resting on it must say so.
+    abstract_only: bool = False
 
 
 class GenerationRequest(BaseModel):

@@ -67,6 +67,9 @@ class StageStatus(StrEnum):
     QUARANTINED = "quarantined"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    #: Not done and not tried: something it needs (a paced site) is not free yet.
+    #: Queued again after ``retry_after_seconds`` without spending an attempt.
+    DEFERRED = "deferred"
 
     @property
     def is_success(self) -> bool:

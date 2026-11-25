@@ -80,6 +80,8 @@ export interface SourceBlock {
   source_label: string | null;
   locator: string | null;
   display_restricted: boolean;
+  /** From the paper's abstract: its full text could not be fetched. */
+  abstract_only?: boolean;
   snippet: string;
 }
 
@@ -150,9 +152,17 @@ export interface CandidateFilters {
   journal?: string;
   source?: string;
   has_abstract?: boolean | null;
+  /** Languages, any one of which (two-letter codes, or "unknown"), comma-separated. */
+  language?: string;
+  /** Languages none of which, comma-separated; "unknown" leaves out papers with none. */
+  exclude_language?: string;
+  /** Match the title words in the abstract and subject terms too. */
+  in_abstract?: boolean;
 }
 
 export interface CandidateFacets {
+  /** Papers per language code; "unknown" for those with none recorded or detected. */
+  languages?: Record<string, number>;
   kinds: Record<string, number>;
   sources: Record<string, number>;
   year_min: number | null;
@@ -203,6 +213,9 @@ export interface Candidate {
   /** For a merged paper, the paper it was merged into. */
   merged_into_work_id?: string | null;
   work_kind: string;
+  /** Two-letter code, recorded by a source or (``language_detected``) read from the text. */
+  language?: string | null;
+  language_detected?: boolean;
   identity_status: string;
   relevance: string;
   retraction_status: string;
@@ -242,7 +255,38 @@ export interface CollectionProgress {
     waiting_review: number;
     tasks: Record<string, number>;
   };
+  /** How each publisher site answered the current fetcher, refusals first. */
+  sites: {
+    rows: SiteRow[];
+    total: number;
+    resting: number;
+    seconds_between_requests: number;
+  };
   daily: { day: string; found: number; fetched: number; parsed: number }[];
+}
+
+export interface SiteRow {
+  host: string;
+  fetched: number;
+  /** Rate limits and bot checks: the site asked us to slow down. */
+  slowed_down: number;
+  blocked: number;
+  sign_in: number;
+  other: number;
+  /** While the site rests after pushing back; null when it may be asked. */
+  resting_until: string | null;
+  strikes: number;
+}
+
+/** Abstracts in place of full texts nobody could fetch (a steward's recorded choice). */
+export interface AbstractFallback {
+  enabled: boolean;
+  set_at: string | null;
+  set_by: string | null;
+  /** Plans whose abstract stands in for the paper now. */
+  partial: number;
+  /** Papers an abstract could stand in for: included, no file, an abstract on record. */
+  eligible: number;
 }
 
 /** The two parse-quality limits a steward can adjust; null keeps a format's default. */
@@ -495,6 +539,10 @@ export interface ScopeRulesPlan {
   considered: number;
   /** Decided by a person: never changed by the rules. */
   decided_by_person: number;
+  /** Whether candidates decided with a filter are screened again. */
+  include_filter_decisions: boolean;
+  /** Of those screened again, how many a filter had decided. */
+  filter_decided: number;
   /** Not yet indexed for the rules; the deploy's backfill fills these. */
   not_indexed: number;
   unchanged: number;

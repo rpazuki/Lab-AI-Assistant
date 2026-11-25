@@ -94,6 +94,8 @@ class Lab:
         abstract: bool = False,
         journal: str | None = "Metabolic Engineering",
         relevance: RelevanceState = RelevanceState.UNREVIEWED,
+        language: str | None = None,
+        text: str | None = None,
     ) -> UUID:
         context = self.harness.context
         self._n += 1
@@ -136,6 +138,8 @@ class Lab:
                         subject_terms=f"\n{terms}" if terms else "",
                         sources=f" {' '.join(sorted(sources))} ",
                         source_count=len(sources),
+                        language=language,
+                        text_search=(text or title).casefold(),
                     )
                 ]
             )
@@ -222,6 +226,33 @@ class TestFilters:
         ]
         # A % or _ in the search is a character, not a wildcard.
         assert await lab.titles(CandidateFilter(journal="%")) == []
+
+    async def test_by_language_and_by_words_in_the_abstract(self, lab) -> None:
+        await lab.paper("Lipids of oleaginous yeast", language="en")
+        await lab.paper("Producción de lípidos", language="es")
+        await lab.paper("Yarrowia CRISPR", text="yarrowia crispr editing of a bioreactor strain")
+        assert await lab.titles(CandidateFilter(languages=["es"])) == ["Producción de lípidos"]
+        # Three-letter codes and names mean the same language.
+        assert await lab.titles(CandidateFilter(languages=["spa"])) == ["Producción de lípidos"]
+        # Not English, the unknown one included or not.
+        assert sorted(await lab.titles(CandidateFilter(exclude_languages=["en"]))) == [
+            "Producción de lípidos",
+            "Yarrowia CRISPR",
+        ]
+        assert await lab.titles(CandidateFilter(exclude_languages=["en", "unknown"])) == [
+            "Producción de lípidos"
+        ]
+        assert await lab.titles(CandidateFilter(languages=["unknown"])) == ["Yarrowia CRISPR"]
+        # A word only the abstract has is found when the abstract is searched.
+        assert await lab.titles(CandidateFilter(title_words=["bioreactor"])) == []
+        assert await lab.titles(
+            CandidateFilter(title_words=["bioreactor"], search_abstract=True)
+        ) == ["Yarrowia CRISPR"]
+        assert "Yarrowia CRISPR" not in await lab.titles(
+            CandidateFilter(exclude_words=["bioreactor"], search_abstract=True)
+        )
+        facets = await lab.service.facets(lab.actor)
+        assert facets["languages"] == {"en": 1, "es": 1, "unknown": 1}
 
     async def test_facets_count_kinds_and_sources(self, lab) -> None:
         await lab.paper("One", sources=("pubmed", "crossref"))

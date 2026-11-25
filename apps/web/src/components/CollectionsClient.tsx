@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AbstractFallback } from "@/components/AbstractFallback";
 import { BulkImport } from "@/components/BulkImport";
 import { CandidateReview } from "@/components/CandidateReview";
 import { CollectionSetup } from "@/components/CollectionSetup";
@@ -216,6 +217,14 @@ export function CollectionsClient() {
               <div className="flex flex-wrap items-center gap-2">
                 <strong className="text-heading">{plan.paper?.title ?? "Untitled"}</strong>
                 <StateChip state={plan.status} kind="acquisition" />
+                {plan.file?.version === "abstract" ? (
+                  <span
+                    className="rounded-badge border border-border px-1.5 py-0.5 text-xs text-muted"
+                    title="No route returned the full text; its abstract stands in until an upload"
+                  >
+                    abstract only
+                  </span>
+                ) : null}
                 {plan.file?.version === "preprint" ? (
                   <span className="rounded-badge border border-border px-1.5 py-0.5 text-xs text-muted">
                     preprint version
@@ -232,7 +241,7 @@ export function CollectionsClient() {
                 <span className="text-xs text-muted">
                   routes: {plan.routes.join(" → ")}
                 </span>
-                {plan.status === "assisted" || plan.status === "failed" ? (
+                {plan.status === "assisted" || plan.status === "failed" || plan.status === "partial" ? (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -311,9 +320,13 @@ export function CollectionsClient() {
 
       <ParseQuality refreshKey={notice} />
 
+      <AbstractFallback onChanged={() => live.kick()} />
+
       <BulkImport
         // The plans on the page above: filter the queue by status to choose from more.
-        waiting={plans.items.filter((plan) => plan.status === "assisted" || plan.status === "failed")}
+        waiting={plans.items.filter(
+          (plan) => plan.status === "assisted" || plan.status === "failed" || plan.status === "partial",
+        )}
         onImported={() => live.kick()}
       />
 

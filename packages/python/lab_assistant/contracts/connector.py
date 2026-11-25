@@ -28,6 +28,7 @@ __all__ = [
     "RawAcquisition",
     "RawPage",
     "RawResponse",
+    "SiteGate",
     "SourceConnector",
 ]
 
@@ -89,6 +90,31 @@ class RatePolicy(BaseModel):
     #: Contact identity some scholarly services require on every request.
     requires_request_identity: bool = True
     respect_retry_after: bool = True
+
+
+@runtime_checkable
+class SiteGate(Protocol):
+    """Paces requests to each site a connector contacts, and rests one that refuses.
+
+    A connector that downloads from many sites (an open-access resolver following
+    links to publishers) calls ``enter`` before each request to a site and
+    ``leave`` after it. ``enter`` waits briefly for the site's turn or raises
+    ``rate_limited`` with ``context["deferred"] = True`` when the wait is long: the
+    request was never sent, so the paper is tried again later at no cost. It
+    raises ``policy_blocked`` when the site has refused so often it is treated as
+    blocking automated downloads. ``leave`` reports how the site answered.
+    """
+
+    async def enter(self, host: str, *, policy: RatePolicy | None = None) -> None: ...
+
+    async def leave(
+        self,
+        host: str,
+        *,
+        pushed_back: bool = False,
+        succeeded: bool = False,
+        retry_after_seconds: int | None = None,
+    ) -> None: ...
 
 
 class ConnectorCapabilities(BaseModel):

@@ -26,6 +26,7 @@ from lab_assistant.contracts.canonical import sha256_text
 from lab_assistant.contracts.errors import NotFound
 from lab_assistant.contracts.models import EvidenceBlock
 from lab_assistant.contracts.policy import PolicyAction, ResourceRef, ResourceType
+from lab_assistant.domain.assets import is_abstract
 from lab_assistant.domain.states import RelevanceState
 
 __all__ = [
@@ -265,11 +266,15 @@ class RetrievalService:
             scores={key: round(fused[key], 6) for key in final_keys[:limit]},
         )
 
+        abstract_renditions: dict[str, bool] = {}
         async with context.uow_factory() as uow:
             for key in final_keys[:limit]:
                 row = by_key[key]
                 work_id = UUID(str(row["work_id"]))
                 work_meta = await self._work_label(uow, actor.workspace_id, work_id)
+                abstract_only = await _from_abstract(
+                    uow, actor.workspace_id, row.get("rendition_id"), abstract_renditions
+                )
                 display_restricted = not context.policy_engine.allows(
                     policy_input,
                     action=PolicyAction.DISPLAY_FULL_CONTENT,
@@ -289,6 +294,7 @@ class RetrievalService:
                         source_label=work_meta.get("source_label"),
                         locator=_locator_label(row),
                         display_restricted=display_restricted,
+                        abstract_only=abstract_only,
                     )
                 )
                 result.handle_index[handle] = {
@@ -300,6 +306,7 @@ class RetrievalService:
                     "score": result.scores.get(key),
                     "node_ids": row.get("node_ids", []),
                     "display_label": _locator_label(row),
+                    "abstract_only": abstract_only,
                 }
 
             if plan.use_claims:
@@ -406,3 +413,21 @@ def _bounded_excerpt(text: str, *, limit: int = 240) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit].rstrip()}…"
+
+
+async def _from_abstract(
+    uow: Any, workspace_id: UUID, rendition_id: Any, seen: dict[str, bool]
+) -> bool:
+    """Whether a retrieved row comes from an abstract standing in for a full text."""
+    if not rendition_id:
+        return False
+    key = str(rendition_id)
+    if key not in seen:
+        rendition = await uow.renditions.get_rendition(workspace_id, UUID(key))
+        asset = (
+            await uow.assets.get_asset(workspace_id, rendition.asset_id)
+            if rendition is not None
+            else None
+        )
+        seen[key] = asset is not None and is_abstract(asset)
+    return seen[key]

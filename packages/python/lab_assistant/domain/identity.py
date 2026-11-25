@@ -381,6 +381,10 @@ def assess_merge(
 #: The reason every automatic duplicate proposal is recorded under.
 DUPLICATE_PROPOSAL_REASON = "title_author_year_similarity"
 
+#: The reason a relevance decision made in bulk with a filter carries. A person
+#: chose the filter, but not each paper: re-screening may revisit these.
+FILTER_DECISION_REASON = "steward_rule"
+
 
 class DuplicateProposal(BaseModel):
     """A candidate pair for human review. Never applied automatically."""

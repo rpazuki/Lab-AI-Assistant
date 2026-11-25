@@ -29,7 +29,7 @@ from lab_assistant.contracts.connector import (
     IdentifierScheme,
     RawAcquisition,
 )
-from lab_assistant.contracts.errors import ErrorClass
+from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.contracts.policy import PolicyAction
 from lab_assistant.contracts.stage import StageCommand, StageName, StageStatus
 from lab_assistant.domain.assets import (
@@ -106,13 +106,41 @@ class Recording(FakeAcquisitionConnector):
         return await super().acquire(request)
 
 
+#: Papers the paced acquirer's site answers with a rate limit.
+PUSHED_BACK = {"doi:10.9/pushed"}
+
+
+@dataclass
+class Paced(Recording):
+    """Downloads from one site, ``slow.example``, through the site gate."""
+
+    paces_sites = True
+    site: str = "slow.example"
+
+    async def acquire(self, request: AcquisitionRequest, *, gate: Any = None) -> RawAcquisition:
+        await gate.enter(self.site)
+        key = next((f"{i.scheme.value}:{i.value}" for i in request.identifiers), "")
+        if key in PUSHED_BACK:
+            await gate.leave(self.site, pushed_back=True, retry_after_seconds=None)
+            raise LabAssistantError(
+                "slow down", context={"host": self.site, "http_status": 429}
+            ).with_class(ErrorClass.RATE_LIMITED)
+        await gate.leave(self.site, succeeded=True)
+        raw = await super().acquire(request)
+        return raw.model_copy(update={"source_url_redacted": f"https://{self.site}/paper.pdf"})
+
+
 BACKENDS = ["memory", "sqlite"] + (["postgres"] if os.environ.get("LAB_TEST_DATABASE_URL") else [])
 
 
 @pytest.fixture(params=BACKENDS)
 async def lab(request, tmp_path):
-    """Over every adapter: SQL enforces the foreign keys an in-memory store does not."""
-    acquirer = Recording(
+    """Over every adapter: SQL enforces the foreign keys an in-memory store does not.
+
+    A test class with ``paced_sites = True`` gets an acquirer that downloads from
+    a site through the per-site gate, as the open-access resolver does.
+    """
+    acquirer = (Paced if getattr(request.cls, "paced_sites", False) else Recording)(
         assets={
             # A source reports no licence: the one discovery recorded must decide.
             "doi:10.9/licensed": (compressed_pdf("doi:10.9/licensed"), "application/pdf", None),
@@ -190,6 +218,7 @@ class _Lab:
         location: str | None = None,
         relevance: RelevanceState = RelevanceState.INCLUDED,
         title: str | None = None,
+        abstract: str | None = None,
     ) -> UUID:
         """An included work with a DOI, and what discovery said about its full text."""
         context = self.harness.context
@@ -246,6 +275,7 @@ class _Lab:
                 (Predicate.LICENCE, licence),
                 (Predicate.FULL_TEXT_LOCATION, location),
                 (Predicate.TITLE, title),
+                (Predicate.ABSTRACT, abstract),
             ]
             await uow.observations.add_assertions(
                 [
@@ -825,3 +855,265 @@ class TestReplanningUploadOnly:
             task = await uow.tasks.get(lab.ws, task_id)
         assert stored.route_order == (AcquisitionRoute.USER_ASSISTED,)
         assert task.state is TaskState.AWAITING_USER
+
+
+class TestSitePacing:
+    """Each site is paced on its own; a site that pushes back rests, and its papers wait."""
+
+    paced_sites = True
+
+    async def budget(self, lab, host: str = "slow.example"):
+        from lab_assistant.application.rate_limit import site_key
+
+        async with lab.harness.context.uow_factory() as uow:
+            return await uow.tasks.get_rate_budget(site_key(host))
+
+    async def attempts(self, lab, plan) -> list[AcquisitionAttempt]:
+        async with lab.harness.context.uow_factory() as uow:
+            return await uow.assets.list_attempts(lab.ws, plan_id=plan.id)
+
+    async def test_a_site_that_pushes_back_rests_and_its_papers_wait_for_it(self, lab) -> None:
+        pushed = await lab.plan(await lab.paper("10.9/pushed"), OPEN)
+        waiting = await lab.plan(await lab.paper("10.9/licensed", licence="cc-by-4.0"), OPEN)
+
+        # The site answers with a rate limit: a real attempt, recorded with the site.
+        first = await lab.fetch(pushed, attempt=1, of=3)
+        assert first.error_class is ErrorClass.RATE_LIMITED
+        recorded = await self.attempts(lab, pushed)
+        assert [a.source_host for a in recorded] == ["slow.example"]
+        budget = await self.budget(lab)
+        assert budget.strikes == 1
+        assert budget.resting_for(now=lab.harness.context.now()) == 300
+
+        # Its next paper is not sent while it rests: deferred, nothing recorded.
+        lab.acquirer.requests.clear()
+        later = await lab.fetch(waiting)
+        assert later.status is StageStatus.DEFERRED
+        assert 300 <= later.retry_after_seconds < 360
+        assert lab.acquirer.requests == []
+        assert await self.attempts(lab, waiting) == []
+        assert await lab.status(waiting) == "planned"
+
+        # Once it has rested it is asked, and a success clears its strikes.
+        lab.harness.clock.advance(301)
+        assert (await lab.fetch(waiting)).status is StageStatus.SUCCEEDED
+        assert (await self.budget(lab)).strikes == 0
+        assert [a.source_host for a in await self.attempts(lab, waiting)] == ["slow.example"]
+
+    async def test_collection_progress_lists_each_site_and_which_are_resting(self, lab) -> None:
+        from lab_assistant.application.collection_progress import CollectionProgressService
+
+        await lab.fetch(await lab.plan(await lab.paper("10.9/pushed"), OPEN), attempt=1, of=3)
+        view = await CollectionProgressService(lab.harness.context).view(lab.actor)
+        [row] = view["sites"]["rows"]
+        assert row["host"] == "slow.example"
+        assert row["slowed_down"] == 1 and row["fetched"] == 0
+        assert row["strikes"] == 1 and row["resting_until"] is not None
+        assert view["sites"]["resting"] == 1
+
+    async def test_a_deferred_fetch_gives_its_try_back(self, lab) -> None:
+        from lab_assistant.application.rate_limit import SitePacer
+
+        context = lab.harness.context
+        plan = await lab.plan(await lab.paper("10.9/licensed", licence="cc-by-4.0"), OPEN)
+        pacer = SitePacer(context)
+        await pacer.enter("slow.example")
+        await pacer.leave("slow.example", pushed_back=True)
+        task = Task(
+            id=context.new_id(),
+            workspace_id=lab.ws,
+            actor_id=lab.actor.user_id,
+            stage=StageName.ACQUISITION,
+            state=TaskState.READY,
+            input_fingerprint=str(context.new_id()),
+            inputs={"plan_id": str(plan.id)},
+            max_attempts=3,
+            created_at=context.now(),
+        )
+        async with context.uow_factory() as uow:
+            await uow.tasks.add(task)
+            await uow.commit()
+        for _ in range(5):  # more deferrals than the task has tries
+            result = await lab.harness.orchestrator.execute(task)
+            assert result.status is StageStatus.DEFERRED
+            async with context.uow_factory() as uow:
+                task = await uow.tasks.get(lab.ws, task.id)
+            assert task.state is TaskState.READY and task.attempt == 0
+            assert task.not_before is not None and task.not_before > context.now()
+
+    async def test_a_site_that_keeps_refusing_hands_its_papers_to_a_person(self, lab) -> None:
+        from lab_assistant.application.rate_limit import SitePacer
+
+        context = lab.harness.context
+        pacer = SitePacer(context)
+        await pacer.enter("slow.example")
+        await pacer.leave("slow.example", pushed_back=True)
+        budget = await self.budget(lab)
+        budget.strikes = context.settings.acquisition_site_block_strikes
+        async with context.uow_factory() as uow:
+            await uow.tasks.upsert_rate_budget(budget)
+            await uow.commit()
+        plan = await lab.plan(await lab.paper("10.9/licensed", licence="cc-by-4.0"), OPEN)
+        result = await lab.fetch(plan)
+        assert result.status is not StageStatus.DEFERRED
+        [attempt] = await self.attempts(lab, plan)
+        assert attempt.outcome is AcquisitionOutcome.ROBOTS_OR_POLICY_BLOCKED
+        assert attempt.source_host == "slow.example"
+
+    async def test_other_sites_are_not_held_up(self, lab) -> None:
+        from lab_assistant.application.rate_limit import SitePacer
+
+        pacer = SitePacer(lab.harness.context)
+        await pacer.enter("slow.example")
+        await pacer.leave("slow.example", pushed_back=True)
+        lab.acquirer.site = "fast.example"
+        plan = await lab.plan(await lab.paper("10.9/licensed", licence="cc-by-4.0"), OPEN)
+        assert (await lab.fetch(plan)).status is StageStatus.SUCCEEDED
+
+
+class TestRestingLonger:
+    def test_each_push_back_in_a_row_doubles_the_rest_up_to_the_cap(self) -> None:
+        from datetime import UTC, datetime
+
+        from lab_assistant.domain.tasks import RateBudget
+
+        now = datetime(2026, 11, 25, tzinfo=UTC)
+        budget = RateBudget(key="site|x", tokens=1, refill_per_second=0.5, burst=1, updated_at=now)
+        rests = [
+            budget.push_back(now=now, retry_after=None, base_seconds=300, cap_seconds=3600)
+            for _ in range(6)
+        ]
+        assert rests == [300, 600, 1200, 2400, 3600, 3600]
+        # Never shorter than the site's own Retry-After.
+        budget.clear_strikes()
+        assert budget.push_back(now=now, retry_after=900, base_seconds=300, cap_seconds=3600) == 900
+
+
+ABSTRACT = (
+    "Yarrowia lipolytica was engineered to make sterols that honeybees need, and the "
+    "colonies fed on it raised more brood than those fed on pollen substitutes."
+)
+
+
+class TestAbstractFallback:
+    """A paper no route could fetch is in the collection as its abstract, by choice."""
+
+    async def waiting(self, lab, doi: str = "10.9/abs") -> tuple[UUID, AcquisitionPlan]:
+        work = await lab.paper(doi, title="Honeybee sterols from yeast", abstract=ABSTRACT)
+        plan = await lab.plan(work, (AcquisitionRoute.USER_ASSISTED,))
+        async with lab.harness.context.uow_factory() as uow:
+            stored = await uow.assets.get_plan(lab.ws, plan.id)
+            stored.status = "assisted"
+            stored.version += 1
+            await uow.assets.update_plan(stored)
+            await uow.commit()
+        return work, plan
+
+    async def draft(self, lab):
+        from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseService
+
+        self.drafts = getattr(self, "drafts", 0) + 1
+        _, manifest, _ = await ReleaseService(lab.harness.context).draft(
+            lab.actor, ReleaseDraftRequest(name="corpus", semantic_version=f"1.0.{self.drafts}")
+        )
+        return manifest.items
+
+    async def test_off_by_default_then_an_abstract_stands_in_until_an_upload(self, lab) -> None:
+        from lab_assistant.application.abstract_fallback import AbstractFallbackService
+        from lab_assistant.application.parsing import ParsingHandler
+        from lab_assistant.domain.assets import is_abstract
+
+        context = lab.harness.context
+        work, plan = await self.waiting(lab)
+        service = AbstractFallbackService(context)
+
+        view = await service.view(lab.actor)
+        assert (view["enabled"], view["eligible"], view["partial"]) == (False, 1, 0)
+        assert (await service.build(lab.actor))["built"] == 0  # off: nothing is built
+
+        await service.set_enabled(lab.actor, True)
+        assert (await service.build(lab.actor))["built"] == 1
+        assert await lab.status(plan) == "partial"
+        async with context.uow_factory() as uow:
+            [asset] = await uow.assets.list_assets(lab.ws, work_id=work)
+            decision = await uow.policies.get_rights_decision(lab.ws, asset.rights_decision_id)
+        assert is_abstract(asset) and asset.media_type_detected == "text/plain"
+        assert decision.permits(PolicyAction.INDEX) and decision.permits(PolicyAction.QUERY)
+        assert not decision.permits(PolicyAction.DISPLAY_FULL_CONTENT)
+        # A second press builds nothing twice.
+        assert (await service.build(lab.actor))["built"] == 0
+
+        parsed = await ParsingHandler(context).execute(
+            StageCommand(
+                stage=StageName.PARSING,
+                workspace_id=lab.ws,
+                actor_id=lab.actor.user_id,
+                inputs={"asset_id": str(asset.id)},
+            )
+        )
+        assert parsed.status is StageStatus.SUCCEEDED
+        assert parsed.next_tasks == ()  # no values are extracted from an abstract
+
+        [item] = await self.draft(lab)
+        assert item.work_id == work and item.inclusion_reason == "relevance_included_abstract_only"
+
+        # Ask finds it is an abstract from the row's rendition.
+        from lab_assistant.application.retrieval import _from_abstract
+
+        async with context.uow_factory() as uow:
+            assert await _from_abstract(uow, lab.ws, item.rendition_id, {}) is True
+            assert await _from_abstract(uow, lab.ws, None, {}) is False
+
+        # Switched off, the next release leaves it out.
+        await service.set_enabled(lab.actor, False)
+        assert await self.draft(lab) == ()
+        await service.set_enabled(lab.actor, True)
+
+        # An uploaded full text closes the plan and takes the abstract's place.
+        from lab_assistant.application.acquisition import AcquisitionService
+
+        uploaded = await AcquisitionService(context).register_assisted_upload(
+            lab.actor,
+            plan_id=plan.id,
+            manifestation_id=plan.manifestation_ids[0],
+            # Long enough to pass the PDF profile's quality limits.
+            content=compressed_pdf(
+                "doi:10.9/abs Honeybee sterols from yeast. "
+                + " ".join(f"Finding {n} on sterol {n * 7} in brood." for n in range(60))
+            ),
+            filename="paper.pdf",
+            access_basis="institutional_subscription_copy",
+            attestation="library copy",
+            declared_media_type="application/pdf",
+        )
+        assert await lab.status(plan) == "acquired"
+        parsed = await ParsingHandler(context).execute(
+            StageCommand(
+                stage=StageName.PARSING,
+                workspace_id=lab.ws,
+                actor_id=lab.actor.user_id,
+                inputs={"asset_id": str(uploaded.id)},
+            )
+        )
+        assert parsed.status is StageStatus.SUCCEEDED, parsed.metrics
+        [item] = await self.draft(lab)
+        assert item.asset_id == uploaded.id
+        assert item.inclusion_reason == "relevance_included"
+
+    async def test_a_paper_without_an_abstract_or_with_a_file_is_not_eligible(self, lab) -> None:
+        from lab_assistant.application.abstract_fallback import AbstractFallbackService
+
+        work = await lab.paper("10.9/bare", title="No abstract here")
+        bare = await lab.plan(work, (AcquisitionRoute.USER_ASSISTED,))
+        async with lab.harness.context.uow_factory() as uow:
+            stored = await uow.assets.get_plan(lab.ws, bare.id)
+            stored.status = "assisted"
+            await uow.assets.update_plan(stored)
+            await uow.commit()
+        fetched = await lab.plan(
+            await lab.paper("10.9/licensed", licence="cc-by-4.0", abstract=ABSTRACT), OPEN
+        )
+        await lab.fetch(fetched)
+        service = AbstractFallbackService(lab.harness.context)
+        await service.set_enabled(lab.actor, True)
+        assert (await service.view(lab.actor))["eligible"] == 0

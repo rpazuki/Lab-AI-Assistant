@@ -45,12 +45,14 @@ from lab_assistant.domain.assets import (
 from lab_assistant.domain.chat import ChatMessage, ChatSession, Feedback, MessageRole, UsageTotals
 from lab_assistant.domain.claims import Claim, ClaimRevision, Entity, Experiment, Review
 from lab_assistant.domain.identity import (
+    FILTER_DECISION_REASON,
     IdentityDecision,
     IdentityDecisionType,
     Work,
     WorkIdentifier,
     WorkRelation,
 )
+from lab_assistant.domain.language import UNKNOWN_LANGUAGE
 from lab_assistant.domain.objects import ObjectRecord
 from lab_assistant.domain.observation import (
     DiscoveryRun,
@@ -1128,22 +1130,29 @@ class _Works(_Base):
             )
             .where(
                 t.works.c.workspace_id == workspace_id,
-                t.work_summaries.c.work_id.is_(None) | t.work_summaries.c.relevance_text.is_(None),
+                t.work_summaries.c.work_id.is_(None)
+                | t.work_summaries.c.relevance_text.is_(None)
+                | t.work_summaries.c.text_search.is_(None),
             )
             .order_by(t.works.c.id)
             .limit(limit)
         )
         return [row[0] for row in result.all()]
 
-    async def human_relevance_work_ids(self, workspace_id: UUID) -> set[UUID]:
+    async def human_relevance_work_ids(
+        self, workspace_id: UUID, *, one_at_a_time_only: bool = False
+    ) -> set[UUID]:
         d = t.identity_decisions
-        result = await self._c.execute(
-            select(d.c.subject_work_ids).where(
-                d.c.workspace_id == workspace_id,
-                d.c.decision_type == IdentityDecisionType.SET_RELEVANCE.value,
-                d.c.decided_by_type == "human",
+        conditions = [
+            d.c.workspace_id == workspace_id,
+            d.c.decision_type == IdentityDecisionType.SET_RELEVANCE.value,
+            d.c.decided_by_type == "human",
+        ]
+        if one_at_a_time_only:
+            conditions.append(
+                d.c.reason_code.is_(None) | (d.c.reason_code != FILTER_DECISION_REASON)
             )
-        )
+        result = await self._c.execute(select(d.c.subject_work_ids).where(*conditions))
         return {work_id for row in result.all() for work_id in uuid_list(row[0])}
 
     async def add_review_step(self, step: ReviewStep) -> None:
@@ -1216,10 +1225,27 @@ class _Works(_Base):
         source = w
         if rule.needs_summary:
             source = w.join(s, s.c.work_id == w.c.id)
+            searched = (
+                func.coalesce(s.c.text_search, s.c.title_search)
+                if rule.search_abstract
+                else s.c.title_search
+            )
             for word in rule.title_words:
-                conditions.append(s.c.title_search.like(_contains(word), escape="\\"))
+                conditions.append(searched.like(_contains(word), escape="\\"))
             for word in rule.exclude_words:
-                conditions.append(~s.c.title_search.like(_contains(word), escape="\\"))
+                conditions.append(~searched.like(_contains(word), escape="\\"))
+            if rule.languages:
+                known = [code for code in rule.languages if code != UNKNOWN_LANGUAGE]
+                either = [s.c.language.in_(known)] if known else []
+                if UNKNOWN_LANGUAGE in rule.languages:
+                    either.append(s.c.language.is_(None))
+                conditions.append(or_(*either))
+            if rule.exclude_languages:
+                known = [code for code in rule.exclude_languages if code != UNKNOWN_LANGUAGE]
+                if UNKNOWN_LANGUAGE in rule.exclude_languages:
+                    conditions.append(s.c.language.is_not(None))
+                if known:
+                    conditions.append(s.c.language.is_(None) | s.c.language.not_in(known))
             if rule.subject_terms:
                 conditions.append(
                     or_(
@@ -1294,7 +1320,18 @@ class _Works(_Base):
                 .where(t.works.c.workspace_id == workspace_id)
             )
         ).scalar()
+        languages = await self._c.execute(
+            select(s.c.language, func.count())
+            .where(s.c.workspace_id == workspace_id)
+            .group_by(s.c.language)
+        )
         return {
+            "languages": dict(
+                sorted(
+                    ((code or UNKNOWN_LANGUAGE, int(n)) for code, n in languages.all()),
+                    key=lambda kv: -kv[1],
+                )
+            ),
             "kinds": dict(
                 sorted(((k or "", int(n)) for k, n in kinds.all()), key=lambda kv: -kv[1])
             ),
@@ -1510,6 +1547,25 @@ class _Assets(_Base):
             key = str(outcome) if outcome is not None else "none"
             counts[key] = counts.get(key, 0) + int(count)
         return counts
+
+    async def outcomes_by_site(
+        self, workspace_id: UUID, *, worker_version: str
+    ) -> dict[str, dict[str, int]]:
+        a = t.acquisition_attempts
+        result = await self._c.execute(
+            select(a.c.source_host, a.c.outcome, func.count())
+            .where(
+                a.c.workspace_id == workspace_id,
+                a.c.worker_version == worker_version,
+                a.c.source_host.is_not(None),
+                a.c.outcome.is_not(None),
+            )
+            .group_by(a.c.source_host, a.c.outcome)
+        )
+        sites: dict[str, dict[str, int]] = {}
+        for host, outcome, count in result.all():
+            sites.setdefault(str(host), {})[str(outcome)] = int(count)
+        return sites
 
     async def add_attempt(self, attempt: AcquisitionAttempt) -> None:
         await self._upsert(ATTEMPTS, attempt)
@@ -2145,6 +2201,14 @@ class _Tasks(_Base):
 
     async def upsert_rate_budget(self, budget: RateBudget) -> None:
         await self._upsert(BUDGETS, budget)
+
+    async def list_rate_budgets(self, *, prefix: str) -> list[RateBudget]:
+        result = await self._c.execute(
+            select(t.rate_budgets)
+            .where(t.rate_budgets.c.key.startswith(prefix, autoescape=True))
+            .order_by(t.rate_budgets.c.key)
+        )
+        return [BUDGETS.from_row(row) for row in result.mappings().all()]
 
 
 class _Audit(_Base):

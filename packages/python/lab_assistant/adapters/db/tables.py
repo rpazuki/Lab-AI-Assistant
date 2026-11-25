@@ -511,8 +511,15 @@ work_summaries = Table(
     Column("source_count", Integer, nullable=False, server_default=text("0")),
     #: What a scope's screening rules read; NULL until the backfill rebuilds it.
     Column("relevance_text", Text),
+    #: Title, abstract and subject terms, normalised for search; NULL until the
+    #: backfill rebuilds the summary.
+    Column("text_search", Text),
+    #: Two-letter language code, recorded by a source or detected from the text.
+    Column("language", Text),
+    Column("language_detected", Boolean, nullable=False, server_default=text("false")),
     Column("updated_at", DateTime(timezone=True)),
     Index("ix_work_summaries_year", "workspace_id", "year"),
+    Index("ix_work_summaries_language", "workspace_id", "language"),
     Index("ix_work_summaries_kind", "workspace_id", "resource_kind"),
 )
 
@@ -645,6 +652,9 @@ acquisition_attempts = Table(
     Column("error_class", Text),
     Column("note", Text),
     Column("worker_version", Text, nullable=False),
+    # The site that answered (publisher, repository or API), for pacing and for
+    # seeing which sites refuse.
+    Column("source_host", Text),
     Index("ix_acquisition_attempts_plan", "workspace_id", "acquisition_plan_id"),
 )
 
@@ -1043,6 +1053,9 @@ rate_budgets = Table(
     Column("next_permitted_at", DateTime(timezone=True)),
     # When a slot was last taken or returned: lets a dead worker's slot expire.
     Column("slots_changed_at", DateTime(timezone=True)),
+    # Times in a row the site pushed back (rate limit, bot wall): each one rests
+    # it longer. A success clears them.
+    Column("strikes", Integer, nullable=False, server_default=text("0")),
 )
 
 audit_events = Table(

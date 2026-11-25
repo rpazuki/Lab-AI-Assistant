@@ -25,6 +25,13 @@ vi.mock("@/lib/api", async (importOriginal) => {
     listCandidates: vi.fn(),
     fetchIncluded: vi.fn(),
     getParseQuality: vi.fn(async () => QUALITY),
+    getAbstractFallback: vi.fn(async () => ({
+      enabled: false,
+      set_at: null,
+      set_by: null,
+      partial: 0,
+      eligible: 0,
+    })),
     setParseLimits: vi.fn(async () => ({ ...QUALITY, limits: { max_duplicate_paragraph_ratio: 0.2, require_reference_separation: false } })),
     listPlans: vi.fn(async () => ({ items: [], next_cursor: null, total: 0, status_counts: {} })),
     listConflicts: vi.fn(async () => ({
@@ -34,6 +41,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       duplicate_proposals: [],
     })),
     candidateFacets: vi.fn(async () => ({
+      languages: { en: 40, es: 6, unknown: 5 },
       kinds: { article: 51 },
       sources: { pubmed: 51 },
       year_min: 2000,
@@ -241,5 +249,50 @@ describe("Uploading an authorised copy", () => {
     await user.click(await screen.findByRole("button", { name: "Upload an authorised copy" }));
     await user.click(screen.getByRole("button", { name: "Close the upload" }));
     expect(screen.queryByRole("region", { name: "Upload an authorised copy" })).not.toBeInTheDocument();
+  });
+});
+
+
+describe("Filtering candidates by language and by the abstract", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // An earlier test folds the panel away, and the panel remembers.
+    window.localStorage.clear();
+    vi.mocked(api.listCandidates).mockResolvedValue({ items: [], next_cursor: null, total: 0 });
+    vi.mocked(api.candidateFacets).mockResolvedValue({
+      languages: { en: 40, es: 6, unknown: 5 },
+      kinds: { article: 51 },
+      sources: { pubmed: 51 },
+      year_min: 2000,
+      year_max: 2026,
+      summarised: 51,
+      works: 51,
+    });
+  });
+
+  it("finds papers not in English, and searches the abstract when asked", async () => {
+    const user = userEvent.setup();
+    render(<CollectionsClient />);
+    const menu = await screen.findByLabelText("Filter by language");
+    expect(
+      await screen.findByRole("option", { name: "Spanish (6)" }, { timeout: 4000 }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(menu, "not:en,unknown");
+    await waitFor(() =>
+      expect(api.listCandidates).toHaveBeenLastCalledWith(
+        expect.objectContaining({ exclude_language: "en,unknown", language: undefined }),
+      ),
+    );
+    await user.selectOptions(menu, "is:es");
+    await waitFor(() =>
+      expect(api.listCandidates).toHaveBeenLastCalledWith(
+        expect.objectContaining({ language: "es", exclude_language: undefined }),
+      ),
+    );
+    await user.click(screen.getByLabelText(/in the abstract and subject terms too/));
+    await waitFor(() =>
+      expect(api.listCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ in_abstract: true })),
+    );
   });
 });

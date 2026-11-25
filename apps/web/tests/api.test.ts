@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, ask, login, parseFrame, search, setRelevance } from "@/lib/api";
+import { ApiError, UNREACHABLE, ask, getAbstractFallback, login, parseFrame, search, setRelevance } from "@/lib/api";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -26,6 +26,28 @@ describe("API client", () => {
     expect(init?.method).toBe("POST");
     // The token is never handled here: the route sets an httpOnly cookie.
     expect(JSON.stringify(init?.body)).not.toContain("access_token");
+  });
+
+  it("says in words when the server could not be reached, trying a read once more", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetch).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      vi.mocked(fetch).mockResolvedValueOnce(
+        jsonResponse({ enabled: false, set_at: null, set_by: null, partial: 0, eligible: 0 }),
+      );
+      const read = getAbstractFallback();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect((await read).enabled).toBe(false);
+      expect(fetch).toHaveBeenCalledTimes(2);
+
+      vi.mocked(fetch).mockReset();
+      vi.mocked(fetch).mockRejectedValue(new TypeError("Failed to fetch"));
+      // A change is not sent twice: the first may have arrived.
+      await expect(setRelevance("w1", "included", "reviewer_in_scope")).rejects.toThrow(UNREACHABLE);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("surfaces a problem document as an ApiError with its error class", async () => {

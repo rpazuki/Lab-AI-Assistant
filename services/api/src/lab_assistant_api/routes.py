@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from lab_assistant.adapters.connectors.seed_lookup import SeedLookupService, build_queries
+from lab_assistant.application.abstract_fallback import AbstractFallbackService
 from lab_assistant.application.accounts import MemberView, invitation_state
 from lab_assistant.application.acquisition import AcquisitionService
 from lab_assistant.application.analytics import AnalyticsService
@@ -1063,6 +1064,16 @@ def _candidate_filter(
     journal: Annotated[str | None, Query(description="text the journal name contains")] = None,
     source: Annotated[str | None, Query(description="a connector that found the paper")] = None,
     has_abstract: Annotated[bool | None, Query()] = None,
+    language: Annotated[
+        str | None,
+        Query(description="languages, any one of which (two-letter codes, or unknown)"),
+    ] = None,
+    exclude_language: Annotated[
+        str | None, Query(description="languages none of which (two-letter codes, or unknown)")
+    ] = None,
+    in_abstract: Annotated[
+        bool, Query(description="match title words in the abstract and subject terms too")
+    ] = False,
 ) -> CandidateFilter:
     """The candidate filter, from query parameters; the same filter a bulk decision takes."""
     return CandidateFilter(
@@ -1077,6 +1088,9 @@ def _candidate_filter(
         journal=journal,
         source=source,
         has_abstract=has_abstract,
+        languages=language,
+        exclude_languages=exclude_language,
+        search_abstract=in_abstract,
     )
 
 
@@ -1104,9 +1118,9 @@ async def list_candidates(
         # A merged paper's records moved to the paper it was merged into, so its
         # own records say nothing; its summary kept what they said. Without it the
         # list showed every merged paper as "Untitled".
-        summaries = await uow.works.get_summaries(
-            ws, [work.id for work in works if work.merged_into_work_id is not None]
-        )
+        # Every row's summary: its language, and for a merged paper what its own
+        # records said before they moved.
+        summaries = await uow.works.get_summaries(ws, [work.id for work in works])
         items = []
         for work in works:
             assertions = await uow.observations.list_assertions(ws, work_id=work.id)
@@ -1140,6 +1154,8 @@ async def list_candidates(
                         str(work.merged_into_work_id) if work.merged_into_work_id else None
                     ),
                     "work_kind": work.work_kind.value,
+                    "language": summary.language if summary else None,
+                    "language_detected": bool(summary and summary.language_detected),
                     "identity_status": work.identity_status.value,
                     "relevance": work.relevance.value,
                     "retraction_status": work.retraction_status,
@@ -1354,20 +1370,28 @@ async def apply_merge_rule(
     dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
 )
 async def preview_scope_rules(
-    scope_version_id: UUID, actor: CurrentActor, container: Container
+    scope_version_id: UUID,
+    actor: CurrentActor,
+    container: Container,
+    include_filter_decisions: bool = False,
 ) -> dict[str, Any]:
     """What applying this approved version's concepts and exclusion terms would change.
 
-    Changes nothing. Candidates a person decided, and merged records, are never
-    changed and are counted apart.
+    Changes nothing. Candidates a person decided one by one, and merged records,
+    are never changed and are counted apart. Candidates decided in bulk with a
+    filter are re-screened only with ``include_filter_decisions``.
     """
-    plan = await ScreeningService(container.context).plan(actor, scope_version_id)
+    plan = await ScreeningService(container.context).plan(
+        actor, scope_version_id, include_filter_decisions=include_filter_decisions
+    )
     return plan.view()
 
 
 class ApplyRulesRequest(BaseModel):
     #: The ``step_id`` the first apply returned, so every chunk is one history step.
     step_id: UUID | None = None
+    #: Re-screen candidates decided in bulk with a filter, as the preview did.
+    include_filter_decisions: bool = False
 
 
 @router.post(
@@ -1382,7 +1406,10 @@ async def apply_scope_rules(
 ) -> dict[str, Any]:
     """Make up to 1,000 of the preview's changes; repeat until ``remaining`` is 0."""
     answer = await ScreeningService(container.context).apply(
-        actor, scope_version_id, step_id=payload.step_id
+        actor,
+        scope_version_id,
+        step_id=payload.step_id,
+        include_filter_decisions=payload.include_filter_decisions,
     )
     if answer.get("applied"):
         await _plan_included(container, actor, reason="scope_rules")
@@ -1517,6 +1544,40 @@ async def fetch_included(actor: CurrentActor, container: Container) -> dict[str,
         "degraded_promoted": rechecked["promoted"],
         "still_degraded": rechecked["still_degraded"],
     }
+
+
+class AbstractFallbackRequest(BaseModel):
+    #: Use a paper's abstract in place of a full text nobody could fetch.
+    enabled: bool
+
+
+@router.get(
+    "/abstract-fallback",
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
+async def abstract_fallback(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """Whether abstracts stand in for missing full texts, and for how many papers."""
+    return await AbstractFallbackService(container.context).view(actor)
+
+
+@router.put(
+    "/abstract-fallback",
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
+async def set_abstract_fallback(
+    payload: AbstractFallbackRequest, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Record a steward's choice; off takes abstracts out of the next release."""
+    return await AbstractFallbackService(container.context).set_enabled(actor, payload.enabled)
+
+
+@router.post(
+    "/abstract-fallback/build",
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
+async def build_abstract_documents(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """Build up to 500 abstract documents; repeat until ``remaining`` is 0."""
+    return await AbstractFallbackService(container.context, container.orchestrator).build(actor)
 
 
 class ParseLimitsRequest(BaseModel):

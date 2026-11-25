@@ -1,6 +1,19 @@
 {
   "components": {
     "schemas": {
+      "AbstractFallbackRequest": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "AbstractFallbackRequest",
+        "type": "object"
+      },
       "AcceptInvitationRequest": {
         "properties": {
           "full_name": {
@@ -37,6 +50,11 @@
       },
       "ApplyRulesRequest": {
         "properties": {
+          "include_filter_decisions": {
+            "default": false,
+            "title": "Include Filter Decisions",
+            "type": "boolean"
+          },
           "step_id": {
             "anyOf": [
               {
@@ -117,6 +135,8 @@
           "acquisition_requeued",
           "asset_identity_confirmed",
           "parse_limits_changed",
+          "abstract_fallback_changed",
+          "abstract_documents_built",
           "asset_registered",
           "asset_quarantined",
           "assisted_upload_accepted",
@@ -1315,6 +1335,209 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/abstract-fallback": {
+      "get": {
+        "description": "Whether abstracts stand in for missing full texts, and for how many papers.",
+        "operationId": "abstract_fallback_api_v1_abstract_fallback_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Abstract Fallback Api V1 Abstract Fallback Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Abstract Fallback"
+      },
+      "put": {
+        "description": "Record a steward's choice; off takes abstracts out of the next release.",
+        "operationId": "set_abstract_fallback_api_v1_abstract_fallback_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbstractFallbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Abstract Fallback Api V1 Abstract Fallback Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Abstract Fallback"
+      }
+    },
+    "/api/v1/abstract-fallback/build": {
+      "post": {
+        "description": "Build up to 500 abstract documents; repeat until ``remaining`` is 0.",
+        "operationId": "build_abstract_documents_api_v1_abstract_fallback_build_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Build Abstract Documents Api V1 Abstract Fallback Build Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Build Abstract Documents"
+      }
+    },
     "/api/v1/acquisition-plans": {
       "get": {
         "description": "One page of acquisition plans, and how many plans are in each status.",
@@ -2557,6 +2780,54 @@
             }
           },
           {
+            "description": "languages, any one of which (two-letter codes, or unknown)",
+            "in": "query",
+            "name": "language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "languages, any one of which (two-letter codes, or unknown)",
+              "title": "Language"
+            }
+          },
+          {
+            "description": "languages none of which (two-letter codes, or unknown)",
+            "in": "query",
+            "name": "exclude_language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "languages none of which (two-letter codes, or unknown)",
+              "title": "Exclude Language"
+            }
+          },
+          {
+            "description": "match title words in the abstract and subject terms too",
+            "in": "query",
+            "name": "in_abstract",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "match title words in the abstract and subject terms too",
+              "title": "In Abstract",
+              "type": "boolean"
+            }
+          },
+          {
             "in": "header",
             "name": "X-Workspace",
             "required": false,
@@ -2989,6 +3260,54 @@
                 }
               ],
               "title": "Has Abstract"
+            }
+          },
+          {
+            "description": "languages, any one of which (two-letter codes, or unknown)",
+            "in": "query",
+            "name": "language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "languages, any one of which (two-letter codes, or unknown)",
+              "title": "Language"
+            }
+          },
+          {
+            "description": "languages none of which (two-letter codes, or unknown)",
+            "in": "query",
+            "name": "exclude_language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "languages none of which (two-letter codes, or unknown)",
+              "title": "Exclude Language"
+            }
+          },
+          {
+            "description": "match title words in the abstract and subject terms too",
+            "in": "query",
+            "name": "in_abstract",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "match title words in the abstract and subject terms too",
+              "title": "In Abstract",
+              "type": "boolean"
             }
           },
           {
@@ -10342,7 +10661,7 @@
     },
     "/api/v1/scopes/{scope_version_id}/rules/preview": {
       "post": {
-        "description": "What applying this approved version's concepts and exclusion terms would change.\n\nChanges nothing. Candidates a person decided, and merged records, are never\nchanged and are counted apart.",
+        "description": "What applying this approved version's concepts and exclusion terms would change.\n\nChanges nothing. Candidates a person decided one by one, and merged records,\nare never changed and are counted apart. Candidates decided in bulk with a\nfilter are re-screened only with ``include_filter_decisions``.",
         "operationId": "preview_scope_rules_api_v1_scopes__scope_version_id__rules_preview_post",
         "parameters": [
           {
@@ -10353,6 +10672,16 @@
               "format": "uuid",
               "title": "Scope Version Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_filter_decisions",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Filter Decisions",
+              "type": "boolean"
             }
           },
           {

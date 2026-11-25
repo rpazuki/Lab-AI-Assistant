@@ -232,6 +232,42 @@ class TestApplyingTheRules:
         await ScreeningService(scoped.harness.context).apply(scoped.actor, scope.id)
         assert await scoped.relevance(decided) is RelevanceState.EXCLUDED
 
+    async def test_a_filter_decision_is_screened_again_only_when_asked(
+        self, scoped: ScopeLab
+    ) -> None:
+        from lab_assistant.domain.review import CandidateFilter
+
+        scope = await scoped.scope()
+        # Included in bulk by a title filter, before the abstract was in.
+        by_filter = await scoped.screened(
+            "A short note", abstract="About bacteria and nothing else"
+        )
+        await scoped.service.bulk_relevance(
+            scoped.actor,
+            CandidateFilter(title_words=["short note"]),
+            relevance=RelevanceState.INCLUDED,
+            apply=True,
+        )
+        by_hand = await scoped.screened("Another note", abstract="About bacteria only")
+        await IdentityService(scoped.harness.context).set_relevance(
+            scoped.actor,
+            work_id=by_hand,
+            relevance=RelevanceState.INCLUDED,
+            reason_code="reviewer_in_scope",
+        )
+        service = ScreeningService(scoped.harness.context)
+
+        kept = await service.plan(scoped.actor, scope.id)
+        assert kept.decided_by_person == 2 and kept.changes == []
+
+        again = await service.plan(scoped.actor, scope.id, include_filter_decisions=True)
+        assert again.decided_by_person == 1 and again.filter_decided == 1
+        assert [(w.id, r) for w, r, _ in again.changes] == [(by_filter, RelevanceState.EXCLUDED)]
+
+        await service.apply(scoped.actor, scope.id, include_filter_decisions=True)
+        assert await scoped.relevance(by_filter) is RelevanceState.EXCLUDED
+        assert await scoped.relevance(by_hand) is RelevanceState.INCLUDED
+
     async def test_a_new_version_redecides_what_an_earlier_rule_decided(
         self, scoped: ScopeLab
     ) -> None:

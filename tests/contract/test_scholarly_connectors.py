@@ -304,6 +304,7 @@ PUBMED_XML = b"""<?xml version="1.0"?>
           <AbstractText Label="RESULTS">Yarrowia made them.</AbstractText>
         </Abstract>
         <AuthorList><Author><LastName>Moore</LastName><ForeName>Elynor</ForeName></Author></AuthorList>
+        <Language>eng</Language>
       </Article>
       <MeshHeadingList>
         <MeshHeading><DescriptorName>Yarrowia</DescriptorName></MeshHeading>
@@ -385,3 +386,118 @@ class TestAbstracts:
         record = CrossrefConnector._record({"DOI": "10.1/x", "title": ["T"], "abstract": jats})
         assert _values(record, "abstract") == ["Lipids & Y. lipolytica\n\nSecond paragraph."]
         assert _markup_text("") is None
+
+
+class _Gate:
+    """A site gate that records what it was told, and can hold one site back."""
+
+    def __init__(self, resting: frozenset[str] = frozenset()) -> None:
+        self.resting = resting
+        self.entered: list[str] = []
+        self.left: list[tuple[str, bool, bool]] = []
+
+    async def enter(self, host, *, policy=None) -> None:
+        if host in self.resting:
+            raise LabAssistantError(
+                f"{host} is resting", context={"host": host, "deferred": True}
+            ).with_class(ErrorClass.RATE_LIMITED)
+        self.entered.append(host)
+
+    async def leave(self, host, *, pushed_back=False, succeeded=False, retry_after_seconds=None):
+        self.left.append((host, pushed_back, succeeded))
+
+
+class TestUnpaywallPacesEachSite:
+    request = AcquisitionRequest(
+        identifiers=(DOI,), route="open_repository", target_url="https://journal.example/p.pdf"
+    )
+
+    async def test_every_site_is_asked_through_the_gate(self) -> None:
+        seen: list[str] = []
+        gate = _Gate()
+        connector = _unpaywall(
+            {"https://journal.example/p.pdf": httpx.Response(200, content=PDF)}, seen
+        )
+        await connector.acquire(self.request, gate=gate)
+        assert gate.entered == ["journal.example"]
+        assert gate.left == [("journal.example", False, True)]
+
+    async def test_a_bot_wall_is_a_push_back_not_a_sign_in_page(self) -> None:
+        gate = _Gate()
+        wall = httpx.Response(
+            403,
+            headers={"server": "cloudflare", "content-type": "text/html"},
+            content=b"<title>Just a moment...</title>",
+        )
+        connector = _unpaywall(
+            {
+                "https://journal.example/p.pdf": wall,
+                "https://api.unpaywall.org": httpx.Response(404),
+            },
+            [],
+        )
+        with pytest.raises(LabAssistantError) as raised:
+            await connector.acquire(self.request, gate=gate)
+        assert raised.value.error_class is ErrorClass.RATE_LIMITED
+        assert raised.value.context["host"] == "journal.example"
+        assert ("journal.example", True, False) in gate.left
+
+    async def test_a_plain_403_is_still_a_sign_in_page(self) -> None:
+        gate = _Gate()
+        connector = _unpaywall(
+            {
+                "https://journal.example/p.pdf": httpx.Response(403, content=b"Please log in"),
+                "https://api.unpaywall.org": httpx.Response(404),
+            },
+            [],
+        )
+        with pytest.raises(LabAssistantError) as raised:
+            await connector.acquire(self.request, gate=gate)
+        assert raised.value.error_class is ErrorClass.AUTHENTICATION_REQUIRED
+        assert ("journal.example", False, False) in gate.left
+
+    async def test_a_resting_site_is_not_asked_and_wins_over_a_definite_answer(self) -> None:
+        seen: list[str] = []
+        lookup = httpx.Response(
+            200,
+            json={
+                "best_oa_location": {"url_for_pdf": "https://repo.example/a.pdf"},
+                "oa_locations": [],
+            },
+        )
+        connector = _unpaywall(
+            {
+                "https://api.unpaywall.org": lookup,
+                "https://repo.example/a.pdf": httpx.Response(404),
+            },
+            seen,
+        )
+        with pytest.raises(LabAssistantError) as raised:
+            await connector.acquire(
+                self.request, gate=_Gate(resting=frozenset({"journal.example"}))
+            )
+        # The resting publisher was never contacted; the paper waits for it.
+        assert "https://journal.example/p.pdf" not in seen
+        assert raised.value.context.get("deferred") is True
+
+
+class TestLanguage:
+    """Each source's language is kept, as it wrote it; summaries make it one code."""
+
+    def test_pubmed(self) -> None:
+        from lab_assistant.adapters.connectors.scholarly import _pubmed_records
+
+        [record] = _pubmed_records(PUBMED_XML).values()
+        assert [a["value"] for a in record if a["predicate"] == "language"] == ["eng"]
+
+    def test_europe_pmc_crossref_and_openalex(self) -> None:
+        assert _values(EuropePmcConnector._record({"id": "1", "language": "spa"}), "language") == [
+            "spa"
+        ]
+        assert _values(
+            CrossrefConnector._record({"DOI": "10.1/x", "language": "en"}), "language"
+        ) == ["en"]
+        assert _values(OpenAlexConnector._record({"id": "W1", "language": "fr"}), "language") == [
+            "fr"
+        ]
+        assert _values(OpenAlexConnector._record({"id": "W1"}), "language") == []

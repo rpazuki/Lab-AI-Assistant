@@ -56,6 +56,8 @@ class AcquisitionState(StrEnum):
     UNPLANNED = "unplanned"
     PLANNED = "planned"
     ACQUIRED = "acquired"
+    #: Only the abstract stands in for it (the abstract fallback), until an upload.
+    PARTIAL = "partial"
     ASSISTED = "assisted"
     UNAVAILABLE = "unavailable"
     FAILED = "failed"

@@ -108,6 +108,7 @@
       "unplanned": "Included, but no plan to fetch its full text has been made yet.",
       "planned": "Routes to fetch the full text are planned and being tried.",
       "acquired": "The full text was fetched and passed its checks.",
+      "partial": "No route returned the full text, so its abstract stands in for it until someone uploads a copy.",
       "assisted": "No permitted route returned it. A person can upload a copy the lab is entitled to.",
       "unavailable": "No legal copy is available; only the metadata is kept.",
       "failed": "Every route failed. A person can still upload a copy."
@@ -297,7 +298,8 @@
       "blinded": "Its expected answers are hidden from those running and grading it.",
       "required_for_publishing": "A release must pass this benchmark before it can be published.",
       "restricted": "Withheld: your role may not see this figure.",
-      "excerpt_only": "Only an excerpt of this source may be shown, not its full text."
+      "excerpt_only": "Only an excerpt of this source may be shown, not its full text.",
+      "abstract_only": "From the paper's abstract: its full text could not be fetched, so methods and full results were not read."
     }
   },
   "audit_action": {
@@ -331,6 +333,8 @@
       "rights_decided": "What may be done with a paper's content was decided.",
       "acquisition_attempted": "A route was tried to fetch a paper's full text.",
       "parse_limits_changed": "The parse-quality limits were changed, or degraded documents were checked against them again.",
+      "abstract_fallback_changed": "A steward switched abstracts in place of missing full texts on or off.",
+      "abstract_documents_built": "Abstracts were turned into documents for papers no route could fetch.",
       "asset_identity_confirmed": "A stored file was confirmed to be its paper, by an identifier or by its title, and goes on to parsing.",
       "acquisition_requeued": "Fetches waiting for a person were put back in the queue, to try their automatic routes again.",
       "asset_registered": "A full-text file was stored.",

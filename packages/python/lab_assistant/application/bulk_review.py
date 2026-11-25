@@ -30,6 +30,7 @@ from lab_assistant.contracts.errors import NotFound, StateTransitionError
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.domain.identity import (
     DUPLICATE_PROPOSAL_REASON,
+    FILTER_DECISION_REASON,
     IdentityDecision,
     IdentityDecisionType,
     Work,
@@ -192,7 +193,7 @@ class BulkReviewService:
                         subject_work_ids=(work.id,),
                         before={"relevance": before.value},
                         after={"relevance": relevance.value, "rule": described},
-                        reason_code="steward_rule",
+                        reason_code=FILTER_DECISION_REASON,
                         decided_by=actor.user_id,
                         decided_by_type="human",
                         decided_at=now,
@@ -208,7 +209,7 @@ class BulkReviewService:
                     subject_type="workspace",
                     subject_id=actor.workspace_id,
                     previous_hash=await uow.audit.latest_hash(actor.workspace_id),
-                    reason_code="steward_rule",
+                    reason_code=FILTER_DECISION_REASON,
                     metadata={"to": relevance.value, "changed": changed, "rule": described},
                 )
             )

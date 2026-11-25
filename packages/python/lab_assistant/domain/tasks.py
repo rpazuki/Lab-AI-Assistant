@@ -163,6 +163,20 @@ class Task(BaseModel):
         self.version += 1
         return state
 
+    def defer(self, *, now: datetime, seconds: int) -> None:
+        """Back in the queue after ``seconds``, the attempt it was claimed for given back.
+
+        For work that was not tried at all (the site it needs is not free yet):
+        waiting on a busy site is not a failure, and must not use up the retries
+        a real failure needs.
+        """
+        self.state = TaskState.READY
+        self.attempt = max(0, self.attempt - 1)
+        self.not_before = now + timedelta(seconds=max(1, seconds))
+        self.lease_owner = None
+        self.lease_expires_at = None
+        self.version += 1
+
     def block_on(self, dependency_ids: tuple[UUID, ...]) -> None:
         self.depends_on = dependency_ids
         self.state = TaskState.BLOCKED
@@ -202,6 +216,8 @@ class RateBudget(BaseModel):
     #: When a slot was last taken or returned. `in_flight` is a count, not a set of
     #: leases, so this is what lets a slot a dead worker held be reclaimed.
     slots_changed_at: datetime | None = None
+    #: Push-backs in a row (a rate limit, a bot wall); each rests the site longer.
+    strikes: int = 0
 
     def try_acquire(self, *, now: datetime) -> tuple[bool, float]:
         """Attempt to take one request slot.
@@ -258,3 +274,26 @@ class RateBudget(BaseModel):
 
     def apply_retry_after(self, *, now: datetime, seconds: int) -> None:
         self.next_permitted_at = now + timedelta(seconds=seconds)
+
+    def push_back(
+        self, *, now: datetime, retry_after: int | None, base_seconds: int, cap_seconds: int
+    ) -> int:
+        """The site refused: rest it, longer each time in a row. Returns the rest in seconds.
+
+        The rest doubles with each strike (``base``, ``2·base``, ``4·base`` …) up to
+        ``cap``, and is never shorter than the site's own ``Retry-After``.
+        """
+        self.strikes += 1
+        rest = min(cap_seconds, base_seconds * 2 ** (self.strikes - 1))
+        rest = max(rest, retry_after or 0)
+        self.next_permitted_at = now + timedelta(seconds=rest)
+        return rest
+
+    def clear_strikes(self) -> None:
+        self.strikes = 0
+
+    def resting_for(self, *, now: datetime) -> float:
+        """Seconds until the site may be asked again; 0 when it may be now."""
+        if self.next_permitted_at is None or now >= self.next_permitted_at:
+            return 0.0
+        return (self.next_permitted_at - now).total_seconds()

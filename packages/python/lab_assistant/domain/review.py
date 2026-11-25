@@ -24,6 +24,11 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 from lab_assistant.domain.identity import normalise_title
+from lab_assistant.domain.language import (
+    UNKNOWN_LANGUAGE,
+    detect_language,
+    normalise_language,
+)
 from lab_assistant.domain.screening import has_abstract, plain_text, relevance_text
 from lab_assistant.domain.states import IdentityState, RelevanceState
 
@@ -119,6 +124,13 @@ class WorkSummary(BaseModel):
     #: What a scope's screening rules read (``domain/screening.py``). None on a
     #: summary written before the rules read summaries; the backfill rebuilds it.
     relevance_text: str | None = None
+    #: Title, abstract and subject terms normalised as a title is: what a search
+    #: of the abstract matches. None on a summary written before it existed.
+    text_search: str | None = None
+    #: Two-letter language code (``domain/language.py``), recorded or detected.
+    language: str | None = None
+    #: True when no source recorded the language and it was read from the text.
+    language_detected: bool = False
     updated_at: datetime | None = None
 
 
@@ -149,6 +161,15 @@ def summarise_work(
         }
     )
     connectors = sorted({source for source in sources if source})
+    recorded = normalise_language(metadata.get("language"))
+    text = relevance_text(metadata)
+    detected = (
+        None
+        if recorded
+        else detect_language(
+            " ".join(part for part in (title, _text(metadata.get("abstract"))) if part)
+        )
+    )
     return WorkSummary(
         work_id=work_id,
         workspace_id=workspace_id,
@@ -163,7 +184,10 @@ def summarise_work(
         subject_terms=f"\n{chr(10).join(terms)}\n" if terms else "",
         sources=f" {' '.join(connectors)} " if connectors else "",
         source_count=len(connectors),
-        relevance_text=relevance_text(metadata),
+        relevance_text=text,
+        text_search=normalise_title(text) if text else "",
+        language=recorded or detected,
+        language_detected=recorded is None and detected is not None,
         updated_at=now,
     )
 
@@ -219,6 +243,30 @@ class CandidateFilter(BaseModel):
     journal: str | None = None
     source: str | None = None
     has_abstract: bool | None = None
+    #: Any of these languages (two-letter codes; ``unknown`` for none known).
+    languages: tuple[str, ...] = ()
+    #: None of these languages; ``unknown`` leaves out papers with none known.
+    exclude_languages: tuple[str, ...] = ()
+    #: Match ``title_words`` and ``exclude_words`` in the abstract and subject
+    #: terms too, not the title alone.
+    search_abstract: bool = False
+
+    @field_validator("languages", "exclude_languages", mode="before")
+    @classmethod
+    def _language_codes(cls, value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            value = value.split(",")
+        codes: list[str] = []
+        for raw in value:
+            text = str(raw).strip().casefold()
+            if not text:
+                continue
+            code = UNKNOWN_LANGUAGE if text == UNKNOWN_LANGUAGE else normalise_language(text)
+            if code and code not in codes:
+                codes.append(code)
+        return tuple(codes)
 
     @field_validator("title_words", "exclude_words", mode="before")
     @classmethod
@@ -258,6 +306,8 @@ class CandidateFilter(BaseModel):
             or self.journal
             or self.source
             or self.has_abstract is not None
+            or self.languages
+            or self.exclude_languages
         )
 
     def matches(self, work: Any, summary: WorkSummary | None) -> bool:
@@ -276,9 +326,19 @@ class CandidateFilter(BaseModel):
         if summary is None:
             return False
         # Substrings, as the SQL adapter's LIKE is: "lipid" also finds "lipids".
-        if any(word not in summary.title_search for word in self.title_words):
+        searched = (
+            (summary.text_search or summary.title_search)
+            if self.search_abstract
+            else summary.title_search
+        )
+        if any(word not in searched for word in self.title_words):
             return False
-        if any(word in summary.title_search for word in self.exclude_words):
+        if any(word in searched for word in self.exclude_words):
+            return False
+        language = summary.language or UNKNOWN_LANGUAGE
+        if self.languages and language not in self.languages:
+            return False
+        if language in self.exclude_languages:
             return False
         if self.subject_terms and not any(
             term in summary.subject_terms for term in self.subject_terms

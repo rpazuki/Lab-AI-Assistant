@@ -217,6 +217,12 @@ def default_open_access_policy(
     replication to other installations is the steward's decision, and the
     architecture asks for default denial while it is unmade. It is never
     granted to user-assisted or entitled material by this policy.
+
+    An abstract stands in for a paper's full text only by a steward's recorded
+    choice: the ``abstract-fallback`` rule needs content kind ``abstract`` and an
+    attestation, which the fallback writes as who switched it on and when (see
+    ``application/abstract_fallback.py``). It lets the abstract be indexed,
+    searched and quoted as an excerpt, never shown whole, exported or sent on.
     """
     open_content = frozenset(
         {
@@ -269,6 +275,30 @@ def default_open_access_policy(
                 - {PolicyAction.EXPORT_EVIDENCE, PolicyAction.REPLICATE_CONTENT},
                 restrictions=("no external model transfer", "no content export"),
                 review_after_days=180,
+            ),
+            RightsPolicyRule(
+                rule_id="abstract-fallback",
+                description=(
+                    "A paper's abstract stands in for its full text, by a steward's "
+                    "recorded choice, while no full text can be kept"
+                ),
+                content_kinds=("abstract",),
+                requires_attestation=True,
+                effect=Effect.ALLOW,
+                actions=frozenset(
+                    {
+                        PolicyAction.STORE_METADATA,
+                        PolicyAction.VIEW_METADATA,
+                        PolicyAction.STORE_CONTENT,
+                        PolicyAction.PROCESS_LOCAL,
+                        PolicyAction.CREATE_EMBEDDINGS_LOCAL,
+                        PolicyAction.INDEX,
+                        PolicyAction.QUERY,
+                        PolicyAction.DISPLAY_EXCERPT,
+                        PolicyAction.RETAIN,
+                    }
+                ),
+                restrictions=("abstract only: answers say so", "no content export"),
             ),
             RightsPolicyRule(
                 rule_id="metadata-fallback",

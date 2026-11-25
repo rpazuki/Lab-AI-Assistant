@@ -177,6 +177,8 @@ class AcquisitionAttempt(BaseModel):
     error_class: str | None = None
     note: str | None = None
     worker_version: str = "unknown"
+    #: The site that answered, e.g. ``www.mdpi.com``.
+    source_host: str | None = None
 
 
 class Asset(BaseModel):
@@ -205,6 +207,17 @@ class Asset(BaseModel):
     identity_verified: bool = False
     created_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+#: ``Asset.metadata["version"]`` of a document built from a paper's abstract
+#: (``application/abstract_fallback.py``): it stands in for the full text, and is
+#: not a fetched file.
+ABSTRACT_VERSION = "abstract"
+
+
+def is_abstract(asset: Asset) -> bool:
+    """Whether the asset is an abstract standing in for a full text."""
+    return (asset.metadata or {}).get("version") == ABSTRACT_VERSION
 
 
 def asset_parse_blockers(

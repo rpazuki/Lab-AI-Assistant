@@ -51,8 +51,11 @@ function byRelevance(counts: Record<string, number>): string {
 function describeFilter(rule: Record<string, unknown>): string {
   const parts: string[] = [];
   const list = (value: unknown) => (Array.isArray(value) ? value.join(", ") : String(value));
-  if (rule.title_words) parts.push(`title has all of ${list(rule.title_words)}`);
-  if (rule.exclude_words) parts.push(`title has none of ${list(rule.exclude_words)}`);
+  const where = rule.search_abstract ? "title or abstract" : "title";
+  if (rule.title_words) parts.push(`${where} has all of ${list(rule.title_words)}`);
+  if (rule.exclude_words) parts.push(`${where} has none of ${list(rule.exclude_words)}`);
+  if (rule.languages) parts.push(`language ${list(rule.languages)}`);
+  if (rule.exclude_languages) parts.push(`language not ${list(rule.exclude_languages)}`);
   if (rule.subject_terms) parts.push(`subject ${list(rule.subject_terms)}`);
   if (rule.journal) parts.push(`journal ${list(rule.journal)}`);
   if (rule.year_from || rule.year_to) parts.push(`years ${rule.year_from ?? "…"}–${rule.year_to ?? "…"}`);
@@ -185,18 +188,21 @@ export function ScopeRules({ scope, onChanged }: { scope: ScopeVersion; onChange
   const [busy, setBusy] = useState<string | null>("Scoring every candidate…");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  // Off by default: a filter a person chose is a decision, until they ask for the
+  // papers it decided to be read again (now that the abstracts are in).
+  const [withFilterDecisions, setWithFilterDecisions] = useState(false);
 
   const preview = useCallback(async () => {
     setBusy("Scoring every candidate…");
     try {
-      setPlan(await previewScopeRules(scope.id));
+      setPlan(await previewScopeRules(scope.id, withFilterDecisions));
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "the preview could not be made");
     } finally {
       setBusy(null);
     }
-  }, [scope.id]);
+  }, [scope.id, withFilterDecisions]);
 
   useEffect(() => {
     void preview();
@@ -207,7 +213,10 @@ export function ScopeRules({ scope, onChanged }: { scope: ScopeVersion; onChange
     if (
       !window.confirm(
         `Apply v${scope.version}'s rules: change ${plural(plan.changes, "candidate")} ` +
-          `(${transitionWords(plan.transitions)}). Candidates a person decided stay as they are. ` +
+          `(${transitionWords(plan.transitions)}). ` +
+          (withFilterDecisions
+            ? "Candidates decided with a filter are screened again; those a person decided one by one stay as they are. "
+            : "Candidates a person decided stay as they are. ") +
           "Each change is recorded with this version, and the whole application is one step in its history.",
       )
     ) {
@@ -221,7 +230,7 @@ export function ScopeRules({ scope, onChanged }: { scope: ScopeVersion; onChange
     try {
       for (let round = 0; remaining > 0 && round < 500; round++) {
         setBusy(`Applying: ${n(applied)} of ${n(plan.changes)}`);
-        const step = await applyScopeRules(scope.id, stepId);
+        const step = await applyScopeRules(scope.id, stepId, withFilterDecisions);
         stepId = step.step_id;
         applied += step.applied;
         remaining = step.remaining;
@@ -249,6 +258,20 @@ export function ScopeRules({ scope, onChanged }: { scope: ScopeVersion; onChange
           {message}
         </Alert>
       ) : null}
+      <label className="flex items-start gap-2 text-xs text-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={withFilterDecisions}
+          disabled={busy !== null}
+          onChange={(event) => setWithFilterDecisions(event.target.checked)}
+        />
+        <span>
+          Also screen again the candidates included or excluded with a filter. Decisions made one
+          paper at a time are always kept. Use this after the abstracts arrive, when a filter chose
+          from titles alone.
+        </span>
+      </label>
       {busy ? <p className="text-sm text-muted" aria-live="polite">{busy}</p> : null}
       {plan && !busy ? (
         plan.no_concepts ? (
@@ -261,7 +284,11 @@ export function ScopeRules({ scope, onChanged }: { scope: ScopeVersion; onChange
             <p className="text-sm text-ink">
               Of {plural(plan.considered, "candidate")}: {plural(plan.changes, "would change", "would change")}
               {plan.changes ? ` (${transitionWords(plan.transitions)})` : ""}, {n(plan.unchanged)} stay as they are,{" "}
-              {n(plan.decided_by_person)} were decided by a person and are left alone
+              {n(plan.decided_by_person)} were decided by a person{" "}
+              {plan.include_filter_decisions ? "one by one " : ""}and are left alone
+              {plan.include_filter_decisions && plan.filter_decided
+                ? `, ${n(plan.filter_decided)} decided with a filter are screened again`
+                : ""}
               {plan.not_indexed ? `, ${n(plan.not_indexed)} are not indexed yet` : ""}.
             </p>
             <p className="text-xs text-muted">

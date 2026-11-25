@@ -4,10 +4,13 @@ import { useCallback, useState } from "react";
 
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Alert, Empty, Panel } from "@/components/ui/primitives";
+import { SortHeader } from "@/components/ui/table";
 import { collectionProgress } from "@/lib/api";
 import { describeStatus } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
-import type { CollectionProgress } from "@/types";
+import { useTable } from "@/lib/useTable";
+import { utcWhen } from "@/lib/when";
+import type { CollectionProgress, SiteRow } from "@/types";
 
 /** Why a paper is not fetched, in the words a steward acts on. */
 const NOT_FETCHED: Record<string, string> = {
@@ -84,6 +87,83 @@ function Figures({ items }: { items: { label: string; value: string; note?: stri
         </div>
       ))}
     </dl>
+  );
+}
+
+/** Each publisher site: what it gave, what it refused, and whether it is resting. */
+function Sites({ sites }: { sites: CollectionProgress["sites"] }) {
+  const table = useTable(sites.rows, {
+    columns: {
+      host: (row: SiteRow) => row.host,
+      fetched: (row: SiteRow) => row.fetched,
+      slowed_down: (row: SiteRow) => row.slowed_down,
+      blocked: (row: SiteRow) => row.blocked,
+      sign_in: (row: SiteRow) => row.sign_in,
+      other: (row: SiteRow) => row.other,
+      resting_until: (row: SiteRow) => row.resting_until ?? "",
+    },
+  });
+  if (sites.rows.length === 0) {
+    return <Empty>No site has been asked by the current fetcher yet.</Empty>;
+  }
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-muted">
+        Each site is asked once every {sites.seconds_between_requests} s at most, one request at a
+        time. A site that slows us down or blocks rests, longer each time in a row, while other
+        sites are fetched; its papers wait for it without using up their tries.{" "}
+        {sites.resting > 0 ? `${n(sites.resting)} resting now. ` : ""}
+        {sites.total > sites.rows.length
+          ? `The ${sites.rows.length} that refused most of ${n(sites.total)} sites.`
+          : ""}
+      </p>
+      <div className="overflow-x-auto rounded-control border border-border">
+        <table className="data-table" aria-label="Publisher sites">
+          <thead>
+            <tr>
+              <SortHeader table={table} column="host">
+                Site
+              </SortHeader>
+              <SortHeader table={table} column="fetched" numeric>
+                Fetched
+              </SortHeader>
+              <SortHeader table={table} column="slowed_down" numeric>
+                Slowed us down
+              </SortHeader>
+              <SortHeader table={table} column="blocked" numeric>
+                Blocked
+              </SortHeader>
+              <SortHeader table={table} column="sign_in" numeric>
+                Sign-in page
+              </SortHeader>
+              <SortHeader table={table} column="other" numeric>
+                Other
+              </SortHeader>
+              <SortHeader table={table} column="resting_until">
+                Resting until
+              </SortHeader>
+            </tr>
+          </thead>
+          <tbody>
+            {table.rows.map((row) => (
+              <tr key={row.host}>
+                <td className="font-mono text-xs">{row.host}</td>
+                <td className="numeric">{n(row.fetched)}</td>
+                <td className="numeric">{n(row.slowed_down)}</td>
+                <td className="numeric">{n(row.blocked)}</td>
+                <td className="numeric">{n(row.sign_in)}</td>
+                <td className="numeric">{n(row.other)}</td>
+                <td className="text-xs">
+                  {row.resting_until
+                    ? `${utcWhen(row.resting_until)} (refused ${row.strikes} in a row)`
+                    : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -199,6 +279,11 @@ export function ProgressClient() {
               items={[
                 { label: "Fetched", value: n(acquisition.plans.acquired) },
                 { label: "Waiting for a person", value: n(acquisition.plans.assisted) },
+                {
+                  label: "Abstract only",
+                  value: n(acquisition.plans.partial),
+                  note: "its abstract stands in until an upload",
+                },
                 { label: "Failed", value: n(acquisition.plans.failed) },
                 { label: "Still being fetched", value: n(acquisition.plans.planned) },
                 { label: "Preprint versions", value: n(acquisition.preprints) },
@@ -246,6 +331,10 @@ export function ProgressClient() {
           </div>
         </Panel>
       </div>
+
+      <Panel title="Publisher sites">
+        <Sites sites={view.sites} />
+      </Panel>
 
       <Panel title={`The last ${daily.length} days (UTC)`}>
         <ol aria-label="Daily" className="space-y-1 text-xs">

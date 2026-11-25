@@ -32,6 +32,15 @@ vi.mock("@/lib/api", async (importOriginal) => {
       },
       parsing: { by_status: { ready: 2285, degraded: 341 }, degraded_by_reason: { "reference list not separated": 200 } },
       extraction: { papers_with_values: 2000, values: 9000, waiting_review: 8500, tasks: { succeeded: 2285 } },
+      sites: {
+        rows: [
+          { host: "www.mdpi.com", fetched: 900, slowed_down: 2650, blocked: 0, sign_in: 0, other: 3, resting_until: "2026-11-25T12:30:00+00:00", strikes: 2 },
+          { host: "journals.plos.org", fetched: 400, slowed_down: 0, blocked: 0, sign_in: 0, other: 1, resting_until: null, strikes: 0 },
+        ],
+        total: 2,
+        resting: 1,
+        seconds_between_requests: 2,
+      },
       daily: [{ day: "2026-11-25", found: 0, fetched: 120, parsed: 100 }],
     })),
   };
@@ -50,5 +59,11 @@ describe("Collection progress", () => {
     expect(within(waiting).getByText("14,228")).toBeInTheDocument();
     expect(screen.getByText("The file could not be tied to the paper")).toBeInTheDocument();
     expect(screen.getByText("3,446 of 28,308")).toBeInTheDocument(); // papers with an abstract
+
+    const sites = screen.getByRole("table", { name: "Publisher sites" });
+    expect(within(sites).getByText("www.mdpi.com")).toBeInTheDocument();
+    expect(within(sites).getByText("2,650")).toBeInTheDocument();
+    expect(within(sites).getByText("2026-11-25 12:30 UTC (refused 2 in a row)")).toBeInTheDocument();
+    expect(screen.getByText(/once every 2 s at most/)).toBeInTheDocument();
   });
 });

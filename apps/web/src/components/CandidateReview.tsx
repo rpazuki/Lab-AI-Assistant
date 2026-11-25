@@ -7,6 +7,7 @@ import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { PageCount, Pager } from "@/components/ui/Pager";
 import { Alert, Button, Empty, Input, StateChip, row, rowList } from "@/components/ui/primitives";
 import { bulkRelevance, candidateFacets, listCandidates, setRelevance } from "@/lib/api";
+import { languageName } from "@/lib/languages";
 import { statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { PAGE_SIZES, usePager } from "@/lib/usePager";
@@ -36,6 +37,19 @@ function active(filters: CandidateFilters): boolean {
  * change. A bulk decision always previews first (how many, and a few of them) and
  * by default leaves alone any candidate someone has already decided.
  */
+/** The language menu's value for a filter: "is:es", "not:en,unknown", or "" for any. */
+function languageChoice(filters: CandidateFilters): string {
+  if (filters.language) return `is:${filters.language}`;
+  if (filters.exclude_language) return `not:${filters.exclude_language}`;
+  return "";
+}
+
+function fromLanguageChoice(choice: string): Pick<CandidateFilters, "language" | "exclude_language"> {
+  if (choice.startsWith("is:")) return { language: choice.slice(3), exclude_language: undefined };
+  if (choice.startsWith("not:")) return { language: undefined, exclude_language: choice.slice(4) };
+  return { language: undefined, exclude_language: undefined };
+}
+
 export function CandidateReview({ live: parentLive }: { live: boolean }) {
   const [page, setPage] = useState<Page<Candidate>>(EMPTY_PAGE);
   const [facets, setFacets] = useState<CandidateFacets | null>(null);
@@ -178,6 +192,14 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
               onChange={(event) => set("subject", event.target.value)}
             />
           </label>
+          <label className="flex items-center gap-2 text-xs text-ink sm:col-span-2 lg:col-span-4">
+            <input
+              type="checkbox"
+              checked={Boolean(draft.in_abstract)}
+              onChange={(event) => choose("in_abstract", event.target.checked)}
+            />
+            <span>Look for the words in the abstract and subject terms too, not the title alone</span>
+          </label>
           <label className="space-y-1 text-xs text-muted">
             <span className="block">Journal contains</span>
             <Input
@@ -240,6 +262,28 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
               {Object.entries(facets?.sources ?? {}).map(([source, count]) => (
                 <option key={source} value={source}>
                   {source} ({count.toLocaleString()})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="block">Language</span>
+            <select
+              aria-label="Filter by language"
+              className={selectClass}
+              value={languageChoice(draft)}
+              onChange={(event) => {
+                const next = { ...draft, ...fromLanguageChoice(event.target.value) };
+                setDraft(next);
+                apply(next);
+              }}
+            >
+              <option value="">Any language</option>
+              <option value="not:en,unknown">Not English (language known)</option>
+              <option value="not:en">Not English, or unknown</option>
+              {Object.entries(facets?.languages ?? {}).map(([code, count]) => (
+                <option key={code} value={`is:${code}`}>
+                  {languageName(code)} ({count.toLocaleString()})
                 </option>
               ))}
             </select>
@@ -383,7 +427,16 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
               ) : null}
             </div>
             <p className="mt-1 text-xs text-muted">
-              {[candidate.journal, candidate.year, candidate.work_kind].filter(Boolean).join(" · ")}
+              {[
+                candidate.journal,
+                candidate.year,
+                candidate.work_kind,
+                candidate.language
+                  ? `${languageName(candidate.language)}${candidate.language_detected ? " (read from the title)" : ""}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
               {candidate.merged_into_work_id
                 ? ` · merged into ${candidate.merged_into_work_id.slice(0, 8)}, which holds its records`
                 : ""}

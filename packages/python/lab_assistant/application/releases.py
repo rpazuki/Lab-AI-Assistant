@@ -12,8 +12,10 @@ alias.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
+from lab_assistant.application.abstract_fallback import fallback_enabled
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.objects import register_object
 from lab_assistant.application.pagination import collect_pages, every_session
@@ -33,6 +35,7 @@ from lab_assistant.contracts.release import (
     ReleaseValidationReport,
 )
 from lab_assistant.contracts.stage import StageName, TaskRequest
+from lab_assistant.domain.assets import is_abstract
 from lab_assistant.domain.claims import claim_release_blockers
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.release import (
@@ -87,9 +90,12 @@ class ReleaseService:
                 )
             )
             included = [work for work in works if work.is_active]
+            # An abstract stands in for a paper only while a steward has the
+            # fallback on, and only when it has no full text.
+            abstracts_allowed = await fallback_enabled(uow, actor.workspace_id)
             records: list[ReleaseItemRecord] = []
             for work in included:
-                renditions = [
+                usable = [
                     rendition
                     for rendition in await uow.renditions.list_renditions(
                         actor.workspace_id, work_id=work.id
@@ -97,7 +103,16 @@ class ReleaseService:
                     if rendition.is_extraction_eligible
                     or rendition.quality_status is ParseState.READY
                 ]
+                full: list[Any] = []
+                abstracts: list[Any] = []
+                for candidate in usable:
+                    source = await uow.assets.get_asset(actor.workspace_id, candidate.asset_id)
+                    (abstracts if source is not None and is_abstract(source) else full).append(
+                        candidate
+                    )
+                renditions = full or (abstracts if abstracts_allowed else [])
                 rendition = renditions[0] if renditions else None
+                abstract_only = rendition is not None and not full
                 claim_revision_ids: list[UUID] = []
                 if request.include_claims:
                     for claim in await uow.claims.list_claims(actor.workspace_id, work_id=work.id):
@@ -135,7 +150,11 @@ class ReleaseService:
                         rendition_digest=rendition.sha256 if rendition else None,
                         claim_revision_ids=tuple(sorted(claim_revision_ids, key=str)),
                         access_policy_snapshot_id=(asset.rights_decision_id if asset else None),
-                        inclusion_reason="relevance_included",
+                        inclusion_reason=(
+                            "relevance_included_abstract_only"
+                            if abstract_only
+                            else "relevance_included"
+                        ),
                     )
                 )
 

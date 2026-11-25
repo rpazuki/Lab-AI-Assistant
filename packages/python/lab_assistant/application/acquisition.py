@@ -54,6 +54,7 @@ from lab_assistant.domain.assets import (
     RightsDecision,
     ValidationStatus,
     asset_parse_blockers,
+    is_abstract,
 )
 from lab_assistant.domain.identity import normalise_identifier
 from lab_assistant.domain.installation import InstallationCapability
@@ -73,7 +74,10 @@ __all__ = [
     "route_ladder",
 ]
 
-IMPLEMENTATION_VERSION = "acquisition/2"
+#: ``acquisition/3`` paces each publisher site. Answers the unpaced fetcher got
+#: (rate limits, bot walls read as sign-in pages) do not count as answered, so the
+#: next press of Fetch included papers asks those sites again, slowly.
+IMPLEMENTATION_VERSION = "acquisition/3"
 
 #: Media types a parser profile exists for. Anything else is invalid content,
 #: not a "we'll try anyway".
@@ -308,6 +312,15 @@ class AcquisitionService:
                     },
                 )
             )
+            # The upload closes the plan: it was waiting for a person, or only its
+            # abstract stood in for it. Left as it was, an uploaded paper still
+            # read as waiting, and a partial one as abstract-only.
+            if asset.validation_status is ValidationStatus.PASSED:
+                stored_plan = await uow.assets.get_plan(actor.workspace_id, plan_id)
+                if stored_plan is not None and stored_plan.status != "acquired":
+                    stored_plan.status = "acquired"
+                    stored_plan.version += 1
+                    await uow.assets.update_plan(stored_plan)
             await uow.commit()
         return asset
 
@@ -825,7 +838,10 @@ class AcquisitionHandler:
                 if m.id in plan.manifestation_ids
             ]
             identifiers = await uow.works.list_identifiers(workspace_id, plan.work_id)
-            existing_assets = await uow.assets.list_assets(workspace_id, work_id=plan.work_id)
+            # An abstract standing in for the paper is not its full text: the
+            # routes are still worth trying.
+            all_assets = await uow.assets.list_assets(workspace_id, work_id=plan.work_id)
+            existing_assets = [asset for asset in all_assets if not is_abstract(asset)]
             assertions = await uow.observations.list_assertions(workspace_id, work_id=plan.work_id)
             summaries = await uow.works.get_summaries(workspace_id, [plan.work_id])
             summary = summaries.get(plan.work_id)
@@ -854,6 +870,8 @@ class AcquisitionHandler:
             )
         registry = context.require_connectors()
         limiter = RateLimiter(context)
+        #: Seconds until each site this fetch could not ask yet (busy or resting).
+        deferred_waits: list[int] = []
         attempts: list[AcquisitionAttempt] = []
         final_outcome = AcquisitionOutcome.FAILED_PERMANENT
         acquired_asset: Asset | None = None
@@ -890,27 +908,45 @@ class AcquisitionHandler:
                         request_identity=context.settings.connector_request_identity,
                         target_url=locations.url,
                     )
+                    api_host = _hostname(getattr(connector, "base_url", None))
                     try:
-                        # Through the shared budget, exactly as discovery is. Fetching
-                        # a document is an external source request; a limiter only
-                        # discovery respects is not a limit the source experiences.
-                        raw = await limiter.request(
-                            lambda connector=connector, request=acquisition_request: (
-                                connector.acquire(request)
-                            ),
-                            key=budget_key(
-                                connector_id=connector_id,
-                                host=host_of(getattr(connector, "base_url", None)),
-                            ),
-                            policy=connector.capabilities.rate_policy,
-                        )
+                        if getattr(connector, "paces_sites", False):
+                            # It follows links to many sites: each site is paced on
+                            # its own, its API included, through the stored budgets.
+                            raw = await limiter.per_site(
+                                lambda gate, connector=connector, request=acquisition_request: (
+                                    connector.acquire(request, gate=gate)
+                                )
+                            )
+                        else:
+                            # Through the shared budget, exactly as discovery is.
+                            # Fetching a document is an external source request; a
+                            # limiter only discovery respects is not a limit the
+                            # source experiences.
+                            raw = await limiter.request(
+                                lambda connector=connector, request=acquisition_request: (
+                                    connector.acquire(request)
+                                ),
+                                key=budget_key(
+                                    connector_id=connector_id,
+                                    host=host_of(getattr(connector, "base_url", None)),
+                                ),
+                                policy=connector.capabilities.rate_policy,
+                            )
                     except LabAssistantError as exc:
+                        if exc.context.get("deferred"):
+                            # Not asked: the site is busy or resting. No attempt is
+                            # recorded, and the paper comes back once it may be.
+                            deferred_waits.append(int(exc.context.get("retry_after_seconds") or 60))
+                            continue
                         attempt = attempt.model_copy(
                             update={
                                 "completed_at": context.now(),
                                 "outcome": _acquisition_outcome(exc.error_class),
                                 "error_class": exc.error_class.value,
                                 "note": exc.detail,
+                                "http_status": exc.context.get("http_status"),
+                                "source_host": exc.context.get("host") or api_host,
                                 "retry_after_seconds": (exc.context or {}).get(
                                     "retry_after_seconds"
                                 ),
@@ -979,6 +1015,7 @@ class AcquisitionHandler:
                             "outcome": outcome,
                             "http_status": raw.response.status,
                             "source_url_redacted": raw.source_url_redacted,
+                            "source_host": _hostname(raw.source_url_redacted) or api_host,
                             "asset_id": acquired_asset.id,
                         }
                     )
@@ -993,10 +1030,18 @@ class AcquisitionHandler:
         # A source that was down, slow or rate-limiting is tried again while the
         # task has deliveries left; only then is the paper handed to a person.
         passing = [a for a in attempts if a.outcome in _PASSING_OUTCOMES]
+        # A site this fetch could not ask yet may still have the paper: it comes
+        # back when the site may be asked, without spending one of its tries.
+        deferred = acquired_asset is None and bool(deferred_waits)
         retrying = (
-            acquired_asset is None and bool(passing) and command.attempt < command.max_attempts
+            not deferred
+            and acquired_asset is None
+            and bool(passing)
+            and command.attempt < command.max_attempts
         )
-        if retrying:
+        if deferred:
+            final_outcome = AcquisitionOutcome.RATE_LIMITED_RETRYABLE
+        elif retrying:
             final_outcome = passing[-1].outcome or AcquisitionOutcome.SOURCE_UNAVAILABLE_RETRYABLE
         elif acquired_asset is None and AcquisitionRoute.USER_ASSISTED in plan.route_order:
             final_outcome = AcquisitionOutcome.ASSISTED_REQUIRED
@@ -1024,10 +1069,13 @@ class AcquisitionHandler:
                 )
             plan = await uow.assets.get_plan(workspace_id, plan_id)
             assert plan is not None
-            if not retrying:
+            if not retrying and not deferred:
                 plan.status = (
                     "acquired"
                     if final_outcome.produced_asset
+                    # Its abstract still stands in for it.
+                    else "partial"
+                    if len(all_assets) > len(existing_assets)
                     else "assisted"
                     if final_outcome is AcquisitionOutcome.ASSISTED_REQUIRED
                     else "failed"
@@ -1035,6 +1083,18 @@ class AcquisitionHandler:
                 plan.version += 1
                 await uow.assets.update_plan(plan)
             await uow.commit()
+
+        if deferred:
+            # Spread over a minute, so papers waiting on one site do not all come
+            # back in the same instant and meet the same busy site.
+            wait = max(30, min(deferred_waits)) + plan_id.int % 60
+            return StageResult(
+                stage=StageName.ACQUISITION,
+                status=StageStatus.DEFERRED,
+                metrics={"outcome": "deferred", "attempts": len(attempts)},
+                quality_gates={"attempt_provenance_recorded": True},
+                retry_after_seconds=wait,
+            )
 
         if acquired_asset is not None and final_outcome is AcquisitionOutcome.ACQUIRED:
             return StageResult(
@@ -1144,6 +1204,15 @@ def _error_class_for_outcome(outcome: AcquisitionOutcome) -> ErrorClass:
         AcquisitionOutcome.CANCELLED: ErrorClass.CANCELLED,
     }
     return mapping.get(outcome, ErrorClass.INVALID_CONTENT)
+
+
+def _hostname(url: str | None) -> str | None:
+    """The site a URL names, lower-case, without port or credentials."""
+    if not url:
+        return None
+    from urllib.parse import urlparse
+
+    return (urlparse(url).hostname or "").lower() or None
 
 
 def _acquisition_outcome(error_class: ErrorClass) -> AcquisitionOutcome:

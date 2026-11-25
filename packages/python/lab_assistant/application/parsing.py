@@ -28,7 +28,7 @@ from lab_assistant.contracts.stage import (
     StageStatus,
     TaskRequest,
 )
-from lab_assistant.domain.assets import AcquisitionRoute
+from lab_assistant.domain.assets import AcquisitionRoute, is_abstract
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.renditions import (
     ParseRun,
@@ -281,7 +281,9 @@ class ParsingHandler:
                         inputs={"rendition_id": str(rendition.id)},
                     ),
                 )
-                if not quality_blockers
+                # Values for a datasheet come from full texts: an abstract states
+                # results without the methods and conditions that qualify them.
+                if not quality_blockers and not is_abstract(asset)
                 else ()
             ),
         )

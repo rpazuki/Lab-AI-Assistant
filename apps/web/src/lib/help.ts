@@ -469,7 +469,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "Screening rules and review history",
         about: [
           "A scope's **Concepts** and **Exclusion terms** decide candidates automatically. A paper's score is the share of concepts it mentions; a concept can list alternatives separated by | (yarrowia | y. lipolytica). An exclusion term excludes outright. A paper with no abstract is never excluded for missing a concept: its title alone is no evidence, so it is left for review. Three fields of each candidate are read, as the sources reported them: its **title** (one, from the most authoritative source that gave one: Crossref or DataCite, then Europe PMC or PubMed, then OpenAlex), its **abstract** (one, chosen the same way, from Crossref, Europe PMC, PubMed or OpenAlex) and its **subject terms** (the topic labels OpenAlex assigns, up to 20, and the MeSH headings PubMed indexes, up to 40). The journal, authors, year, author keywords and full text are not read. Papers found before these sources supplied abstracts get them when the scope's discovery is run again. Case is ignored, and a term matches anywhere in the text, even inside a longer word (plant also matches implant).",
-          "An approved scope is frozen, so changing its rules means a new version. **Apply rules** then re-decides the candidates with that version, but never a candidate a person decided. Every step under a scope (its approval, frozen runs, rules applied, filters, merges, single decisions) is kept in its **History**.",
+          "An approved scope is frozen, so changing its rules means a new version. **Apply rules** then re-decides the candidates with that version, but never a candidate a person decided one by one. A candidate decided in bulk with a filter is left alone too, unless you tick **Also screen again the candidates included or excluded with a filter**: do that after the abstracts arrive, when a filter chose from titles alone. Every step under a scope (its approval, frozen runs, rules applied, filters, merges, single decisions) is kept in its **History**.",
         ],
         howTos: [
           {
@@ -595,12 +595,22 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             title: "How to include or exclude many candidates at once",
             needs: STEWARD,
             steps: [
-              "Under **Candidates**, set the filters: words the title must have or must not have, subject terms, journal, years, kind, the source that found it, and whether it has an abstract. Select **Apply filters**.",
+              "Under **Candidates**, set the filters: words the title must have or must not have (tick **Look for the words in the abstract and subject terms too** to search more than the title), subject terms, journal, years, kind, the source that found it, its **Language**, and whether it has an abstract. Select **Apply filters**.",
               "Check the count and page through a few results.",
               "Select **Include all**, **Mark uncertain all** or **Exclude all**. The confirmation shows how many will change and some of them.",
               "Confirm. Each decision is recorded with the filter that made it.",
             ],
             note: "**Leave candidates already decided as they are** is on by default, so a broad rule never overrides a decision someone made one by one. Turn it off only to correct an earlier rule.",
+          },
+          {
+            title: "How to leave out papers not written in English",
+            needs: STEWARD,
+            steps: [
+              "Under **Candidates**, choose **Language** › **Not English (language known)**. Papers whose language no source recorded and the title does not show stay out of the list.",
+              "Page through to check them, then select **Exclude all** and confirm.",
+              "To catch the rest, choose **Unknown** and look through them: those are papers with no recorded language and a title too short or too technical to tell.",
+            ],
+            note: "A language is the one a source recorded (PubMed, Europe PMC, Crossref or OpenAlex) or, when none did, the one the title and abstract are written in; a candidate shows “read from the title” when it was detected. Papers found before discovery kept languages get them when the scope's discovery is run again.",
           },
           {
             title: "How to decide whether a paper belongs",
@@ -639,6 +649,27 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "In **Attestation**, say how the copy was obtained.",
               "Choose the file and select **Upload**.",
             ],
+          },
+        ],
+      },
+      {
+        id: "abstracts",
+        title: "Abstracts for papers without full text",
+        about: [
+          "Most included papers cannot be fetched automatically, and a paper with no full text is not in Ask. **Abstracts for papers without full text** lets a paper's abstract stand in for it: the plan is marked **partial**, the abstract goes into the next release, and every Ask source taken from an abstract is marked **abstract only**, in the sources and in the answer itself. No values are extracted from abstracts.",
+          "It is off until a data steward switches it on, and the switch records who did and when: indexing and quoting abstracts of papers whose licence does not let the lab keep a copy is a rights decision. Switched off, the next release leaves the abstracts out. An uploaded full text always takes the abstract's place.",
+        ],
+        howTos: [
+          {
+            title: "How to use abstracts for papers that could not be fetched",
+            needs: STEWARD,
+            steps: [
+              "On **Collections**, open **Abstracts for papers without full text**. It says how many papers could use their abstract.",
+              "Tick **Use abstracts in place of full texts that could not be fetched** and confirm. Their abstracts are turned into documents and parsed.",
+              "Make a new release under **Releases**: it includes them, marked as abstracts.",
+              "Later, after more fetches fail, select **Use abstracts for N more**.",
+            ],
+            note: "To replace an abstract with the full text, upload the paper from the **Acquisition queue** (its plan is marked partial); the next release uses the full text.",
           },
         ],
       },
@@ -711,6 +742,25 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Find the first step in **How far papers have got** where the count falls sharply.",
               "Read the panel for that step: it says why. Rate limits clear on the next press of **Fetch included papers**; papers with no open licence need an upload; degraded documents may pass with adjusted **Parse quality** limits.",
               "Act on Collections, then come back to see the counts move.",
+            ],
+          },
+        ],
+      },
+      {
+        id: "sites",
+        title: "Publisher sites",
+        about: [
+          "Full text is fetched from many publisher sites, and each is paced on its own: one request at a time, a couple of seconds apart, shared by every worker. A site that slows us down or puts up a bot check rests, five minutes the first time and twice as long each time in a row (up to a day), while papers on other sites are fetched. Its papers wait for it without using up their tries, and a success clears its record.",
+          "**Publisher sites** lists the sites that refused most: how many papers each gave, how often it slowed us down, blocked us or showed a sign-in page, and until when it rests. A site that refuses six times in a row is taken to block automated downloads while it rests, and its papers go to a person.",
+        ],
+        howTos: [
+          {
+            title: "How to see which publishers are refusing",
+            needs: STEWARD,
+            steps: [
+              "Open **Collection progress** and read **Publisher sites**, sorted by the column you need.",
+              "A site that mostly **slowed us down** is resting and will be asked again by itself; press **Fetch included papers** after it rests to queue papers that ran out of tries.",
+              "A site that is **blocked** or shows a **sign-in page** will not give its papers automatically: upload them, or ask the library whether that publisher offers a text-mining licence.",
             ],
           },
         ],

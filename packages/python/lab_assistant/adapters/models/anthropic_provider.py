@@ -209,7 +209,7 @@ class AnthropicProvider:
 
 def _system_blocks(request: GenerationRequest) -> list[dict[str, Any]]:
     evidence = "\n\n".join(
-        f"[{block.handle}] {block.text}"
+        f"[{block.handle}]{' (abstract only)' if block.abstract_only else ''} {block.text}"
         + (f"\n(source: {block.source_label}, {block.locator})" if block.source_label else "")
         for block in request.evidence
     )

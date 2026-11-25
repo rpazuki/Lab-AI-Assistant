@@ -28,11 +28,19 @@ from urllib.parse import urlparse
 
 from lab_assistant.application.context import ServiceContext
 from lab_assistant.contracts.canonical import sha256_text
-from lab_assistant.contracts.connector import RatePolicy
+from lab_assistant.contracts.connector import RatePolicy, SiteGate
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.domain.tasks import RateBudget
 
-__all__ = ["RateLimiter", "budget_key", "host_of", "login_budget_key"]
+__all__ = [
+    "SITE_PREFIX",
+    "RateLimiter",
+    "SitePacer",
+    "budget_key",
+    "host_of",
+    "login_budget_key",
+    "site_key",
+]
 
 #: Longer than this and the task waits in the queue instead of holding a lease. A
 #: worker sleeping for minutes is a worker not draining any other stage.
@@ -139,6 +147,15 @@ class RateLimiter:
         finally:
             await self.release(key)
 
+    async def per_site[T](self, call: Callable[[SiteGate], Awaitable[T]]) -> T:
+        """A call to a connector that reaches many sites, each paced on its own.
+
+        The connector is handed a gate and asks it before every request to a site
+        (see ``SitePacer``), so the budget it spends is the site's, not one shared
+        by every site it links to.
+        """
+        return await call(SitePacer(self.context))
+
     async def throttle[T](
         self,
         pages: AsyncIterator[T],
@@ -200,3 +217,99 @@ class RateLimiter:
         # The injected clock, so a test can hold time still and assert the exact
         # wait a budget asks for.
         return self.context.now()
+
+
+# ── per-site pacing ────────────────────────────────────────────────────────
+# Pacing each site full text is fetched from, and resting a site that refuses.
+#
+# Fetching full text used to share one budget per connector: every PDF the
+# open-access resolver followed to MDPI, Frontiers, Elsevier and the rest counted
+# against the resolver's five requests a second, as one stream. A publisher with
+# thousands of papers was asked as fast as the resolver allowed, answered with rate
+# limits and bot walls, and each of those answers cost the paper one of its tries.
+#
+# Now every site has its own stored budget (``site|<host>``, one request at a time,
+# ``acquisition_site_requests_per_second``), shared by every worker:
+#
+# * a site whose turn is a short wait away is waited for;
+# * a site whose turn is far off, or that is resting, is not asked: the fetch is
+#   **deferred** (``rate_limited`` with ``deferred``), which costs the paper nothing,
+#   and the worker moves on to papers on other sites. That is the round robin: a
+#   busy or resting site's papers wait while the rest are fetched;
+# * a site that pushes back (429, or a bot wall's 403 or 503) gets a strike and
+#   rests: ``acquisition_site_rest_seconds``, doubling with each strike in a row up
+#   to ``acquisition_site_rest_cap_seconds``, never shorter than its Retry-After;
+# * a success clears its strikes;
+# * at ``acquisition_site_block_strikes`` in a row the site is taken to block
+#   automated downloads while it rests: its papers go to a person instead of
+#   waiting on it.
+
+SITE_PREFIX = "site|"
+
+
+def site_key(host: str) -> str:
+    return f"{SITE_PREFIX}{host.lower()}"
+
+
+@dataclass(slots=True)
+class SitePacer:
+    """The stored, shared implementation of ``SiteGate``."""
+
+    context: ServiceContext
+
+    def _policy(self) -> RatePolicy:
+        return RatePolicy(
+            requests_per_second=self.context.settings.acquisition_site_requests_per_second,
+            burst=1,
+            max_concurrent=1,
+        )
+
+    async def enter(self, host: str, *, policy: RatePolicy | None = None) -> None:
+        settings = self.context.settings
+        key = site_key(host)
+        async with self.context.uow_factory() as uow:
+            budget = await uow.tasks.get_rate_budget(key)
+        if budget is not None:
+            resting = budget.resting_for(now=self.context.now())
+            if resting > 0 and budget.strikes >= settings.acquisition_site_block_strikes:
+                raise LabAssistantError(
+                    f"{host} refused automated downloads {budget.strikes} times in a row",
+                    context={"host": host, "site_blocked": True},
+                ).with_class(ErrorClass.POLICY_BLOCKED)
+        try:
+            await RateLimiter(self.context).acquire(key, policy=policy or self._policy())
+        except LabAssistantError as exc:
+            if exc.error_class is not ErrorClass.RATE_LIMITED:
+                raise
+            raise LabAssistantError(
+                f"{host} is paced or resting: not asked now",
+                context={**exc.context, "host": host, "deferred": True},
+            ).with_class(ErrorClass.RATE_LIMITED) from exc
+
+    async def leave(
+        self,
+        host: str,
+        *,
+        pushed_back: bool = False,
+        succeeded: bool = False,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        settings = self.context.settings
+        now = self.context.now()
+        async with self.context.uow_factory() as uow:
+            budget = await uow.tasks.get_rate_budget(site_key(host), for_update=True)
+            if budget is None:  # pragma: no cover - leave without enter
+                return
+            budget.release(now=now)
+            if pushed_back:
+                budget.push_back(
+                    now=now,
+                    retry_after=retry_after_seconds,
+                    base_seconds=settings.acquisition_site_rest_seconds,
+                    cap_seconds=settings.acquisition_site_rest_cap_seconds,
+                )
+            elif succeeded:
+                budget.clear_strikes()
+            budget.updated_at = max(budget.updated_at, now)
+            await uow.tasks.upsert_rate_budget(budget)
+            await uow.commit()

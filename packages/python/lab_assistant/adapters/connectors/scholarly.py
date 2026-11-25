@@ -20,7 +20,8 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 import httpx
 
@@ -43,6 +44,7 @@ from lab_assistant.contracts.connector import (
     RatePolicy,
     RawAcquisition,
     RawPage,
+    SiteGate,
 )
 from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
 from lab_assistant.domain.observation import Predicate
@@ -159,6 +161,8 @@ def _pubmed_records(xml: bytes) -> dict[str, list[dict[str, Any]]]:
                 )
             if journal := text(body.find("Journal/Title")):
                 assertions.append(assertion(Predicate.JOURNAL, journal, authority=authority))
+            if language := text(body.find("Language")):
+                assertions.append(assertion(Predicate.LANGUAGE, language, authority=authority))
             date = body.find("Journal/JournalIssue/PubDate")
             year = _year(text(date.find("Year"))) if date is not None else None
             if year is None and date is not None:
@@ -312,7 +316,8 @@ class PubMedConnector(_HttpConnector):
     connector_id: str = "pubmed"
     #: 1.1.0: each search page is followed by ``efetch`` for its records. 1.0.0
     #: kept only the PMIDs, so a PubMed record had no title, abstract or MeSH.
-    connector_version: str = "1.1.0"
+    #: 1.2.0: the record's language is kept.
+    connector_version: str = "1.2.0"
     base_url: str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
     page_size: int = 100
 
@@ -495,7 +500,8 @@ class EuropePmcConnector(_HttpConnector):
     """Europe PMC REST: discovery plus open-access full text."""
 
     connector_id: str = "europepmc"
-    connector_version: str = "1.0.0"
+    #: 1.1.0: the record's language is kept.
+    connector_version: str = "1.1.0"
     base_url: str = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 
     @property
@@ -613,6 +619,10 @@ class EuropePmcConnector(_HttpConnector):
             assertions.append(
                 assertion(Predicate.JOURNAL, result["journalTitle"], authority=authority)
             )
+        if result.get("language"):
+            assertions.append(
+                assertion(Predicate.LANGUAGE, result["language"], authority=authority)
+            )
         if (year := _year(result.get("pubYear"))) is not None:
             assertions.append(assertion(Predicate.YEAR, year, authority=authority))
         licence = (result.get("license") or "").strip()
@@ -702,8 +712,9 @@ class CrossrefConnector(_HttpConnector):
 
     connector_id: str = "crossref"
     #: 1.1.0: Crossref's ``abstract`` (JATS) is read. A new version starts a new
-    #: cursor lineage, so the next run fetches every page again.
-    connector_version: str = "1.1.0"
+    #: cursor lineage, so the next run fetches every page again. 1.2.0: the
+    #: record's language is kept.
+    connector_version: str = "1.2.0"
     base_url: str = "https://api.crossref.org"
 
     @property
@@ -817,6 +828,8 @@ class CrossrefConnector(_HttpConnector):
         containers = item.get("container-title") or []
         if containers:
             assertions.append(assertion(Predicate.JOURNAL, containers[0], authority=authority))
+        if item.get("language"):
+            assertions.append(assertion(Predicate.LANGUAGE, item["language"], authority=authority))
         issued = (item.get("issued") or {}).get("date-parts") or []
         if issued and issued[0] and (year := _year(issued[0][0])) is not None:
             assertions.append(assertion(Predicate.YEAR, year, authority=authority))
@@ -906,8 +919,9 @@ class OpenAlexConnector(_HttpConnector):
 
     connector_id: str = "openalex"
     #: 1.1.0: the abstract is rebuilt from ``abstract_inverted_index``. A new version starts a new
-    #: cursor lineage, so the next run fetches every page again.
-    connector_version: str = "1.1.0"
+    #: cursor lineage, so the next run fetches every page again. 1.2.0: the
+    #: record's language is kept.
+    connector_version: str = "1.2.0"
     base_url: str = "https://api.openalex.org"
 
     @property
@@ -1054,6 +1068,10 @@ class OpenAlexConnector(_HttpConnector):
         if source.get("display_name"):
             assertions.append(
                 assertion(Predicate.JOURNAL, source["display_name"], authority=authority)
+            )
+        if result.get("language"):
+            assertions.append(
+                assertion(Predicate.LANGUAGE, result["language"], authority=authority)
             )
         if location.get("license"):
             assertions.append(
@@ -1282,6 +1300,9 @@ class UnpaywallResolver(_HttpConnector):
 
     connector_id: str = "unpaywall"
     connector_version: str = "1.0.0"
+    #: It downloads from whichever sites its links point at, so the fetch hands it
+    #: a gate that paces each site (``acquire(request, gate=...)``).
+    paces_sites: ClassVar[bool] = True
     base_url: str = "https://api.unpaywall.org/v2"
     contact: str | None = None
     #: Hosts an automated fetch may use. Anything else needs a steward decision.
@@ -1370,12 +1391,29 @@ class UnpaywallResolver(_HttpConnector):
                 record_locators=(record["locator"],),
             )
 
-    async def pdf_locations(self, identifiers: tuple[Identifier, ...]) -> list[str]:
+    async def pdf_locations(
+        self, identifiers: tuple[Identifier, ...], *, gate: SiteGate | None = None
+    ) -> list[str]:
         """Open-access PDF links Unpaywall knows for the work's DOI, best first."""
         doi = next((i.value for i in identifiers if i.scheme is IdentifierScheme.DOI), None)
         if doi is None or not self.contact:
             return []
-        response = await self._get(f"{self.base_url}/{doi}", {"email": self.contact})
+        host = urlparse(self.base_url).hostname or "api.unpaywall.org"
+        if gate is not None:
+            await gate.enter(host, policy=self.capabilities.rate_policy)
+        try:
+            response = await self._get(f"{self.base_url}/{doi}", {"email": self.contact})
+        except LabAssistantError as exc:
+            exc.context.setdefault("host", host)
+            if gate is not None:
+                await gate.leave(
+                    host,
+                    pushed_back=exc.error_class is ErrorClass.RATE_LIMITED,
+                    retry_after_seconds=exc.context.get("retry_after_seconds"),
+                )
+            raise
+        if gate is not None:
+            await gate.leave(host, succeeded=True)
         payload = response.json()
         urls: list[str] = []
         for location in [payload.get("best_oa_location"), *(payload.get("oa_locations") or [])]:
@@ -1384,36 +1422,47 @@ class UnpaywallResolver(_HttpConnector):
                 urls.append(url)
         return urls
 
-    async def acquire(self, request: AcquisitionRequest) -> RawAcquisition:
+    async def acquire(
+        self, request: AcquisitionRequest, *, gate: SiteGate | None = None
+    ) -> RawAcquisition:
         """Fetch an open-access PDF: the location discovery found, else Unpaywall's own.
 
         Each link is tried in turn, at most three. SSRF controls apply to every
         link and every redirect hop: absolute https only, no address literals or
         local names, the allowlist when one is set, and at most three hops. A
         response that is not a PDF (a landing page, a login wall) is not one.
+
+        With a ``gate``, every request to a site waits for that site's turn. When
+        no link returns the PDF, the failure raised is the one most worth coming
+        back for: a site not asked yet (deferred), then one that was busy or down,
+        then a definite answer.
         """
-        failure: LabAssistantError | None = None
+        failures: list[LabAssistantError] = []
         if request.target_url:
             try:
-                return await self._fetch_pdf(request.target_url, request)
+                return await self._fetch_pdf(request.target_url, request, gate=gate)
             except LabAssistantError as exc:
-                failure = exc
+                failures.append(exc)
         try:
-            found = await self.pdf_locations(request.identifiers)
-        except LabAssistantError:
-            if failure is None:
+            found = await self.pdf_locations(request.identifiers, gate=gate)
+        except LabAssistantError as exc:
+            if not failures:
                 raise
+            # The link's own answer says more about the paper than a failed
+            # lookup, unless the lookup is worth coming back for.
+            if _worth_returning(exc) < 2:
+                failures.append(exc)
             found = []
         for target in [url for url in found if url != request.target_url][:3]:
             try:
-                return await self._fetch_pdf(target, request)
+                return await self._fetch_pdf(target, request, gate=gate)
             except LabAssistantError as exc:
-                failure = exc
-        if failure is None:
+                failures.append(exc)
+        if not failures:
             raise LabAssistantError("Unpaywall knows no open-access PDF for this work").with_class(
                 ErrorClass.NOT_FOUND
             )
-        raise failure
+        raise min(enumerate(failures), key=lambda pair: (_worth_returning(pair[1]), -pair[0]))[1]
 
     def _check_location(self, target: str) -> None:
         import ipaddress
@@ -1439,7 +1488,9 @@ class UnpaywallResolver(_HttpConnector):
                 ErrorClass.POLICY_BLOCKED
             )
 
-    async def _fetch_pdf(self, target: str, request: AcquisitionRequest) -> RawAcquisition:
+    async def _fetch_pdf(
+        self, target: str, request: AcquisitionRequest, *, gate: SiteGate | None = None
+    ) -> RawAcquisition:
         from urllib.parse import urljoin
 
         client = self.client or httpx.AsyncClient(
@@ -1447,19 +1498,47 @@ class UnpaywallResolver(_HttpConnector):
         )
         owns = self.client is None
         url = target
+        host = ""
         try:
             for _ in range(4):
                 self._check_location(url)
+                host = (urlparse(url).hostname or "").lower()
+                if gate is not None:
+                    await gate.enter(host)
                 try:
                     response = await client.get(url, headers=self._headers("application/pdf"))
                 except httpx.TimeoutException as exc:
-                    raise LabAssistantError(f"timeout contacting {self._redact(url)}").with_class(
-                        ErrorClass.TIMEOUT
-                    ) from exc
-                except httpx.HTTPError as exc:
+                    if gate is not None:
+                        await gate.leave(host)
                     raise LabAssistantError(
-                        f"transport error contacting {self._redact(url)}: {exc}"
+                        f"timeout contacting {self._redact(url)}", context={"host": host}
+                    ).with_class(ErrorClass.TIMEOUT) from exc
+                except httpx.HTTPError as exc:
+                    if gate is not None:
+                        await gate.leave(host)
+                    raise LabAssistantError(
+                        f"transport error contacting {self._redact(url)}: {exc}",
+                        context={"host": host},
                     ).with_class(ErrorClass.SOURCE_UNAVAILABLE) from exc
+                wall = _bot_wall(response)
+                pushed_back = response.status_code == 429 or wall
+                retry_after = response.headers.get("retry-after")
+                if gate is not None:
+                    await gate.leave(
+                        host,
+                        pushed_back=pushed_back,
+                        succeeded=response.status_code in (200, 301, 302, 303, 307, 308),
+                        retry_after_seconds=(
+                            int(retry_after) if retry_after and retry_after.isdigit() else None
+                        ),
+                    )
+                if wall:
+                    # A bot wall says nothing about the paper: the site wants us
+                    # slower, so it is tried again after the site has rested.
+                    raise LabAssistantError(
+                        f"{host} answered with a bot check ({response.status_code})",
+                        context={"host": host, "http_status": response.status_code},
+                    ).with_class(ErrorClass.RATE_LIMITED)
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location")
                     if not location:
@@ -1469,21 +1548,27 @@ class UnpaywallResolver(_HttpConnector):
                     continue
                 break
             else:
-                raise LabAssistantError("too many redirects").with_class(ErrorClass.POLICY_BLOCKED)
+                raise LabAssistantError("too many redirects", context={"host": host}).with_class(
+                    ErrorClass.POLICY_BLOCKED
+                )
         finally:
             if owns:
                 await client.aclose()
         if response.status_code != 200:
-            raise map_http_error(
+            error = map_http_error(
                 response.status_code, retry_after=response.headers.get("retry-after")
             )
+            error.context.setdefault("host", host)
+            raise error
         if len(response.content) > request.max_bytes:
             raise LabAssistantError(
-                f"content of {len(response.content)} bytes exceeds the limit"
+                f"content of {len(response.content)} bytes exceeds the limit",
+                context={"host": host},
             ).with_class(ErrorClass.TOO_LARGE)
         if not response.content.startswith(b"%PDF"):
             raise LabAssistantError(
-                "the open-access link answered with something other than a PDF"
+                "the open-access link answered with something other than a PDF",
+                context={"host": host},
             ).with_class(ErrorClass.INVALID_CONTENT)
         return RawAcquisition(
             response=make_response(
@@ -1505,3 +1590,43 @@ class UnpaywallResolver(_HttpConnector):
             ErrorClass.INVALID_QUERY
         )
         yield  # pragma: no cover
+
+
+def _bot_wall(response: httpx.Response) -> bool:
+    """Whether a 403 or 503 is a bot check (Cloudflare, Akamai) rather than a paywall.
+
+    A bot check answers the request rate, not the paper, so it is a push-back,
+    not the "sign-in required" a real login page means.
+    """
+    if response.status_code not in (403, 503):
+        return False
+    headers = response.headers
+    server = headers.get("server", "").lower()
+    if "cf-mitigated" in headers or "cf-chl-bypass" in headers:
+        return True
+    if "cloudflare" in server or "akamaighost" in server or "ddos-guard" in server:
+        head = response.content[:4096].lower()
+        return any(
+            marker in head
+            for marker in (
+                b"just a moment",
+                b"challenge",
+                b"captcha",
+                b"access denied",
+                b"attention required",
+            )
+        )
+    return False
+
+
+def _worth_returning(error: LabAssistantError) -> int:
+    """Rank a failed link: 0 not asked yet, 1 busy or down, 2 a definite answer."""
+    if error.error_class is ErrorClass.RATE_LIMITED and error.context.get("deferred"):
+        return 0
+    if error.error_class in (
+        ErrorClass.RATE_LIMITED,
+        ErrorClass.SOURCE_UNAVAILABLE,
+        ErrorClass.TIMEOUT,
+    ):
+        return 1
+    return 2

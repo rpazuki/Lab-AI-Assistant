@@ -329,6 +329,8 @@ describe("CollectionSetup", () => {
       },
       considered: 28362,
       decided_by_person: 12,
+      include_filter_decisions: false,
+      filter_decided: 0,
       not_indexed: 0,
       unchanged: 3000,
       changes: 1500,
@@ -360,8 +362,8 @@ describe("CollectionSetup", () => {
     await user.click(screen.getByRole("button", { name: "Change 1,500 candidates" }));
     expect(await screen.findByText("1,500 candidates changed by v1's rules.")).toBeInTheDocument();
     expect(vi.mocked(api.applyScopeRules).mock.calls).toEqual([
-      ["v1", null],
-      ["v1", "step-1"],
+      ["v1", null, false],
+      ["v1", "step-1", false],
     ]);
   });
 

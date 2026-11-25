@@ -390,6 +390,14 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
       {/* Below the conversation when there is room for only two columns. */}
       <div className="@3xl:col-span-2 @5xl:col-span-1">
       <Panel title="Sources" flush>
+        {turns.at(-1)?.sources.some((source) => source.abstract_only) ? (
+          <div className="px-5 pt-3">
+            <Alert tone="info" role="status">
+              Some of these sources are abstracts only: their full texts could not be fetched, so
+              methods and full results were not read. The answer says which points rest on them.
+            </Alert>
+          </div>
+        ) : null}
         {turns.at(-1)?.sources.length ? (
           <ul className={`${rowList} text-sm`}>
             {turns.at(-1)!.sources.map((source) => (
@@ -403,6 +411,7 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
                 {source.display_restricted ? (
                   <StateChip state="excerpt_only" kind="flag" />
                 ) : null}
+                {source.abstract_only ? <StateChip state="abstract_only" kind="flag" /> : null}
               </li>
             ))}
           </ul>
