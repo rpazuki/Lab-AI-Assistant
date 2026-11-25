@@ -21,7 +21,7 @@ from lab_assistant.adapters.db.engine import create_schema, make_engine
 from lab_assistant.adapters.db.repositories import sql_uow_factory
 from lab_assistant.application.acquisition import IMPLEMENTATION_VERSION as FETCHER_VERSION
 from lab_assistant.application.acquisition import AcquisitionHandler, AcquisitionPlanningHandler
-from lab_assistant.application.fetching import FetchQueue
+from lab_assistant.application.fetching import AcquisitionSweepHandler, FetchQueue
 from lab_assistant.application.reconciliation import refresh_summaries
 from lab_assistant.config import LabEnv, Settings
 from lab_assistant.contracts.connector import (
@@ -29,7 +29,7 @@ from lab_assistant.contracts.connector import (
     IdentifierScheme,
     RawAcquisition,
 )
-from lab_assistant.contracts.errors import ErrorClass, LabAssistantError
+from lab_assistant.contracts.errors import ErrorClass, LabAssistantError, PolicyDenied
 from lab_assistant.contracts.policy import PolicyAction
 from lab_assistant.contracts.stage import StageCommand, StageName, StageStatus
 from lab_assistant.domain.assets import (
@@ -1117,3 +1117,75 @@ class TestAbstractFallback:
         service = AbstractFallbackService(lab.harness.context)
         await service.set_enabled(lab.actor, True)
         assert (await service.view(lab.actor))["eligible"] == 0
+
+
+class TestTheSweepRunsInTheQueue:
+    """**Fetch included papers** reads every waiting fetch and every degraded parse.
+
+    On the internal corpus that is tens of thousands of rows and minutes of work.
+    Held inside the request it raced the gateway's read timeout and was cut off
+    half done, with nothing said; so the press queues a task and the page watches
+    it. The counts the press used to return are the task's metrics.
+    """
+
+    async def test_the_press_queues_one_sweep_and_a_second_press_joins_it(self, lab) -> None:
+        queue = FetchQueue(lab.harness.context, lab.harness.orchestrator)
+
+        task = await queue.start_sweep(lab.actor, reason="fetch_included")
+
+        assert task.stage is StageName.ACQUISITION_SWEEP
+        assert task.state is TaskState.READY
+        # A sweep that has not started covers the second press: queuing another
+        # would read the same rows for the same answer.
+        assert (await queue.start_sweep(lab.actor, reason="fetch_included")).id == task.id
+
+    async def test_the_sweep_requeues_what_it_finds_and_reports_the_counts(self, lab) -> None:
+        context = lab.harness.context
+        plan = await lab.plan(await lab.paper("10.9/dead", licence="cc-by-4.0"), OPEN)
+        async with context.uow_factory() as uow:
+            await uow.tasks.add(
+                Task(
+                    id=context.new_id(),
+                    workspace_id=lab.ws,
+                    stage=StageName.ACQUISITION,
+                    state=TaskState.DEAD_LETTER,
+                    input_fingerprint=str(context.new_id()),
+                    inputs={"plan_id": str(plan.id)},
+                    attempt=3,
+                    created_at=context.now(),
+                )
+            )
+            await uow.commit()
+
+        result = await AcquisitionSweepHandler(context).execute(
+            StageCommand(
+                stage=StageName.ACQUISITION_SWEEP,
+                workspace_id=lab.ws,
+                actor_id=lab.actor.user_id,
+                inputs={"included_by": "fetch_included"},
+            )
+        )
+
+        assert result.status is StageStatus.SUCCEEDED
+        assert result.metrics["requeued"] == 1
+        assert result.metrics["degraded_promoted"] == 0
+        assert result.metrics["still_degraded"] == 0
+        # Planning stays a task of its own, as it was before the sweep was queued.
+        assert [request.stage for request in result.next_tasks] == [StageName.ACQUISITION_PLANNING]
+
+    async def test_it_sweeps_as_the_person_who_pressed(self, lab) -> None:
+        """Requeuing a fetch needs ACQUIRE and promoting a parse needs REVIEW_PARSE.
+
+        The handler loads the caller's real membership rather than running with an
+        empty one, so an id with no membership is refused instead of sweeping with
+        no capability at all.
+        """
+        with pytest.raises(PolicyDenied):
+            await AcquisitionSweepHandler(lab.harness.context).execute(
+                StageCommand(
+                    stage=StageName.ACQUISITION_SWEEP,
+                    workspace_id=lab.ws,
+                    actor_id=lab.harness.context.new_id(),
+                    inputs={},
+                )
+            )

@@ -1527,22 +1527,38 @@ async def _plan_included(container: Any, actor: Any, *, reason: str) -> None:
     dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
 )
 async def fetch_included(actor: CurrentActor, container: Container) -> dict[str, Any]:
-    """Plan every included paper without a plan, and try waiting fetches again.
+    """Queue the sweep: plan every included paper without a plan, try waiting fetches again.
 
     Waiting fetches go back in the queue only when an automatic route is left; a
     paper only a person can supply stays waiting for that person.
+
+    The sweep reads every waiting fetch and every degraded parse, which is minutes
+    of work on a corpus of this size, so it is queued rather than done here: the
+    request used to race the gateway's read timeout and be cut off half done. The
+    counts it used to return are read back from the task by ``fetch_included_status``.
     """
     queue = FetchQueue(container.context, container.orchestrator)
-    retried = await queue.retry_waiting(actor)
-    task = await queue.plan_included(actor, reason="fetch_included")
-    # Degraded documents are checked against the parse-quality limits in force.
-    quality = ParseQualityService(container.context, container.orchestrator)
-    rechecked = await quality.recheck_degraded(actor)
+    task = await queue.start_sweep(actor, reason="fetch_included")
+    return {"task_id": str(task.id), "state": task.state.value}
+
+
+@router.get("/acquisition-plans/fetch-included/{task_id}")
+async def fetch_included_status(
+    task_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """How the queued sweep is getting on, and its counts once it has settled."""
+    actor.require(Capability.ACQUIRE)
+    async with container.context.uow_factory() as uow:
+        task = await uow.tasks.get(actor.workspace_id, task_id)
+    if task is None or task.stage is not StageName.ACQUISITION_SWEEP:
+        raise NotFound(f"no fetch sweep {task_id}")
     return {
-        **retried,
-        "planning_task_id": str(task.id),
-        "degraded_promoted": rechecked["promoted"],
-        "still_degraded": rechecked["still_degraded"],
+        "task_id": str(task.id),
+        "state": task.state.value,
+        "settled": task.state.is_settled,
+        # The handler's metrics, present only once it has succeeded.
+        "counts": task.result.get("metrics") or None,
+        "error": task.error_detail,
     }
 
 

@@ -1231,6 +1231,7 @@
           "discovery",
           "reconciliation",
           "acquisition_planning",
+          "acquisition_sweep",
           "acquisition",
           "parsing",
           "extraction",
@@ -1652,7 +1653,7 @@
     },
     "/api/v1/acquisition-plans/fetch-included": {
       "post": {
-        "description": "Plan every included paper without a plan, and try waiting fetches again.\n\nWaiting fetches go back in the queue only when an automatic route is left; a\npaper only a person can supply stays waiting for that person.",
+        "description": "Queue the sweep: plan every included paper without a plan, try waiting fetches again.\n\nWaiting fetches go back in the queue only when an automatic route is left; a\npaper only a person can supply stays waiting for that person.\n\nThe sweep reads every waiting fetch and every degraded parse, which is minutes\nof work on a corpus of this size, so it is queued rather than done here: the\nrequest used to race the gateway's read timeout and be cut off half done. The\ncounts it used to return are read back from the task by ``fetch_included_status``.",
         "operationId": "fetch_included_api_v1_acquisition_plans_fetch_included_post",
         "parameters": [
           {
@@ -1713,6 +1714,81 @@
           }
         },
         "summary": "Fetch Included"
+      }
+    },
+    "/api/v1/acquisition-plans/fetch-included/{task_id}": {
+      "get": {
+        "description": "How the queued sweep is getting on, and its counts once it has settled.",
+        "operationId": "fetch_included_status_api_v1_acquisition_plans_fetch_included__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Fetch Included Status Api V1 Acquisition Plans Fetch Included  Task Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fetch Included Status"
       }
     },
     "/api/v1/analytics/corpus": {

@@ -45,19 +45,27 @@ from lab_assistant.application.acquisition import (
     route_ladder,
 )
 from lab_assistant.application.acquisition import IMPLEMENTATION_VERSION as FETCHER_VERSION
-from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.context import ActorContext, ServiceContext, resolve_actor
+from lab_assistant.application.parse_quality import ParseQualityService
 from lab_assistant.contracts.errors import AcquisitionOutcome, ErrorClass
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.contracts.policy import PolicyAction
-from lab_assistant.contracts.stage import StageName
+from lab_assistant.contracts.stage import (
+    StageCommand,
+    StageName,
+    StageResult,
+    StageStatus,
+    TaskRequest,
+)
 from lab_assistant.domain.assets import AcquisitionRoute, ManifestationKind
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.states import RightsState, TaskState
 from lab_assistant.domain.tasks import Task
 from lab_assistant.domain.workspace import Capability
 from lab_assistant.policy.rights import RightsRequest
+from lab_assistant.provenance.fingerprints import task_fingerprint
 
-__all__ = ["FetchQueue"]
+__all__ = ["AcquisitionSweepHandler", "FetchQueue"]
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -106,9 +114,15 @@ _PAGE = 1_000
 
 
 class FetchQueue:
-    """Queue planning for included papers, and retry fetches that can still succeed."""
+    """Queue planning for included papers, and retry fetches that can still succeed.
 
-    def __init__(self, context: ServiceContext, orchestrator: Any) -> None:
+    Only ``plan_included`` and ``start_sweep`` queue anything, so only they need an
+    orchestrator. ``retry_waiting`` moves tasks already in the queue back to
+    ``ready`` and writes nothing new, which is what lets a stage handler — which
+    has no orchestrator, and must not have one — use it.
+    """
+
+    def __init__(self, context: ServiceContext, orchestrator: Any | None = None) -> None:
         self._context = context
         self._orchestrator = orchestrator
 
@@ -138,6 +152,34 @@ class FetchQueue:
             # Each request is its own task: the inputs alone would match the last
             # planning run and return it, finished, without planning anything.
             idempotency_key=f"plan-included:{self._context.new_id()}",
+        )
+
+    async def start_sweep(self, actor: ActorContext, *, reason: str) -> Task:
+        """Queue the whole of **Fetch included papers**, and return the task to watch.
+
+        A sweep that has not started yet covers this press too, so it is returned
+        rather than queuing a second one that would read the same rows.
+        """
+        self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
+        actor.require(Capability.ACQUIRE)
+        ws = actor.workspace_id
+        async with self._context.uow_factory() as uow:
+            waiting = await uow.tasks.page_tasks(
+                ws,
+                states=[TaskState.READY.value, TaskState.PENDING.value],
+                stage=StageName.ACQUISITION_SWEEP.value,
+                limit=1,
+            )
+        if waiting:
+            return waiting[0]
+        return await self._orchestrator.submit(
+            workspace_id=ws,
+            actor_id=actor.user_id,
+            stage=StageName.ACQUISITION_SWEEP,
+            inputs={"included_by": reason},
+            # Each press is its own task: the inputs alone would match the last
+            # sweep and hand it back, finished, having swept nothing.
+            idempotency_key=f"fetch-included:{self._context.new_id()}",
         )
 
     async def retry_waiting(self, actor: ActorContext) -> dict[str, int]:
@@ -354,3 +396,60 @@ async def _requeue(uow: Any, task: Any, plan: Any, *, force_plan: bool = False) 
         plan.status = "planned"
         plan.version += 1
         await uow.assets.update_plan(plan)
+
+
+class AcquisitionSweepHandler:
+    """Stage: the whole of **Fetch included papers**, off the request path.
+
+    The sweep reads every waiting, dead-lettered and failed fetch with its plan,
+    and every degraded parse. On a corpus of tens of thousands that is minutes of
+    work, and held inside the request it raced the gateway's read timeout: the
+    press was cut off with the sweep half done and nothing said, which is not a
+    state a person can act on. The press queues this instead and watches the task.
+
+    The counts the press used to return are this task's ``metrics``, so nothing is
+    lost by queuing it; they are read back from the task once it has settled.
+    """
+
+    stage_name = StageName.ACQUISITION_SWEEP
+    implementation_version = FETCHER_VERSION
+
+    def __init__(self, context: ServiceContext) -> None:
+        self._context = context
+
+    def fingerprint(self, command: StageCommand) -> str:
+        return task_fingerprint(command, implementation_version=self.implementation_version)
+
+    async def execute(self, command: StageCommand) -> StageResult:
+        context = self._context
+        # The caller's real membership, not an empty one: requeuing fetches needs
+        # ACQUIRE and promoting a parse needs REVIEW_PARSE, and both are checked.
+        # A handler that passed `membership=None` would be refused by its own
+        # services, and the press would fail in the worker rather than at the door.
+        actor = await resolve_actor(
+            context, user_id=command.actor_id, workspace_id=command.workspace_id
+        )
+        # No orchestrator: a handler does not queue tasks itself, it asks for them
+        # through `next_tasks`. `retry_waiting` needs none, as `FetchQueue` says.
+        retried = await FetchQueue(context).retry_waiting(actor)
+        rechecked = await ParseQualityService(context).recheck_degraded(actor)
+        reason = str(command.inputs.get("included_by") or "fetch_included")
+        return StageResult(
+            stage=self.stage_name,
+            status=StageStatus.SUCCEEDED,
+            metrics={
+                **retried,
+                "degraded_promoted": rechecked["promoted"],
+                "still_degraded": rechecked["still_degraded"],
+            },
+            # Planning is its own stage and its own task, as it was before: the
+            # sweep asks for it rather than queuing it, so the orchestrator stays
+            # the only thing that writes tasks.
+            next_tasks=(
+                TaskRequest(
+                    stage=StageName.ACQUISITION_PLANNING,
+                    inputs={"included_by": reason},
+                    idempotency_key=f"plan-included:{context.new_id()}",
+                ),
+            ),
+        )

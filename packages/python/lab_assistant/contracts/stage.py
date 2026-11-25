@@ -31,6 +31,10 @@ class StageName(StrEnum):
     DISCOVERY = "discovery"
     RECONCILIATION = "reconciliation"
     ACQUISITION_PLANNING = "acquisition_planning"
+    #: The whole of "Fetch included papers": requeue what can still succeed, plan
+    #: what a person has included since, recheck degraded parses. Minutes of
+    #: reading, so it is queued rather than held in the request.
+    ACQUISITION_SWEEP = "acquisition_sweep"
     ACQUISITION = "acquisition"
     PARSING = "parsing"
     EXTRACTION = "extraction"

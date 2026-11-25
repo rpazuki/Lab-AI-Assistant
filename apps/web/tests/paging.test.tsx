@@ -24,6 +24,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     listDiscoveryRuns: vi.fn(async () => ({ items: [], next_cursor: null, total: 0 })),
     listCandidates: vi.fn(),
     fetchIncluded: vi.fn(),
+    fetchSweep: vi.fn(),
     getParseQuality: vi.fn(async () => QUALITY),
     getAbstractFallback: vi.fn(async () => ({
       enabled: false,
@@ -118,24 +119,20 @@ describe("The candidate list is read a page at a time", () => {
 });
 
 describe("Fetching included papers", () => {
-  it("plans what has no plan, retries what can still be fetched, and says how many", async () => {
+  it("queues the sweep and says it carries on without the page", async () => {
     vi.mocked(api.listCandidates).mockResolvedValue({ items: [], next_cursor: null, total: 0 });
-    vi.mocked(api.fetchIncluded).mockResolvedValue({
-      requeued: 1425,
-      replanned: 300,
-      kept_for_a_person: 6467,
-      already_tried: 12,
-      planning_task_id: "t1",
-      degraded_promoted: 40,
-      still_degraded: 301,
-    });
+    vi.mocked(api.fetchIncluded).mockResolvedValue({ task_id: "t1", state: "ready" });
+    // Left pending: the press returns as soon as the task is queued, and the
+    // watching is the subject of its own tests below.
+    vi.mocked(api.fetchSweep).mockReturnValue(new Promise(() => {}));
     const user = userEvent.setup();
     render(<CollectionsClient />);
+
     await user.click(await screen.findByRole("button", { name: "Fetch included papers" }));
+
     expect(api.fetchIncluded).toHaveBeenCalledTimes(1);
-    expect(
-      await screen.findByText(/1,425 fetches will be tried again, 300 of them papers that now have an open licence\. 12 were already tried .* 6,467 can only come from an upload/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Queued\./)).toBeInTheDocument();
+    expect(screen.getByText(/carries on whether or not you stay on this page/)).toBeInTheDocument();
   });
 });
 

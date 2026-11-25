@@ -21,7 +21,7 @@ import {
   row,
   rowList,
 } from "@/components/ui/primitives";
-import { assistedUpload, fetchIncluded, listPlans } from "@/lib/api";
+import { assistedUpload, fetchIncluded, fetchSweep, listPlans } from "@/lib/api";
 import { describeStatus, statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { PAGE_SIZES, usePager } from "@/lib/usePager";
@@ -37,6 +37,62 @@ function identifierLink(scheme: string, value: string): string | null {
 
 /** Plans the worker is still fetching: nothing has answered yet. */
 const FETCHING = new Set(["unplanned", "planned"]);
+
+/** How often to ask after a queued sweep, and for how long: ten minutes at two seconds. */
+const SWEEP_POLL_MS = 2_000;
+const SWEEP_ROUNDS = 300;
+
+/**
+ * Watch a queued sweep to the end and say what it did.
+ *
+ * One failed poll is ignored rather than ending the wait: the task is durable,
+ * and an API restarting under a deploy is exactly the thing it outlives. Running
+ * out of rounds says the sweep is still going, which is true, rather than
+ * claiming it finished with no counts.
+ */
+export async function watchSweep(taskId: string): Promise<string> {
+  let last = "ready";
+  for (let round = 0; round < SWEEP_ROUNDS; round++) {
+    await new Promise((resolve) => setTimeout(resolve, SWEEP_POLL_MS));
+    let status;
+    try {
+      status = await fetchSweep(taskId);
+    } catch {
+      continue;
+    }
+    last = status.state;
+    if (!status.settled) continue;
+    const counts = status.counts;
+    if (!counts) {
+      return (
+        status.error ??
+        "The sweep stopped before it finished. Nothing it had already done is lost; " +
+          "press again to carry on."
+      );
+    }
+    return (
+      `Planning queued for any included paper without a plan. ` +
+      `${counts.requeued.toLocaleString()} fetches will be tried again` +
+      (counts.replanned
+        ? `, ${counts.replanned.toLocaleString()} of them papers that now have an open licence. `
+        : ". ") +
+      `${counts.already_tried.toLocaleString()} were already tried by the current fetcher ` +
+      `and stay with a person; ` +
+      `${counts.kept_for_a_person.toLocaleString()} can only come from an upload. ` +
+      `${counts.degraded_promoted.toLocaleString()} degraded documents now pass the parse ` +
+      `limits and go on to extraction; ${counts.still_degraded.toLocaleString()} stay degraded.`
+    );
+  }
+  // Ten minutes in, still waiting to be claimed means nothing picked it up: on this
+  // deployment that is the compute worker being down, and saying "still running"
+  // would send someone to watch progress that is not being made.
+  return last === "ready" || last === "pending"
+    ? "Still waiting to start after ten minutes: nothing has picked the sweep up. " +
+        "Check the worker queue under Operations."
+    : "Still running after ten minutes. It carries on in the background: Collection " +
+      "progress shows how far it has got.";
+}
+
 
 const EMPTY_PAGE = { items: [], next_cursor: null, total: 0 };
 
@@ -164,20 +220,14 @@ export function CollectionsClient() {
               setQueuing(true);
               setNotice(null);
               try {
-                const done = await fetchIncluded();
-                setNotice(
-                  `Planning queued for any included paper without a plan. ` +
-                    `${done.requeued.toLocaleString()} fetches will be tried again` +
-                    (done.replanned
-                      ? `, ${done.replanned.toLocaleString()} of them papers that now have an open licence. `
-                      : ". ") +
-                    `${done.already_tried.toLocaleString()} were already tried by the current fetcher ` +
-                    `and stay with a person; ` +
-                    `${done.kept_for_a_person.toLocaleString()} can only come from an upload. ` +
-                    `${done.degraded_promoted.toLocaleString()} degraded documents now pass the parse ` +
-                    `limits and go on to extraction; ${done.still_degraded.toLocaleString()} stay degraded.`,
-                );
+                const sweep = await fetchIncluded();
                 setError(null);
+                setNotice(
+                  "Queued. Every waiting fetch and every degraded document is being read " +
+                    "again, which takes a few minutes on a corpus this size. It carries on " +
+                    "whether or not you stay on this page.",
+                );
+                setNotice(await watchSweep(sweep.task_id));
               } catch (caught) {
                 setError(caught instanceof Error ? caught.message : "fetching was not queued");
               } finally {

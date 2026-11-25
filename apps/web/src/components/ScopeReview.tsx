@@ -410,14 +410,19 @@ export function ScopeDeletion({
   async function remove() {
     if (!plan) return;
     setBusy(true);
+    setError(null);
     try {
       const { deleted } = await deleteScope(scope.id, typed);
       await onDeleted(
         `Scope “${plan.name}” deleted: ${plural(deleted.versions, "version")}, ${plural(deleted.runs, "discovery run")} and ${plural(deleted.papers, "paper")}.`,
       );
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "the scope was not deleted");
+      // The reload comes first: `load` clears the error on success, so setting
+      // it beforehand would wipe the refusal and leave the press looking as
+      // though it had done nothing at all.
+      const refusal = caught instanceof Error ? caught.message : "the scope was not deleted";
       await load();
+      setError(refusal);
     } finally {
       setBusy(false);
     }
@@ -485,10 +490,16 @@ export function ScopeDeletion({
                 />
               </label>
               <Button type="submit" variant="danger" size="sm" disabled={busy || typed.trim() !== plan.name.trim()}>
-                Delete the scope
+                {busy ? "Deleting…" : "Delete the scope"}
               </Button>
             </form>
           )}
+          {busy ? (
+            <p className="text-sm text-muted" aria-live="polite">
+              Deleting {plural(c.papers, "paper")} and everything made from them. On a large scope
+              this takes a few minutes; leave the page open.
+            </p>
+          ) : null}
         </>
       )}
     </section>

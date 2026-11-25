@@ -16,6 +16,7 @@ from lab_assistant.application.context import ActorContext, ServiceContext, reso
 from lab_assistant.application.discovery import DiscoveryHandler, DiscoveryService
 from lab_assistant.application.export import ExportService, validate_package
 from lab_assistant.application.extraction import ExtractionHandler
+from lab_assistant.application.fetching import AcquisitionSweepHandler, FetchQueue
 from lab_assistant.application.indexing import IndexingHandler
 from lab_assistant.application.parsing import ParsingHandler, ParsingService
 from lab_assistant.application.reconciliation import IdentityService, ReconciliationHandler
@@ -31,6 +32,7 @@ __all__ = [
     "AcquisitionHandler",
     "AcquisitionPlanningHandler",
     "AcquisitionService",
+    "AcquisitionSweepHandler",
     "ActorContext",
     "AnalyticsService",
     "ChatService",
@@ -38,6 +40,7 @@ __all__ = [
     "DiscoveryService",
     "ExportService",
     "ExtractionHandler",
+    "FetchQueue",
     "HandlerRegistry",
     "IdentityService",
     "IndexingHandler",
@@ -65,6 +68,7 @@ def build_handler_registry(context: ServiceContext) -> HandlerRegistry:
     registry.register(DiscoveryHandler(context))
     registry.register(ReconciliationHandler(context))
     registry.register(AcquisitionPlanningHandler(context))
+    registry.register(AcquisitionSweepHandler(context))
     registry.register(AcquisitionHandler(context))
     registry.register(ParsingHandler(context))
     registry.register(ExtractionHandler(context))

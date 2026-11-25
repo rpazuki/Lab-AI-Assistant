@@ -40,6 +40,7 @@ export function AbstractFallback({ onChanged }: { onChanged?: () => void }) {
 
   async function build() {
     let built = 0;
+    let refusal: string | null = null;
     try {
       for (let round = 0; round < 200; round++) {
         setBusy(`Building abstract documents: ${n(built)} so far`);
@@ -53,10 +54,13 @@ export function AbstractFallback({ onChanged }: { onChanged?: () => void }) {
       );
       onChanged?.();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "building stopped part way; press again");
+      refusal = caught instanceof Error ? caught.message : "building stopped part way; press again";
     } finally {
       setBusy(null);
+      // `load` clears the error when it succeeds, so the refusal is set after
+      // it; setting it first would wipe it and leave the press looking idle.
       await load();
+      if (refusal !== null) setError(refusal);
     }
   }
 

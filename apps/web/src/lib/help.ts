@@ -636,6 +636,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             needs: STEWARD,
             steps: [
               "Under **Acquisition queue**, select **Fetch included papers**.",
+              "The sweep is queued and runs in the background: on a corpus of tens of thousands it reads every waiting fetch and takes a few minutes. The message says it is queued, then says what it did once it finishes. It carries on if you leave the page; **Collection progress** shows how far it has got.",
               "Every included paper without a plan is planned, and every fetch that is waiting or ran out of retries, and still has an open route, is tried again. The message says how many were queued and how many can only come from an upload.",
             ],
             note: "Pressing it again plans only papers included since; retries fetches that ran out of retries on a fault or that a source never answered (rate-limited or down); checks again, without fetching, a stored file an older identity rule could not tie to its paper; gives the open routes to an upload-only paper once discovery records an open licence for it (after a later run, say); and checks degraded documents against the **Parse quality** limits. A paper every source already answered stays waiting for a person, so the same sources are not asked the same question again; upload it instead.",

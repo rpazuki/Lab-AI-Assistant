@@ -532,25 +532,40 @@ export const buildAbstractDocuments = () =>
 export const setParseLimits = (limits: ParseLimits) =>
   request<ParseQuality>("/parse-quality-limits", { method: "PUT", body: JSON.stringify(limits) });
 
+/** What the sweep did, once it has finished. */
+export interface FetchSweepCounts {
+  requeued: number;
+  /** Upload-only papers given the open routes: discovery now records an open licence. */
+  replanned: number;
+  kept_for_a_person: number;
+  already_tried: number;
+  degraded_promoted: number;
+  still_degraded: number;
+}
+
 /**
- * Plan every included paper that has no plan, put waiting fetches that still
- * have an automatic route back in the queue, and check degraded documents
- * against the parse-quality limits in force.
+ * Queue the sweep: plan every included paper that has no plan, put waiting
+ * fetches that still have an automatic route back in the queue, and check
+ * degraded documents against the parse-quality limits in force.
+ *
+ * It reads tens of thousands of rows, so it runs as a task rather than inside
+ * this request, which used to be cut off half done by the gateway. Watch it with
+ * `fetchSweep`; it carries on whether or not anyone is watching.
  */
 export const fetchIncluded = () =>
+  request<{ task_id: string; state: string }>("/acquisition-plans/fetch-included", {
+    method: "POST",
+  });
+
+/** How the queued sweep is getting on, and its counts once it has settled. */
+export const fetchSweep = (taskId: string) =>
   request<{
-    requeued: number;
-    /** Upload-only papers given the open routes: discovery now records an open licence. */
-    replanned: number;
-    kept_for_a_person: number;
-    already_tried: number;
-    planning_task_id: string;
-    degraded_promoted: number;
-    still_degraded: number;
-  }>(
-    "/acquisition-plans/fetch-included",
-    { method: "POST" },
-  );
+    task_id: string;
+    state: string;
+    settled: boolean;
+    counts: FetchSweepCounts | null;
+    error: string | null;
+  }>(`/acquisition-plans/fetch-included/${taskId}`);
 
 /** One page of acquisition plans, and how many plans are in each status. */
 export const listPlans = (options: PageRequest & { status?: string } = {}) =>
