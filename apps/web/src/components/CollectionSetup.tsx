@@ -675,19 +675,19 @@ function ScopeForm({
             <ul className="list-disc pl-5">
               <li>
                 <strong>Title</strong>: one title, from the most authoritative source that gave one
-                (Crossref or DataCite, then Europe PMC, then OpenAlex).
+                (Crossref or DataCite, then Europe PMC or PubMed, then OpenAlex).
               </li>
               <li>
-                <strong>Abstract</strong>: only Europe PMC supplies abstracts. A candidate no Europe PMC
-                record matched has none.
+                <strong>Abstract</strong>: one abstract, chosen the same way, from Crossref, Europe PMC,
+                PubMed or OpenAlex. A candidate none of them gave an abstract for has none.
               </li>
               <li>
-                <strong>Subject terms</strong>: the topic labels OpenAlex assigns (up to 20).
+                <strong>Subject terms</strong>: the topic labels OpenAlex assigns (up to 20) and the MeSH
+                headings PubMed indexes (up to 40).
               </li>
             </ul>
             <p>
-              Nothing else is read: not the journal, authors, year, MeSH headings, author keywords or full
-              text. Case is ignored, and a term matches anywhere in the text, even inside a longer word
+              Nothing else is read: not the journal, authors, year, author keywords or full text. Case is ignored, and a term matches anywhere in the text, even inside a longer word
               (“plant” also matches “implant”).
             </p>
           </div>

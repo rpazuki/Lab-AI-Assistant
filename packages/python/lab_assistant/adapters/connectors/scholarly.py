@@ -73,6 +73,140 @@ def _year(value: Any) -> int | None:
         return None
 
 
+def _openalex_abstract(index: Any) -> str | None:
+    """An abstract from OpenAlex's ``abstract_inverted_index``: each word with its positions.
+
+    OpenAlex does not send abstracts as text (its licence terms for the text), only
+    this index of word -> positions; laying the words out by position gives the
+    text back, word for word.
+    """
+    if not isinstance(index, dict) or not index:
+        return None
+    placed: dict[int, str] = {}
+    for word, positions in index.items():
+        for position in positions or ():
+            if isinstance(position, int):
+                placed[position] = word
+    if not placed:
+        return None
+    text = " ".join(placed[i] for i in sorted(placed))
+    return text.strip() or None
+
+
+def _markup_text(markup: Any) -> str | None:
+    """Plain text from an abstract sent as JATS or HTML markup (Crossref sends JATS).
+
+    Tags go, entities are decoded, paragraphs are kept apart, and a leading
+    "Abstract" heading is dropped: it is the field's name, not its content.
+    """
+    import html
+    import re
+
+    if not isinstance(markup, str) or not markup.strip():
+        return None
+    text = re.sub(r"</(?:jats:)?(?:p|sec|title)>", "\n\n", markup)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    paragraphs = [" ".join(part.split()) for part in text.split("\n\n")]
+    paragraphs = [part for part in paragraphs if part]
+    if paragraphs and paragraphs[0].casefold() in ("abstract", "summary"):
+        paragraphs = paragraphs[1:]
+    joined = "\n\n".join(paragraphs).strip()
+    return joined or None
+
+
+def _pubmed_records(xml: bytes) -> dict[str, list[dict[str, Any]]]:
+    """Assertions per PMID from an ``efetch`` PubMed XML response.
+
+    Title, abstract (each labelled section kept, as "Methods: …"), journal, year,
+    authors, MeSH headings as subject terms, and the DOI and PMCID PubMed knows.
+    A record it cannot read is left out, and keeps the PMID search gave it.
+    """
+    from xml.etree import ElementTree
+
+    authority = "biomedical_index"
+    out: dict[str, list[dict[str, Any]]] = {}
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError:
+        return out
+
+    def text(element: Any) -> str:
+        return " ".join("".join(element.itertext()).split()) if element is not None else ""
+
+    for article in root.iter("PubmedArticle"):
+        citation = article.find("MedlineCitation")
+        if citation is None:
+            continue
+        pmid = text(citation.find("PMID"))
+        if not pmid:
+            continue
+        assertions: list[dict[str, Any]] = []
+        body = citation.find("Article")
+        if body is not None:
+            if title := text(body.find("ArticleTitle")).rstrip("."):
+                assertions.append(assertion(Predicate.TITLE, title, authority=authority))
+            sections = []
+            for part in body.findall("Abstract/AbstractText"):
+                content = text(part)
+                if not content:
+                    continue
+                label = (part.get("Label") or "").strip()
+                sections.append(f"{label.capitalize()}: {content}" if label else content)
+            if sections:
+                assertions.append(
+                    assertion(Predicate.ABSTRACT, "\n\n".join(sections), authority=authority)
+                )
+            if journal := text(body.find("Journal/Title")):
+                assertions.append(assertion(Predicate.JOURNAL, journal, authority=authority))
+            date = body.find("Journal/JournalIssue/PubDate")
+            year = _year(text(date.find("Year"))) if date is not None else None
+            if year is None and date is not None:
+                medline = text(date.find("MedlineDate"))
+                year = _year(medline[:4]) if medline else None
+            if year is not None:
+                assertions.append(assertion(Predicate.YEAR, year, authority=authority))
+            for author in body.findall("AuthorList/Author")[:50]:
+                last = text(author.find("LastName"))
+                if not last:
+                    continue
+                orcid = next(
+                    (
+                        text(i)
+                        for i in author.findall("Identifier")
+                        if (i.get("Source") or "").upper() == "ORCID"
+                    ),
+                    None,
+                )
+                assertions.append(
+                    assertion(
+                        Predicate.AUTHOR,
+                        {
+                            "last_name": last,
+                            "fore_name": text(author.find("ForeName")) or None,
+                            "orcid": orcid,
+                        },
+                        authority=authority,
+                    )
+                )
+        for heading in citation.findall("MeshHeadingList/MeshHeading/DescriptorName")[:40]:
+            if term := text(heading):
+                assertions.append(assertion(Predicate.SUBJECT_TERM, term, authority=authority))
+        for article_id in article.findall("PubmedData/ArticleIdList/ArticleId"):
+            kind = (article_id.get("IdType") or "").lower()
+            value = text(article_id)
+            if kind == "doi" and value:
+                assertions.append(
+                    identifier_assertion(IdentifierScheme.DOI, value, authority=authority)
+                )
+            elif kind == "pmc" and value:
+                assertions.append(
+                    identifier_assertion(IdentifierScheme.PMCID, value, authority=authority)
+                )
+        out[pmid] = assertions
+    return out
+
+
 def map_http_error(status: int, *, retry_after: str | None = None) -> LabAssistantError:
     """Map an upstream status onto the outcome taxonomy.
 
@@ -176,7 +310,9 @@ class PubMedConnector(_HttpConnector):
     """
 
     connector_id: str = "pubmed"
-    connector_version: str = "1.0.0"
+    #: 1.1.0: each search page is followed by ``efetch`` for its records. 1.0.0
+    #: kept only the PMIDs, so a PubMed record had no title, abstract or MeSH.
+    connector_version: str = "1.1.0"
     base_url: str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
     page_size: int = 100
 
@@ -197,10 +333,12 @@ class PubMedConnector(_HttpConnector):
                 {IdentifierScheme.PMID, IdentifierScheme.PMCID, IdentifierScheme.DOI}
             ),
             terms_url="https://www.ncbi.nlm.nih.gov/books/NBK25497/",
+            # Half NCBI's allowance (3 a second, 10 with a key): a page is two
+            # requests, the search and the fetch of its records.
             rate_policy=RatePolicy(
-                requests_per_second=3.0 if not self.api_key else 9.0,
-                burst=3,
-                max_concurrent=2,
+                requests_per_second=1.5 if not self.api_key else 4.5,
+                burst=2,
+                max_concurrent=1,
             ),
             data_classification="public_metadata",
             required_secret_names=frozenset({"NCBI_API_KEY"}) if self.api_key else frozenset(),
@@ -252,19 +390,24 @@ class PubMedConnector(_HttpConnector):
             result = payload.get("esearchresult", {})
             pmids: list[str] = list(result.get("idlist", []))
             total = int(result.get("count", 0) or 0)
+            # The search answers PMIDs only; the records come from efetch.
+            fetched = await self._fetch_records(pmids) if pmids else b""
+            details = _pubmed_records(fetched) if fetched else {}
             records = [
                 {
                     "locator": f"pmid:{pmid}",
                     "assertions": [
                         identifier_assertion(
                             IdentifierScheme.PMID, pmid, authority="biomedical_index"
-                        )
+                        ),
+                        *details.get(pmid, []),
                     ],
                 }
                 for pmid in pmids
             ]
             # A page envelope, not the source's bytes: `upstream_body` carries
-            # those so provenance and replay stay separable.
+            # those (the search answer, then the records) so provenance and
+            # replay stay separable.
             body = json.dumps({"records": records, "raw": payload}, sort_keys=True).encode()
             next_start = start + len(pmids)
             exhausted = not pmids or next_start >= total
@@ -274,7 +417,7 @@ class PubMedConnector(_HttpConnector):
                     url_redacted=self._redact(str(response.url)),
                     status=response.status_code,
                     body=body,
-                    upstream_body=response.content,
+                    upstream_body=response.content + b"\n" + fetched,
                 ),
                 cursor_before=cursor_for(request.compiled_query, position=str(start)),
                 cursor_after=cursor_for(
@@ -289,6 +432,16 @@ class PubMedConnector(_HttpConnector):
             if exhausted or (request.max_pages is not None and pages >= request.max_pages):
                 return
             start = next_start
+
+    async def _fetch_records(self, pmids: list[str]) -> bytes:
+        """The PubMed XML records for these PMIDs, in one ``efetch``."""
+        params: dict[str, Any] = {"db": "pubmed", "id": ",".join(pmids), "retmode": "xml"}
+        if self.api_key:
+            params["api_key"] = self.api_key
+        if self.contact:
+            params["email"] = self.contact
+        response = await self._get(f"{self.base_url}/efetch.fcgi", params, accept="application/xml")
+        return response.content
 
     async def resolve(self, identifiers: list[Identifier]) -> AsyncIterator[RawPage]:
         pmids = [i.value for i in identifiers if i.scheme is IdentifierScheme.PMID]
@@ -548,7 +701,9 @@ class CrossrefConnector(_HttpConnector):
     """Crossref REST: DOI registration metadata and relations."""
 
     connector_id: str = "crossref"
-    connector_version: str = "1.0.0"
+    #: 1.1.0: Crossref's ``abstract`` (JATS) is read. A new version starts a new
+    #: cursor lineage, so the next run fetches every page again.
+    connector_version: str = "1.1.0"
     base_url: str = "https://api.crossref.org"
 
     @property
@@ -655,6 +810,8 @@ class CrossrefConnector(_HttpConnector):
         titles = item.get("title") or []
         if titles:
             assertions.append(assertion(Predicate.TITLE, titles[0], authority=authority))
+        if abstract := _markup_text(item.get("abstract")):
+            assertions.append(assertion(Predicate.ABSTRACT, abstract, authority=authority))
         if item.get("type"):
             assertions.append(assertion(Predicate.RESOURCE_KIND, item["type"], authority=authority))
         containers = item.get("container-title") or []
@@ -748,7 +905,9 @@ class OpenAlexConnector(_HttpConnector):
     """OpenAlex: broad coverage, aggregated fields that need source-aware use."""
 
     connector_id: str = "openalex"
-    connector_version: str = "1.0.0"
+    #: 1.1.0: the abstract is rebuilt from ``abstract_inverted_index``. A new version starts a new
+    #: cursor lineage, so the next run fetches every page again.
+    connector_version: str = "1.1.0"
     base_url: str = "https://api.openalex.org"
 
     @property
@@ -882,6 +1041,8 @@ class OpenAlexConnector(_HttpConnector):
             assertions.append(identifier_assertion(IdentifierScheme.DOI, doi, authority=authority))
         if result.get("title"):
             assertions.append(assertion(Predicate.TITLE, result["title"], authority=authority))
+        if abstract := _openalex_abstract(result.get("abstract_inverted_index")):
+            assertions.append(assertion(Predicate.ABSTRACT, abstract, authority=authority))
         if (year := _year(result.get("publication_year"))) is not None:
             assertions.append(assertion(Predicate.YEAR, year, authority=authority))
         if result.get("type"):

@@ -6,18 +6,23 @@ refusing to page a keyless search. Offline: the HTTP client is a mock transport.
 
 from __future__ import annotations
 
+import json
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 
+from lab_assistant.adapters.connectors.base import cursor_for
 from lab_assistant.adapters.connectors.registry import live_connector_registry
 from lab_assistant.adapters.connectors.scholarly import (
     CrossrefConnector,
     DataCiteConnector,
     EuropePmcConnector,
     OpenAlexConnector,
+    PubMedConnector,
     UnpaywallResolver,
+    _markup_text,
+    _openalex_abstract,
 )
 from lab_assistant.config import Settings
 from lab_assistant.contracts.connector import (
@@ -279,3 +284,104 @@ class TestUnpaywallFetch:
                 )
             )
         assert refused.value.error_class is ErrorClass.INVALID_CONTENT
+
+
+# ── abstracts ──────────────────────────────────────────────────────────────
+PUBMED_XML = b"""<?xml version="1.0"?>
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation>
+      <PMID>40836088</PMID>
+      <Article>
+        <Journal>
+          <Title>Nature</Title>
+          <JournalIssue><PubDate><Year>2025</Year></PubDate></JournalIssue>
+        </Journal>
+        <ArticleTitle>Engineered yeast provides rare but essential pollen sterols
+          for honeybees.</ArticleTitle>
+        <Abstract>
+          <AbstractText Label="BACKGROUND">Honeybees need <i>sterols</i>.</AbstractText>
+          <AbstractText Label="RESULTS">Yarrowia made them.</AbstractText>
+        </Abstract>
+        <AuthorList><Author><LastName>Moore</LastName><ForeName>Elynor</ForeName></Author></AuthorList>
+      </Article>
+      <MeshHeadingList>
+        <MeshHeading><DescriptorName>Yarrowia</DescriptorName></MeshHeading>
+        <MeshHeading><DescriptorName>Sterols</DescriptorName></MeshHeading>
+      </MeshHeadingList>
+    </MedlineCitation>
+    <PubmedData>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">40836088</ArticleId>
+        <ArticleId IdType="doi">10.1038/s41586-025-09431-y</ArticleId>
+        <ArticleId IdType="pmc">PMC12507675</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+</PubmedArticleSet>"""
+
+
+def _values(record: dict, predicate: str) -> list:
+    return [item["value"] for item in record["assertions"] if item["predicate"] == predicate]
+
+
+class TestAbstracts:
+    async def test_pubmed_fetches_each_pages_records_after_the_search(self) -> None:
+        seen: list[tuple[str, str]] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen.append((request.url.path.rsplit("/", 1)[-1], request.headers["accept"]))
+            if request.url.path.endswith("esearch.fcgi"):
+                return httpx.Response(
+                    200, json={"esearchresult": {"idlist": ["40836088"], "count": "1"}}
+                )
+            return httpx.Response(200, content=PUBMED_XML)
+
+        connector = PubMedConnector(
+            request_identity="test", client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        )
+        compiled = await connector.compile_query({"query": "yarrowia sterols"})
+        [page] = [
+            page
+            async for page in connector.discover(
+                DiscoveryRequest(
+                    compiled_query=compiled, cursor=cursor_for(compiled, position=None)
+                )
+            )
+        ]
+        assert seen == [("esearch.fcgi", "application/json"), ("efetch.fcgi", "application/xml")]
+        [record] = json.loads(page.response.body)["records"]
+        assert _values(record, "title") == [
+            "Engineered yeast provides rare but essential pollen sterols for honeybees"
+        ]
+        assert _values(record, "abstract") == [
+            "Background: Honeybees need sterols.\n\nResults: Yarrowia made them."
+        ]
+        assert _values(record, "subject_term") == ["Yarrowia", "Sterols"]
+        assert _values(record, "journal") == ["Nature"] and _values(record, "year") == [2025]
+        schemes = {
+            item["value"]["scheme"]
+            for item in record["assertions"]
+            if item["predicate"] == "identifier"
+        }
+        assert schemes == {"pmid", "doi", "pmcid"}
+
+    def test_openalex_rebuilds_the_text_from_its_word_index(self) -> None:
+        index = {"Yarrowia": [0], "makes": [1], "lipids": [2, 5], "and": [3], "more": [4]}
+        assert _openalex_abstract(index) == "Yarrowia makes lipids and more lipids"
+        assert _openalex_abstract(None) is None and _openalex_abstract({}) is None
+        record = OpenAlexConnector._record(
+            {"id": "https://openalex.org/W1", "title": "T", "abstract_inverted_index": index}
+        )
+        assert _values(record, "abstract") == ["Yarrowia makes lipids and more lipids"]
+
+    def test_crossref_abstracts_lose_their_markup(self) -> None:
+        jats = (
+            "<jats:title>Abstract</jats:title><jats:p>Lipids &amp; "
+            "<jats:italic>Y. lipolytica</jats:italic></jats:p>"
+            "<jats:p>Second   paragraph.</jats:p>"
+        )
+        assert _markup_text(jats) == "Lipids & Y. lipolytica\n\nSecond paragraph."
+        record = CrossrefConnector._record({"DOI": "10.1/x", "title": ["T"], "abstract": jats})
+        assert _values(record, "abstract") == ["Lipids & Y. lipolytica\n\nSecond paragraph."]
+        assert _markup_text("") is None
