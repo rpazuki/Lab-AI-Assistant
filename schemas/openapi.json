@@ -3869,6 +3869,71 @@
         "summary": "Review Queue"
       }
     },
+    "/api/v1/collection-progress": {
+      "get": {
+        "description": "How far the collection has got before publication, stage by stage.",
+        "operationId": "collection_progress_api_v1_collection_progress_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Collection Progress Api V1 Collection Progress Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Collection Progress"
+      }
+    },
     "/api/v1/config": {
       "get": {
         "description": "Redacted effective configuration, for operators.\n\nSecret values are never printed \u2014 only a digest, so two deployments can be\ncompared without disclosing anything. Redaction is not on its own a reason\nto publish it: deployment topology, provider choices, and which staged\ncontrols are off are exactly what someone probing the system wants. The\nREADME says every route requires an authenticated member; this route\nadditionally requires the operations capability.",

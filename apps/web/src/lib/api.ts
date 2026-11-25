@@ -22,6 +22,7 @@ import type {
   CandidateFilters,
   ChatMessage,
   ChatSession,
+  CollectionProgress,
   CorpusStats,
   DiscoveryRun,
   DuplicateProposal,
@@ -455,6 +456,9 @@ export const mergeWorks = (keepWorkId: string, mergeWorkId: string, reasonCode: 
     method: "POST",
     body: JSON.stringify({ keep_work_id: keepWorkId, merge_work_id: mergeWorkId, reason_code: reasonCode }),
   });
+
+/** How far the collection has got before publication, stage by stage. */
+export const collectionProgress = () => request<CollectionProgress>("/collection-progress");
 
 /** The adjustable parse-quality limits, each format's default, and why documents degrade. */
 export const getParseQuality = () => request<ParseQuality>("/parse-quality-limits");

@@ -1476,6 +1476,35 @@ class _Assets(_Base):
         )
         return {str(status): int(count) for status, count in result.all()}
 
+    async def latest_outcomes(self, workspace_id: UUID, *, status: str) -> dict[str, int]:
+        """Plans in ``status`` by the outcome of their latest fetch attempt.
+
+        ``"none"`` counts plans no attempt was made for (an upload-only route).
+        """
+        a, p = t.acquisition_attempts, t.acquisition_plans
+        ranked = (
+            select(
+                a.c.acquisition_plan_id.label("plan_id"),
+                a.c.outcome.label("outcome"),
+                func.row_number()
+                .over(
+                    partition_by=a.c.acquisition_plan_id,
+                    order_by=(a.c.requested_at.desc(), a.c.attempt_number.desc()),
+                )
+                .label("rank"),
+            )
+            .where(a.c.workspace_id == workspace_id)
+            .subquery()
+        )
+        latest = select(ranked.c.plan_id, ranked.c.outcome).where(ranked.c.rank == 1).subquery()
+        result = await self._c.execute(
+            select(func.coalesce(latest.c.outcome, "none"), func.count())
+            .select_from(p.outerjoin(latest, latest.c.plan_id == p.c.id))
+            .where(p.c.workspace_id == workspace_id, p.c.status == status)
+            .group_by(func.coalesce(latest.c.outcome, "none"))
+        )
+        return {str(outcome): int(count) for outcome, count in result.all()}
+
     async def add_attempt(self, attempt: AcquisitionAttempt) -> None:
         await self._upsert(ATTEMPTS, attempt)
 

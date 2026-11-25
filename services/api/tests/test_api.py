@@ -1223,6 +1223,27 @@ class TestOperations:
         )
         assert bad.status_code == 422
 
+    async def test_collection_progress_is_for_stewards(self, api) -> None:
+        researcher = await _login(api["client"], "researcher@lab.invalid")
+        denied = await api["client"].get("/api/v1/collection-progress", headers=_auth(researcher))
+        assert denied.status_code == 403
+        steward = await _login(api["client"], "steward@lab.invalid")
+        body = (
+            await api["client"].get("/api/v1/collection-progress", headers=_auth(steward))
+        ).json()
+        assert [row["stage"] for row in body["funnel"]] == [
+            "found",
+            "included",
+            "planned",
+            "fetched",
+            "parsed",
+            "extracted",
+            "served",
+        ]
+        assert {"discovery", "screening", "acquisition", "parsing", "extraction", "daily"} <= set(
+            body
+        )
+
     async def test_audit_metadata_never_contains_a_secret(self, api) -> None:
         steward = await _login(api["client"], "steward@lab.invalid")
         response = await api["client"].get("/api/v1/audit-events", headers=_auth(steward))

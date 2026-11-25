@@ -85,6 +85,14 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   operations: <path d="M3 12h4l3 8 4-16 3 8h4" />,
+  progress: (
+    <>
+      <path d="M4 5h16" />
+      <path d="M6 10h12" />
+      <path d="M8 15h8" />
+      <path d="M10 20h4" />
+    </>
+  ),
   help: (
     <>
       <circle cx="12" cy="12" r="9" />

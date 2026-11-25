@@ -12,6 +12,7 @@ export type NavIcon =
   | "ask"
   | "analytics"
   | "collections"
+  | "progress"
   | "review"
   | "releases"
   | "evaluation"
@@ -54,6 +55,12 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         label: "Collections",
         icon: "collections",
         anyOf: ["manage_scope", "run_discovery", "decide_identity", "decide_rights", "acquire"],
+      },
+      {
+        href: "/progress",
+        label: "Collection progress",
+        icon: "progress",
+        anyOf: ["manage_scope"],
       },
       { href: "/review", label: "Review", icon: "review", anyOf: ["review_claims", "review_parse"] },
       {

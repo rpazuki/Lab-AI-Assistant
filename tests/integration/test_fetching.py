@@ -679,3 +679,31 @@ class TestTryingAgain:
             )
             await uow.commit()
         assert (await queue.retry_waiting(lab.actor))["requeued"] == 1
+
+
+class TestCollectionProgress:
+    async def test_counts_every_stage_and_why_papers_are_not_fetched(self, lab) -> None:
+        from lab_assistant.application.collection_progress import CollectionProgressService
+
+        fetched = await lab.plan(await lab.paper("10.9/licensed", licence="cc-by-4.0"), OPEN)
+        refused = await lab.plan(await lab.paper("10.9/unlicensed"), OPEN)
+        upload = await lab.plan(await lab.paper("10.9/b"), (AcquisitionRoute.USER_ASSISTED,))
+        await lab.fetch(fetched)
+        await lab.fetch(refused)
+        async with lab.harness.context.uow_factory() as uow:
+            stored = await uow.assets.get_plan(lab.ws, upload.id)
+            stored.status = "assisted"
+            await uow.assets.update_plan(stored)
+            await uow.commit()
+            outcomes = await uow.assets.latest_outcomes(lab.ws, status="assisted")
+        # The refused one's last answer, and one no source was ever asked about.
+        assert outcomes == {"licence_not_permitted": 1, "none": 1}
+
+        view = await CollectionProgressService(lab.harness.context).view(lab.actor)
+        funnel = {row["stage"]: row["count"] for row in view["funnel"]}
+        assert funnel["found"] == 3 and funnel["included"] == 3
+        assert funnel["planned"] == 3 and funnel["fetched"] >= 1
+        assert view["acquisition"]["plans"]["acquired"] == 1
+        assert view["acquisition"]["waiting_reasons"] == outcomes
+        assert view["acquisition"]["identity"]["identifier"] >= 1
+        assert len(view["daily"]) == 30 and view["daily"][-1]["found"] == 3

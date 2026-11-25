@@ -230,6 +230,12 @@ class ParseQualityService:
                 )
         return {"promoted": len(promoted), "still_degraded": still}
 
+    async def degraded_summary(self, ws: UUID) -> dict[str, int]:
+        """How many degraded documents miss each limit (no capability check: callers check)."""
+        async with self._context.uow_factory() as uow:
+            reasons, _ = await self._degraded_reasons(uow, ws)
+        return reasons
+
     async def _degraded_reasons(self, uow: Any, ws: UUID) -> tuple[dict[str, int], int]:
         """How many degraded documents miss each limit, worded as the parse recorded it."""
         reasons: dict[str, int] = {}

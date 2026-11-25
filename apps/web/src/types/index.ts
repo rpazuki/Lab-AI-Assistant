@@ -210,6 +210,41 @@ export interface Candidate {
   provenance: Record<string, string[]>;
 }
 
+/** The collection before publication, stage by stage (Collection progress). */
+export interface CollectionProgress {
+  funnel: { stage: string; label: string; count: number }[];
+  discovery: {
+    runs: number;
+    by_source: Record<string, number>;
+    merged: number;
+    open_duplicate_pairs: number;
+    identity_conflicts: number;
+  };
+  screening: {
+    relevance: Record<string, number>;
+    decided_by_person: number;
+    with_abstract: number;
+    included_with_abstract: number;
+    found: number;
+    included: number;
+  };
+  acquisition: {
+    plans: Record<string, number>;
+    waiting_reasons: Record<string, number>;
+    failed_reasons: Record<string, number>;
+    identity: Record<string, number>;
+    preprints: number;
+  };
+  parsing: { by_status: Record<string, number>; degraded_by_reason: Record<string, number> };
+  extraction: {
+    papers_with_values: number;
+    values: number;
+    waiting_review: number;
+    tasks: Record<string, number>;
+  };
+  daily: { day: string; found: number; fetched: number; parsed: number }[];
+}
+
 /** The two parse-quality limits a steward can adjust; null keeps a format's default. */
 export interface ParseLimits {
   max_duplicate_paragraph_ratio: number | null;

@@ -33,6 +33,7 @@ from lab_assistant.application.bulk_review import (
     paper,
 )
 from lab_assistant.application.chat import ChatService
+from lab_assistant.application.collection_progress import CollectionProgressService
 from lab_assistant.application.datasheets import DatasheetService
 from lab_assistant.application.discovery import DiscoveryService
 from lab_assistant.application.export import ExportService
@@ -1523,6 +1524,12 @@ class ParseLimitsRequest(BaseModel):
     max_duplicate_paragraph_ratio: float | None = Field(default=None, ge=0, le=1)
     #: Whether the reference list must come out separate; null keeps the default.
     require_reference_separation: bool | None = None
+
+
+@router.get("/collection-progress")
+async def collection_progress(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """How far the collection has got before publication, stage by stage."""
+    return await CollectionProgressService(container.context).view(actor)
 
 
 @router.get("/parse-quality-limits")

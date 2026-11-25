@@ -688,6 +688,36 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
     ],
   },
   {
+    id: "progress",
+    title: "Collection progress",
+    href: "/progress",
+    icon: "progress",
+    anyOf: ["manage_scope"],
+    audience: "Data stewards and admins.",
+    summary: "See how far the collection has got before publication, stage by stage, and why papers are held up.",
+    sections: [
+      {
+        id: "reading",
+        title: "Reading the page",
+        about: [
+          "**Analytics** describes the release Ask serves. **Collection progress** describes the work behind it: every paper found, whether or not it has reached a release. The first panel follows papers from found to included, planned for fetching, fetched, parsed, extracted and in the release Ask serves, each as a count and a share of everything found.",
+          "The panels below say why the rest have not got further: what each source found and what merged; how papers were screened and how many have an abstract; why papers wait for a person rather than being fetched (no open licence, a sign-in page, a rate limit) and how fetched files were tied to their paper; why documents are degraded; and what was found, fetched and parsed each day. Every count is over the whole workspace and is recounted each minute.",
+        ],
+        howTos: [
+          {
+            title: "How to find what to do next",
+            needs: STEWARD,
+            steps: [
+              "Find the first step in **How far papers have got** where the count falls sharply.",
+              "Read the panel for that step: it says why. Rate limits clear on the next press of **Fetch included papers**; papers with no open licence need an upload; degraded documents may pass with adjusted **Parse quality** limits.",
+              "Act on Collections, then come back to see the counts move.",
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: "review",
     title: "Review",
     href: "/review",

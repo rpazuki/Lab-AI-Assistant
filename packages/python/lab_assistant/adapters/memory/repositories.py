@@ -1158,6 +1158,24 @@ class _Assets:
                 counts[plan.status] += 1
         return dict(counts)
 
+    async def latest_outcomes(self, workspace_id: UUID, *, status: str) -> dict[str, int]:
+        latest: dict[UUID, AcquisitionAttempt] = {}
+        for attempt in self._db.attempts.values():
+            if attempt.workspace_id != workspace_id:
+                continue
+            key = (attempt.requested_at or _EPOCH, attempt.attempt_number)
+            current = latest.get(attempt.acquisition_plan_id)
+            if current is None or key > (current.requested_at or _EPOCH, current.attempt_number):
+                latest[attempt.acquisition_plan_id] = attempt
+        counts: dict[str, int] = defaultdict(int)
+        for plan in self._db.plans.values():
+            if plan.workspace_id != workspace_id or plan.status != status:
+                continue
+            attempt = latest.get(plan.id)
+            outcome = attempt.outcome.value if attempt and attempt.outcome else "none"
+            counts[outcome] += 1
+        return dict(counts)
+
     async def add_attempt(self, attempt: AcquisitionAttempt) -> None:
         self._db.attempts[attempt.id] = attempt
 
