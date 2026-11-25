@@ -291,13 +291,28 @@ class _Policies:
         self._db = db
 
     async def list_grants(
-        self, workspace_id: UUID, *, subject_ids: Sequence[UUID]
+        self, workspace_id: UUID, *, subject_ids: Sequence[UUID], roles: Sequence[str] = ()
     ) -> list[GrantSpec]:
-        subjects = set(subject_ids)
+        subjects, named = set(subject_ids), set(roles)
         return [
             grant
             for grant in self._db.grants.values()
-            if grant.workspace_id == workspace_id and grant.subject_id in subjects
+            if grant.workspace_id == workspace_id
+            and (
+                (grant.subject_id is not None and grant.subject_id in subjects)
+                or (grant.subject_role is not None and grant.subject_role in named)
+            )
+        ]
+
+    async def list_resource_grants(
+        self, workspace_id: UUID, *, resource_type: str, resource_id: UUID
+    ) -> list[GrantSpec]:
+        return [
+            grant
+            for grant in self._db.grants.values()
+            if grant.workspace_id == workspace_id
+            and grant.resource_type.value == resource_type
+            and grant.resource_id == resource_id
         ]
 
     async def add_grant(self, grant: GrantSpec) -> None:

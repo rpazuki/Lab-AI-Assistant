@@ -149,3 +149,44 @@ describe("the operations page", () => {
     );
   });
 });
+
+/**
+ * Four long lists on one page. Each folds away to its title bar and remembers it,
+ * so an operator reading dead letters is not scrolling past the audit log to do
+ * it. "Waiting longest" and "Waiting for a person" are one above the other now:
+ * side by side each had half a screen for a stage, a state, a time and an action.
+ */
+describe("Every panel on Operations folds away", () => {
+  // The fold is remembered per browser, so one case's folding would otherwise
+  // start the next one folded.
+  beforeEach(() => window.localStorage.clear());
+
+  it("offers each one its own fold, and remembers it", async () => {
+    const user = userEvent.setup();
+    render(<OperationsClient />);
+
+    for (const title of ["Waiting longest", "Waiting for a person", "Dead letters", "Audit log"]) {
+      const fold = await screen.findByRole("button", { name: `Hide ${title}` });
+      expect(fold).toHaveAttribute("aria-expanded", "true");
+      await user.click(fold);
+      expect(screen.getByRole("button", { name: `Show ${title}` })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+    }
+  });
+
+  it("stacks the two waiting panels rather than setting them side by side", async () => {
+    render(<OperationsClient />);
+
+    const longest = (await screen.findByRole("button", { name: "Hide Waiting longest" })).closest(
+      "section",
+    );
+    const person = screen.getByRole("button", { name: "Hide Waiting for a person" }).closest(
+      "section",
+    );
+    // Siblings in the page's own column, not two cells of a row.
+    expect(longest?.parentElement).toBe(person?.parentElement);
+    expect(longest?.parentElement?.className ?? "").not.toMatch(/grid-cols-2/);
+  });
+});

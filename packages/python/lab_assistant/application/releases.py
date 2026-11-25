@@ -20,6 +20,7 @@ from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.objects import register_object
 from lab_assistant.application.pagination import collect_pages, every_session
 from lab_assistant.application.release_gates import evaluation_gate_status
+from lab_assistant.application.scope_access import reachable_work_ids
 from lab_assistant.contracts.canonical import canonical_json
 from lab_assistant.contracts.errors import (
     NotFound,
@@ -89,7 +90,15 @@ class ReleaseService:
                     after_id=after,
                 )
             )
-            included = [work for work in works if work.is_active]
+            # A release carries only what the person assembling it may reach: a
+            # scope they have no grant for is not theirs to publish, and a paper
+            # put in a release here would be readable through the release there.
+            reachable = await reachable_work_ids(uow, context, actor)
+            included = [
+                work
+                for work in works
+                if work.is_active and (reachable is None or work.id in reachable)
+            ]
             # An abstract stands in for a paper only while a steward has the
             # fallback on, and only when it has no full text.
             abstracts_allowed = await fallback_enabled(uow, actor.workspace_id)

@@ -907,13 +907,66 @@ class TestCollections:
 
         await harness.run_all_tasks()
 
-        status = await api["client"].get(
-            f"/api/v1/scope-deletions/{task_id}", headers=_auth(token)
-        )
+        status = await api["client"].get(f"/api/v1/scope-deletions/{task_id}", headers=_auth(token))
         assert status.json()["settled"] is True, status.json()["error"]
         assert status.json()["counts"]["versions"] == 1
         listed = await api["client"].get("/api/v1/scopes", headers=_auth(token))
         assert v1["id"] not in {item["id"] for item in listed.json()["items"]}
+
+    async def test_scope_access_is_written_by_an_admin_and_refused_to_a_researcher(
+        self, api
+    ) -> None:
+        """Handing out access is administrative.
+
+        ``steward@lab.invalid`` owns this workspace and so holds ``admin``; the
+        steward-cannot-write case is in ``tests/integration/test_scope_access.py``,
+        where an actor can be given any role.
+        """
+        token = await _login(api["client"], "steward@lab.invalid")
+        created = await api["client"].post(
+            "/api/v1/scopes",
+            headers=_auth(token),
+            json={
+                "name": "Yarrowia",
+                "scientific_objective": "Yarrowia literature",
+                "intended_uses": ["literature search"],
+                "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
+            },
+        )
+        scope_id = created.json()["id"]
+
+        empty = await api["client"].get(f"/api/v1/scopes/{scope_id}/access", headers=_auth(token))
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["rules"] == []
+        # Admins reach everything without a rule, so none is offered for them.
+        assert "admin" not in empty.json()["roles"]
+
+        added = await api["client"].post(
+            f"/api/v1/scopes/{scope_id}/access",
+            headers=_auth(token),
+            json={"role": "researcher"},
+        )
+        assert added.status_code == 201, added.text
+
+        listed = await api["client"].get(f"/api/v1/scopes/{scope_id}/access", headers=_auth(token))
+        assert [rule["subject_role"] for rule in listed.json()["rules"]] == ["researcher"]
+
+        gone = await api["client"].delete(
+            f"/api/v1/scopes/{scope_id}/access/{added.json()['id']}", headers=_auth(token)
+        )
+        assert gone.status_code == 204
+        after = await api["client"].get(f"/api/v1/scopes/{scope_id}/access", headers=_auth(token))
+        assert after.json()["rules"] == []
+
+        researcher = _auth(await _login(api["client"], "researcher@lab.invalid"))
+        refused = await api["client"].post(
+            f"/api/v1/scopes/{scope_id}/access", headers=researcher, json={"role": "reviewer"}
+        )
+        assert refused.status_code == 403, refused.text
+        # Reading the rules is curating, which a researcher does not do either.
+        assert (
+            await api["client"].get(f"/api/v1/scopes/{scope_id}/access", headers=researcher)
+        ).status_code == 403
 
     async def test_a_draft_is_corrected_in_place_keeping_its_version(self, api) -> None:
         token = await _login(api["client"], "steward@lab.invalid")

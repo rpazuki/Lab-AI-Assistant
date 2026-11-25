@@ -218,7 +218,9 @@ resource_grants = Table(
     Column("id", _UUID, primary_key=True),
     Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
     Column("subject_type", Text, nullable=False),
-    Column("subject_id", _UUID, nullable=False),
+    #: Null for a role grant, which names a role instead: a role has no id.
+    Column("subject_id", _UUID),
+    Column("subject_role", Text),
     Column("resource_type", Text, nullable=False),
     Column("resource_id", _UUID),
     Column("action", Text, nullable=False),
@@ -227,6 +229,7 @@ resource_grants = Table(
     Column("valid_from", DateTime(timezone=True)),
     Column("valid_until", DateTime(timezone=True)),
     Index("ix_resource_grants_lookup", "workspace_id", "subject_id", "action"),
+    Index("ix_resource_grants_role", "workspace_id", "subject_role", "action"),
     CheckConstraint("effect in ('allow','deny','require_review')", name="effect_enum"),
 )
 

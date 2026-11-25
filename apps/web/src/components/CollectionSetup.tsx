@@ -3,9 +3,15 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { QueryHelper } from "@/components/QueryHelper";
-import { ReviewHistory, ScopeDeletion, ScopeRules } from "@/components/ScopeReview";
+import {
+  ReviewHistory,
+  ScopeAccessRules,
+  ScopeDeletion,
+  ScopeRules,
+} from "@/components/ScopeReview";
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
+import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { Pager } from "@/components/ui/Pager";
 import { SortHeader } from "@/components/ui/table";
 import {
@@ -88,16 +94,18 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
   const [scopes, setScopes] = useState<ScopeVersion[]>([]);
   const [runPage, setRunPage] = useState<Page<DiscoveryRun>>({ items: [], next_cursor: null, total: 0 });
   const runs = runPage.items;
-  const runPager = usePager(20);
+  // Two runs a page: a run's card is tall (every connector, with its counts), and
+  // comparing a run with the one before it is what the list is read for.
+  const runPager = usePager(2);
   const [gates, setGates] = useState<Record<string, ScopeGateReport>>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ScopeVersion | null>(null);
   /** What is open under each scope row: its read-only view, its rules, its history. */
-  const [open, setOpen] = useState<{ id: string; what: "view" | "rules" | "history" | "delete" } | null>(null);
+  const [open, setOpen] = useState<{ id: string; what: "view" | "rules" | "history" | "access" | "delete" } | null>(null);
 
-  function toggle(scope: ScopeVersion, what: "view" | "rules" | "history" | "delete") {
+  function toggle(scope: ScopeVersion, what: "view" | "rules" | "history" | "access" | "delete") {
     setOpen((current) => (current?.id === scope.id && current.what === what ? null : { id: scope.id, what }));
   }
 
@@ -302,6 +310,17 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                       ) : null}
                       {!editable ? (
                         <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-pressed={shown === "access"}
+                          aria-label={`Who may reach the scope ${scope.name}`}
+                          onClick={() => toggle(scope, "access")}
+                        >
+                          Access
+                        </Button>
+                      ) : null}
+                      {!editable ? (
+                        <Button
                           variant="danger"
                           size="sm"
                           aria-pressed={shown === "delete"}
@@ -343,6 +362,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                   ) : null}
                   {shown === "rules" ? <ScopeRules scope={scope} onChanged={onChanged} /> : null}
                   {shown === "history" ? <ReviewHistory scope={scope} /> : null}
+                  {shown === "access" ? <ScopeAccessRules scope={scope} /> : null}
                   {shown === "delete" ? (
                     <ScopeDeletion
                       scope={scope}
@@ -381,7 +401,12 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
         )}
       </Panel>
 
-      <Panel title="Discovery runs" flush aside={<LiveStatus {...live} />}>
+      <CollapsiblePanel
+        title="Discovery runs"
+        storageKey="collections.discovery"
+        flush
+        aside={<LiveStatus {...live} />}
+      >
         {runs.length === 0 ? (
           <div className="px-5 py-3">
             <Empty>No discovery run yet. Start one from an approved scope.</Empty>
@@ -452,7 +477,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
           nextCursor={runPage.next_cursor}
           label="discovery runs"
         />
-      </Panel>
+      </CollapsiblePanel>
     </div>
   );
 }

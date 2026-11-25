@@ -31,7 +31,7 @@ from lab_assistant.contracts.policy import (
     SubjectRef,
     SubjectType,
 )
-from lab_assistant.domain.workspace import Capability, Membership
+from lab_assistant.domain.workspace import Capability, Membership, Role
 
 __all__ = ["ACTION_CAPABILITY", "PolicyEngine", "PolicyInput"]
 
@@ -163,6 +163,30 @@ class PolicyEngine:
                     restricted_to=[str(g) for g in resource.restricted_to_groups],
                 )
 
+        # An admin reaches everything without a grant being written for them: the
+        # role that hands out access can always see what it is handing out, and a
+        # workspace whose last admin cannot read its own corpus has no way back in.
+        # Every other role, data_steward included, still needs a grant.
+        #
+        # It waives the *defaults* below — default-deny for content, "no matching
+        # grant" — and nothing above. An explicit deny still wins, because "a deny
+        # wins regardless of order or specificity" is this engine's property and
+        # the most powerful role is the last place to start excepting it. Nor does
+        # it open group-restricted material: that is another institution's data,
+        # shared under an agreement this admin is not party to, and until its group
+        # is mapped here the restriction admits nobody (``tests/e2e``, S22).
+        if membership.role is Role.ADMIN:
+            return PolicyDecision(
+                workspace_id=request.workspace_id,
+                subject=request.subject,
+                resource=resource,
+                action=action,
+                effect=Effect.ALLOW,
+                reason_code="admin_role",
+                policy_version_id=request.policy_version_id,
+                decided_at=request.now,
+            )
+
         if allows:
             return PolicyDecision(
                 workspace_id=request.workspace_id,
@@ -245,6 +269,9 @@ class PolicyEngine:
         """
         if grant.subject_type is SubjectType.WORKSPACE and grant.subject_id == request.workspace_id:
             return True
+        if grant.subject_type is SubjectType.ROLE:
+            membership = request.membership
+            return membership is not None and membership.role.value == grant.subject_role
         return request.subject.matches(grant.subject_type, grant.subject_id)
 
     @staticmethod

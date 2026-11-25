@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 
-import { Alert, Button, Field, Input, Panel, StateChip } from "@/components/ui/primitives";
+import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { Alert, Button, Field, Input, StateChip } from "@/components/ui/primitives";
 import { SortHeader, TableSearch } from "@/components/ui/table";
 import { assistedUpload, bulkImport, type BulkImportItem } from "@/lib/api";
 import { useTable } from "@/lib/useTable";
@@ -113,7 +114,7 @@ export function BulkImport({
   }, {});
 
   return (
-    <Panel title="Import many PDFs">
+    <CollapsiblePanel title="Import many PDFs" storageKey="collections.import">
       <div className="space-y-4">
         <label
           onDragOver={(event) => {
@@ -241,6 +242,6 @@ export function BulkImport({
           </div>
         ) : null}
       </div>
-    </Panel>
+    </CollapsiblePanel>
   );
 }

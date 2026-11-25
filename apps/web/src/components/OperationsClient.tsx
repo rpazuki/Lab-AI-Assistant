@@ -6,7 +6,8 @@ import { InfoTip } from "@/components/ui/InfoTip";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { Pager } from "@/components/ui/Pager";
 import { ServerSearch } from "@/components/ui/ServerSearch";
-import { Alert, Button, Empty, Input, Panel, StateChip } from "@/components/ui/primitives";
+import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { Alert, Button, Empty, Input, StateChip } from "@/components/ui/primitives";
 import { SortHeader } from "@/components/ui/table";
 import { listAuditEvents, retryTask, taskQueue, taskSnapshot } from "@/lib/api";
 import { describeStatus } from "@/lib/statuses";
@@ -203,10 +204,12 @@ export function OperationsClient() {
         </dl>
       </section>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <WaitingLongest stages={snapshot?.waiting_by_stage ?? []} tick={tick} />
-        <WaitingForPerson tick={tick} />
-      </div>
+      {/* One above the other, not side by side: each row carries a stage, a state,
+          a time and an action, which wrapped badly in half a screen. Now that the
+          panels fold away, full width costs nothing when they are not wanted. */}
+      <WaitingLongest stages={snapshot?.waiting_by_stage ?? []} tick={tick} />
+
+      <WaitingForPerson tick={tick} />
 
       <DeadLetters tick={tick} busy={busy} onRetry={retry} />
 
@@ -230,8 +233,9 @@ function WaitingLongest({ stages, tick }: { stages: TaskSnapshot["waiting_by_sta
   });
   const all = stages.reduce((sum, row) => sum + row.count, 0);
   return (
-    <Panel
+    <CollapsiblePanel
       title="Waiting longest"
+      storageKey="operations.waiting-longest"
       flush
       aside={
         <select
@@ -301,7 +305,7 @@ function WaitingLongest({ stages, tick }: { stages: TaskSnapshot["waiting_by_sta
       {page ? (
         <Pager pager={pager} shown={page.items.length} total={page.total} nextCursor={page.next_cursor} label="waiting tasks" />
       ) : null}
-    </Panel>
+    </CollapsiblePanel>
   );
 }
 
@@ -318,7 +322,7 @@ function WaitingForPerson({ tick }: { tick: number }) {
     },
   });
   return (
-    <Panel title="Waiting for a person" flush>
+    <CollapsiblePanel title="Waiting for a person" storageKey="operations.waiting-person" flush>
       <QueueError error={error} />
       <QueueSearch label="tasks waiting for a person" query={query} onSearch={search} />
       {page === null ? (
@@ -372,7 +376,7 @@ function WaitingForPerson({ tick }: { tick: number }) {
           label="tasks waiting for a person"
         />
       ) : null}
-    </Panel>
+    </CollapsiblePanel>
   );
 }
 
@@ -395,7 +399,7 @@ function DeadLetters({
     },
   });
   return (
-    <Panel title="Dead letters" flush>
+    <CollapsiblePanel title="Dead letters" storageKey="operations.dead-letters" flush>
       <QueueError error={error} />
       <QueueSearch label="dead letters" query={query} onSearch={search} />
       {page === null ? (
@@ -457,7 +461,7 @@ function DeadLetters({
       {page ? (
         <Pager pager={pager} shown={page.items.length} total={page.total} nextCursor={page.next_cursor} label="dead letters" />
       ) : null}
-    </Panel>
+    </CollapsiblePanel>
   );
 }
 
@@ -511,7 +515,7 @@ function AuditLog({ tick }: { tick: number }) {
   const filtered = Boolean(action || query);
 
   return (
-    <Panel title="Audit log" flush>
+    <CollapsiblePanel title="Audit log" storageKey="operations.audit" flush>
       <form
         role="search"
         aria-label="Search the audit log"
@@ -618,6 +622,6 @@ function AuditLog({ tick }: { tick: number }) {
       {page ? (
         <Pager pager={pager} shown={page.items.length} total={page.total} nextCursor={page.next_cursor} label="audit events" />
       ) : null}
-    </Panel>
+    </CollapsiblePanel>
   );
 }

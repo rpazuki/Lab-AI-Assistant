@@ -51,6 +51,7 @@ import type {
   Reviewer,
   RunComparison,
   RunReviewSummary,
+  ScopeAccess,
   ScopeDeletionPlan,
   ScopeGateReport,
   ScopeRulesPlan,
@@ -481,6 +482,29 @@ export const applyScopeRules = (
       body: JSON.stringify({ step_id: stepId, include_filter_decisions: includeFilterDecisions }),
     },
   );
+
+/**
+ * Who may reach this scope's papers in Ask, in releases and in exports.
+ *
+ * Access is held on the scope, not the version, so a rule written from any
+ * version is the same rule. An admin reaches everything without one.
+ */
+export const scopeAccess = (scopeVersionId: string) =>
+  request<ScopeAccess>(`/scopes/${scopeVersionId}/access`);
+
+/** Let a role, or one person, reach every version of this scope. */
+export const grantScopeAccess = (
+  scopeVersionId: string,
+  subject: { role?: string; user_id?: string; effect?: "allow" | "deny" },
+) =>
+  request<{ id: string }>(`/scopes/${scopeVersionId}/access`, {
+    method: "POST",
+    body: JSON.stringify(subject),
+  });
+
+/** Take one rule away. Whoever it was the only rule for stops reaching the scope. */
+export const revokeScopeAccess = (scopeVersionId: string, grantId: string) =>
+  request<void>(`/scopes/${scopeVersionId}/access/${grantId}`, { method: "DELETE" });
 
 /** What deleting this version's whole scope would remove, and what stops it. Changes nothing. */
 export const previewScopeDeletion = (scopeVersionId: string) =>

@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 __all__ = [
     "CONTENT_ACTIONS",
@@ -100,6 +100,10 @@ class SubjectType(StrEnum):
     GROUP = "group"
     WORKSPACE = "workspace"
     SERVICE_ACCOUNT = "service_account"
+    #: Everyone holding one role. A membership has exactly one, so a role grant
+    #: is the shortest way to say "reviewers may ask about this scope" without
+    #: naming each reviewer, and it keeps saying it as people come and go.
+    ROLE = "role"
 
 
 class ResourceType(StrEnum):
@@ -147,7 +151,12 @@ class GrantSpec(BaseModel):
     id: UUID
     workspace_id: UUID
     subject_type: SubjectType
-    subject_id: UUID
+    #: Who it speaks about, for every subject type but ``role``.
+    subject_id: UUID | None = None
+    #: The role it speaks about, for ``subject_type=role`` only. A role has no
+    #: id of its own — it is a name on a membership — so it is named, not
+    #: referenced, and the pair is mutually exclusive.
+    subject_role: str | None = None
     resource_type: ResourceType
     resource_id: UUID | None
     action: PolicyAction
@@ -155,6 +164,15 @@ class GrantSpec(BaseModel):
     policy_basis: str
     valid_from: datetime | None = None
     valid_until: datetime | None = None
+
+    @model_validator(mode="after")
+    def _one_subject(self) -> GrantSpec:
+        if self.subject_type is SubjectType.ROLE:
+            if self.subject_role is None or self.subject_id is not None:
+                raise ValueError("a role grant names a role and no subject id")
+        elif self.subject_id is None or self.subject_role is not None:
+            raise ValueError(f"a {self.subject_type.value} grant names a subject id, not a role")
+        return self
 
     def is_current(self, now: datetime) -> bool:
         started = self.valid_from is None or now >= self.valid_from

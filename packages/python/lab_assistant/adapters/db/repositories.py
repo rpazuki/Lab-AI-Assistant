@@ -450,12 +450,25 @@ class _Workspaces(_Base):
 
 class _Policies(_Base):
     async def list_grants(
-        self, workspace_id: UUID, *, subject_ids: Sequence[UUID]
+        self, workspace_id: UUID, *, subject_ids: Sequence[UUID], roles: Sequence[str] = ()
     ) -> list[GrantSpec]:
         return await self._many(
             GRANTS,
             self._scope(GRANTS, workspace_id),
-            t.resource_grants.c.subject_id.in_(list(subject_ids)),
+            or_(
+                t.resource_grants.c.subject_id.in_(list(subject_ids)),
+                t.resource_grants.c.subject_role.in_(list(roles)),
+            ),
+        )
+
+    async def list_resource_grants(
+        self, workspace_id: UUID, *, resource_type: str, resource_id: UUID
+    ) -> list[GrantSpec]:
+        return await self._many(
+            GRANTS,
+            self._scope(GRANTS, workspace_id),
+            t.resource_grants.c.resource_type == resource_type,
+            t.resource_grants.c.resource_id == resource_id,
         )
 
     async def add_grant(self, grant: GrantSpec) -> None:

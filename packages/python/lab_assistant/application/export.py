@@ -21,6 +21,7 @@ from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.objects import register_object
+from lab_assistant.application.scope_access import reachable_work_ids
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
 from lab_assistant.contracts.errors import NotFound, PolicyDenied
 from lab_assistant.contracts.events import ActorType, AuditAction
@@ -131,6 +132,11 @@ class ExportService:
             if release is None:
                 raise NotFound(f"release {release_id} not found")
             items = await uow.releases.list_items(actor.workspace_id, release_id)
+            # A release may have been assembled by someone who reaches more scopes
+            # than the person exporting it, so its papers are filtered again here
+            # rather than trusted. Skipped ones are counted like any other
+            # restricted paper, so the package says how much it is missing.
+            reachable = await reachable_work_ids(uow, context, actor)
 
             works: list[dict[str, Any]] = []
             manifestations: list[dict[str, Any]] = []
@@ -148,6 +154,9 @@ class ExportService:
                 record = item.record
                 work = await uow.works.get(actor.workspace_id, record.work_id)
                 if work is None:
+                    continue
+                if reachable is not None and work.id not in reachable:
+                    skipped_restricted += 1
                     continue
                 if not context.policy_engine.allows(
                     policy_input,

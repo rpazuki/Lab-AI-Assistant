@@ -8,6 +8,9 @@ import { Alert, Button, Empty, Input, StateChip, row, rowList } from "@/componen
 import {
   applyScopeRules,
   deleteScope,
+  grantScopeAccess,
+  revokeScopeAccess,
+  scopeAccess,
   scopeDeletion,
   listReviewHistory,
   previewScopeDeletion,
@@ -20,6 +23,7 @@ import type {
   Page,
   PaperSummary,
   ReviewStep,
+  ScopeAccess,
   ScopeDeletionPlan,
   ScopeRulesPlan,
   ScopeVersion,
@@ -508,6 +512,133 @@ export function ScopeDeletion({
               scope this takes a few minutes. It carries on whether or not you stay here.
             </p>
           ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Who may reach a scope's papers.
+ *
+ * A rule is held on the scope, not the version, so one written here applies to
+ * every version of it and keeps applying when the next is saved. Admins are not
+ * listed as a choice: they reach everything without a rule, and offering to
+ * write one for them would promise something it does not do.
+ */
+export function ScopeAccessRules({ scope }: { scope: ScopeVersion }) {
+  const [view, setView] = useState<ScopeAccess | null>(null);
+  const [role, setRole] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const next = await scopeAccess(scope.id);
+      setView(next);
+      setRole((current) => current || next.roles[0] || "");
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "the rules could not be read");
+    }
+  }, [scope.id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function change(run: () => Promise<unknown>) {
+    setBusy(true);
+    try {
+      await run();
+      await load();
+      setError(null);
+    } catch (caught) {
+      const refusal = caught instanceof Error ? caught.message : "the rule was not saved";
+      await load();
+      setError(refusal);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const named = (rule: ScopeAccess["rules"][number]) =>
+    rule.subject_role ? `Everyone with the ${rule.subject_role} role` : `One person`;
+
+  return (
+    <section
+      aria-label={`Who may reach ${scope.name}`}
+      className="mt-2 space-y-3 rounded-control border border-border bg-surface-subtle px-4 py-3 text-sm"
+    >
+      {error ? (
+        <Alert tone="danger" role="alert">
+          {error}
+        </Alert>
+      ) : null}
+      <p className="max-w-3xl text-xs text-muted">
+        These rules decide who can reach this scope&apos;s papers when they ask a question, and
+        which papers go into a release or an export. They are held on the scope, so they cover
+        every version of it, now and later. Anyone with the <strong>admin</strong> role reaches it
+        without a rule. Everyone else reaches it only through one.
+      </p>
+      {!view ? (
+        <p className="text-muted">Reading the rules…</p>
+      ) : (
+        <>
+          {view.rules.length === 0 ? (
+            <Empty>
+              No rule yet: only admins reach this scope. Add a role below to open it.
+            </Empty>
+          ) : (
+            <ul className={rowList}>
+              {view.rules.map((rule) => (
+                <li key={rule.id} className="flex flex-wrap items-center gap-3 py-2">
+                  <StateChip state={rule.effect} kind="approval" />
+                  <span className="text-ink">{named(rule)}</span>
+                  {rule.policy_basis === "migrated_existing_scope" ? (
+                    <span className="text-xs text-muted">
+                      (carried over when access control was switched on)
+                    </span>
+                  ) : null}
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    disabled={busy}
+                    aria-label={`Remove the rule for ${named(rule)}`}
+                    onClick={() => void change(() => revokeScopeAccess(scope.id, rule.id))}
+                  >
+                    Remove
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form
+            className="flex flex-wrap items-end gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void change(() => grantScopeAccess(scope.id, { role }));
+            }}
+          >
+            <label className="block space-y-1">
+              <span className="block font-medium text-ink">Let a role reach it</span>
+              <select
+                aria-label="Role to let reach this scope"
+                className="rounded-control border border-border-strong bg-surface px-2 py-1.5 text-sm text-ink"
+                value={role}
+                onChange={(event) => setRole(event.target.value)}
+              >
+                {view.roles.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button type="submit" size="sm" disabled={busy || !role}>
+              {busy ? "Saving…" : "Add rule"}
+            </Button>
+          </form>
         </>
       )}
     </section>

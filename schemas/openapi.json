@@ -379,6 +379,15 @@
         "title": "BulkRelevanceRequest",
         "type": "object"
       },
+      "Effect": {
+        "enum": [
+          "allow",
+          "deny",
+          "require_review"
+        ],
+        "title": "Effect",
+        "type": "string"
+      },
       "EvaluationRunRequest": {
         "properties": {
           "benchmark_id": {
@@ -1080,6 +1089,38 @@
         ],
         "title": "Role",
         "type": "string"
+      },
+      "ScopeAccessRequest": {
+        "properties": {
+          "effect": {
+            "$ref": "#/components/schemas/Effect",
+            "default": "allow"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Role"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          }
+        },
+        "title": "ScopeAccessRequest",
+        "type": "object"
       },
       "ScopeDeletionRequest": {
         "properties": {
@@ -10385,6 +10426,245 @@
           }
         },
         "summary": "Update Scope Draft"
+      }
+    },
+    "/api/v1/scopes/{scope_version_id}/access": {
+      "get": {
+        "description": "Who may reach this scope's papers, and the roles and people to choose from.",
+        "operationId": "scope_access_api_v1_scopes__scope_version_id__access_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scope_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scope Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Scope Access Api V1 Scopes  Scope Version Id  Access Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scope Access"
+      },
+      "post": {
+        "description": "Let a role, or one person, reach every version of this scope.",
+        "operationId": "grant_scope_access_api_v1_scopes__scope_version_id__access_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scope_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scope Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeAccessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Grant Scope Access Api V1 Scopes  Scope Version Id  Access Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Grant Scope Access"
+      }
+    },
+    "/api/v1/scopes/{scope_version_id}/access/{grant_id}": {
+      "delete": {
+        "description": "Take one rule away. Anyone it was the only rule for stops reaching the scope.",
+        "operationId": "revoke_scope_access_api_v1_scopes__scope_version_id__access__grant_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scope_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scope Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Grant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Scope Access"
       }
     },
     "/api/v1/scopes/{scope_version_id}/approve": {

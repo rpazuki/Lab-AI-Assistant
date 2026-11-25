@@ -51,6 +51,8 @@ export interface HelpTopic {
 }
 
 const STEWARD = "Data stewards and admins.";
+//: Handing out access is administrative: a steward can read the rules, not write them.
+const ADMIN = "Admins.";
 
 export const HELP_TOPICS: readonly HelpTopic[] = [
   {
@@ -442,6 +444,17 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             needs: STEWARD,
             steps: ["Select **Delete** on the draft and confirm."],
             note: "This deletes that one unapproved version. To delete a scope with everything it found, see the next how-to.",
+          },
+          {
+            title: "How to choose who may reach a scope",
+            needs: ADMIN,
+            steps: [
+              "On **Collections**, select **Access** on any approved or retired version of it.",
+              "The rules apply to the whole scope, every version of it, now and later.",
+              "Choose a role and select **Add rule**. Everyone holding that role can then reach the scope's papers when they ask a question, and those papers go into releases and exports they make.",
+              "**Remove** takes a rule away; anyone it was the only rule for stops reaching the scope.",
+            ],
+            note: "With no rule at all, only admins reach a scope: an admin reaches everything without one, which is what keeps a workspace recoverable. A scope that existed before access control was switched on carries a rule for each of researcher, reviewer and data_steward, marked as carried over, so nothing was taken away when it arrived. A new scope starts with none.",
           },
           {
             title: "How to delete a whole scope",

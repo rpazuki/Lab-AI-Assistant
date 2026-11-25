@@ -195,8 +195,12 @@ async def resolve_actor(
         membership = await uow.workspaces.get_membership(workspace_id, user_id)
         groups = await uow.workspaces.list_groups(workspace_id, user_id=user_id)
         group_ids = tuple(group.id for group in groups)
+        # The caller's own grants, their groups', the workspace-wide ones, and
+        # the ones written for whatever role their membership carries.
         grants = await uow.policies.list_grants(
-            workspace_id, subject_ids=[user_id, workspace_id, *group_ids]
+            workspace_id,
+            subject_ids=[user_id, workspace_id, *group_ids],
+            roles=[membership.role.value] if membership is not None else [],
         )
     return ActorContext(
         user_id=user_id,

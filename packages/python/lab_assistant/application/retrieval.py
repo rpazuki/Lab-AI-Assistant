@@ -22,6 +22,7 @@ from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.pagination import iter_pages
+from lab_assistant.application.scope_access import reachable_work_ids
 from lab_assistant.contracts.canonical import sha256_text
 from lab_assistant.contracts.errors import NotFound
 from lab_assistant.contracts.models import EvidenceBlock
@@ -143,6 +144,9 @@ class RetrievalService:
         allowed: list[UUID] = []
         denied = 0
         async with context.uow_factory() as uow:
+            # Which scopes this caller may reach, resolved once. `None` means
+            # every one of them, and then no paper is filtered on this account.
+            reachable = await reachable_work_ids(uow, context, actor)
 
             async def page(after: UUID | None, size: int):
                 return await uow.works.list_work_visibility(
@@ -156,6 +160,10 @@ class RetrievalService:
                 if _rights_withhold(row, now):
                     # Revoked or lapsed: withheld before scoring, and counted,
                     # whoever is asking and whatever groups say.
+                    denied += 1
+                    continue
+                if reachable is not None and row.work_id not in reachable:
+                    # Found only by scopes this caller has no grant for.
                     denied += 1
                     continue
                 resource = ResourceRef(

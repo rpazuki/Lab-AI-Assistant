@@ -580,6 +580,23 @@ export interface ScopeDeletionPlan {
   deletable: boolean;
 }
 
+/** Who may reach a scope's papers, and the roles and people to choose from. */
+export interface ScopeAccess {
+  scope_id: string;
+  name: string;
+  rules: {
+    id: string;
+    subject_type: string;
+    subject_role: string | null;
+    subject_id: string | null;
+    effect: string;
+    policy_basis: string;
+  }[];
+  /** Roles a rule can name. Admins are left out: they reach everything anyway. */
+  roles: string[];
+  members: { user_id: string; role: string; reaches_everything: boolean }[];
+}
+
 /** One step in the review history. */
 export interface ReviewStep {
   id: string;

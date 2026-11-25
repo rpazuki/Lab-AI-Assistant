@@ -46,6 +46,7 @@ from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseServi
 from lab_assistant.application.retrieval import RetrievalService
 from lab_assistant.application.review import ReviewService
 from lab_assistant.application.review_history import ReviewHistoryService
+from lab_assistant.application.scope_access import ScopeAccessService
 from lab_assistant.application.scope_deletion import ScopeDeletionService
 from lab_assistant.application.scopes import ScopeService
 from lab_assistant.application.screening import ScreeningService
@@ -53,6 +54,7 @@ from lab_assistant.application.tasks import TaskQueue
 from lab_assistant.application.usage import UsageService
 from lab_assistant.contracts.errors import NotFound, PolicyDenied, ValidationFailure
 from lab_assistant.contracts.events import AuditAction
+from lab_assistant.contracts.policy import Effect
 from lab_assistant.contracts.stage import StageName
 from lab_assistant.domain.chat import UsageTotals
 from lab_assistant.domain.claims import ReviewDecision
@@ -787,6 +789,57 @@ async def delete_scope_draft(
 class ScopeDeletionRequest(BaseModel):
     #: The scope's name, typed by the person, as the confirmation.
     name: str
+
+
+class ScopeAccessRequest(BaseModel):
+    #: The role this rule speaks about, or null when it names one person.
+    role: Role | None = None
+    #: The person this rule speaks about, or null when it names a role.
+    user_id: UUID | None = None
+    #: ``deny`` stops someone a role grant would otherwise let through.
+    effect: Effect = Effect.ALLOW
+
+
+@router.get("/scopes/{scope_version_id}/access")
+async def scope_access(
+    scope_version_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Who may reach this scope's papers, and the roles and people to choose from."""
+    return await ScopeAccessService(container.context).view(actor, scope_version_id)
+
+
+@router.post(
+    "/scopes/{scope_version_id}/access",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+    status_code=201,
+)
+async def grant_scope_access(
+    scope_version_id: UUID,
+    payload: ScopeAccessRequest,
+    actor: CurrentActor,
+    container: Container,
+) -> dict[str, Any]:
+    """Let a role, or one person, reach every version of this scope."""
+    grant_id = await ScopeAccessService(container.context).allow(
+        actor,
+        scope_version_id,
+        role=payload.role,
+        user_id=payload.user_id,
+        effect=payload.effect,
+    )
+    return {"id": str(grant_id)}
+
+
+@router.delete(
+    "/scopes/{scope_version_id}/access/{grant_id}",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def revoke_scope_access(
+    scope_version_id: UUID, grant_id: UUID, actor: CurrentActor, container: Container
+) -> Response:
+    """Take one rule away. Anyone it was the only rule for stops reaching the scope."""
+    await ScopeAccessService(container.context).revoke(actor, scope_version_id, grant_id)
+    return Response(status_code=204)
 
 
 @router.get("/scopes/{scope_version_id}/deletion")
