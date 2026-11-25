@@ -284,10 +284,15 @@ export function ReleasesClient() {
                   </Button>
                   {release.status === "draft" ||
                   release.status === "validated" ||
-                  release.status === "rejected" ? (
+                  release.status === "rejected" ||
+                  (release.status === "approved" && !release.published_at) ? (
                     <DeleteButton
                       what={`release ${release.name}@${release.semantic_version}`}
-                      consequence="It was never approved, so nothing was served from it; it is refused while another release, an evaluation run or a conversation points at it."
+                      consequence={
+                        release.status === "approved"
+                          ? "It was approved and indexed but never published, so nothing was answered from it. Its search index goes with it. It is refused while another release, an alias, an evaluation run or a conversation points at it."
+                          : "It was never approved, so nothing was served from it; it is refused while another release, an evaluation run or a conversation points at it."
+                      }
                       onDelete={() => void remove(release)}
                     />
                   ) : null}

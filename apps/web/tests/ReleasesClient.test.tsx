@@ -49,6 +49,23 @@ describe("ReleasesClient", () => {
     });
   });
 
+  it("offers to delete an approved release only while it was never published", async () => {
+    vi.mocked(api.listReleases).mockResolvedValue({
+      items: [
+        { ...APPROVED, published_at: null },
+        { ...APPROVED, id: "rel-4", semantic_version: "1.3.0", status: "published", published_at: "2026-11-20T10:00:00Z" },
+        { ...APPROVED, id: "rel-5", semantic_version: "1.4.0", status: "validated", published_at: null },
+      ],
+      aliases: [],
+      next_cursor: null,
+      total: 3,
+    } as never);
+    render(<ReleasesClient />);
+    expect(await screen.findByRole("button", { name: /Delete release corpus@1\.2\.0/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Delete release corpus@1\.4\.0/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Delete release corpus@1\.3\.0/ })).toBeNull();
+  });
+
   it("shows which required benchmarks an approved release lacks", async () => {
     render(<ReleasesClient />);
     expect(await screen.findByText("rla-retrieval@1.0.0=not run")).toBeInTheDocument();

@@ -22,6 +22,7 @@ from lab_assistant.adapters.db.repositories import sql_uow_factory
 from lab_assistant.application.acquisition import IMPLEMENTATION_VERSION as FETCHER_VERSION
 from lab_assistant.application.acquisition import AcquisitionHandler, AcquisitionPlanningHandler
 from lab_assistant.application.fetching import FetchQueue
+from lab_assistant.application.reconciliation import refresh_summaries
 from lab_assistant.config import LabEnv, Settings
 from lab_assistant.contracts.connector import (
     AcquisitionRequest,
@@ -87,6 +88,9 @@ ACTIONS = frozenset(
 )
 
 
+#: A title long enough to identify a paper by.
+TITLE = "Lipid factories in engineered Yarrowia lipolytica strains"
+
 #: One PDF that names both twin papers, fetched for each of them.
 TWIN = compressed_pdf("doi:10.9/twin-a and doi:10.9/twin-b")
 
@@ -114,6 +118,16 @@ async def lab(request, tmp_path):
             "doi:10.9/licensed": (compressed_pdf("doi:10.9/licensed"), "application/pdf", None),
             "doi:10.9/unlicensed": (compressed_pdf("doi:10.9/unlicensed"), "application/pdf", None),
             "pmcid:PMC77": (compressed_pdf("PMCID: PMC77"), "application/pdf", None),
+            # No identifier in the file, only the title.
+            "doi:10.9/titled": (compressed_pdf(TITLE), "application/pdf", None),
+            # A preprint of the published paper: the title, and bioRxiv's own DOI.
+            "doi:10.9/published": (
+                compressed_pdf(f"{TITLE} doi:10.1101/2024.12.09.627483"),
+                "application/pdf",
+                None,
+            ),
+            # A title too short to tell one paper from another.
+            "doi:10.9/short": (compressed_pdf("Yarrowia lipids"), "application/pdf", None),
             # One file served for two papers: the same bytes under two assets.
             "doi:10.9/twin-a": (TWIN, "application/pdf", None),
             "doi:10.9/twin-b": (TWIN, "application/pdf", None),
@@ -175,6 +189,7 @@ class _Lab:
         licence: str | None = None,
         location: str | None = None,
         relevance: RelevanceState = RelevanceState.INCLUDED,
+        title: str | None = None,
     ) -> UUID:
         """An included work with a DOI, and what discovery said about its full text."""
         context = self.harness.context
@@ -227,7 +242,11 @@ class _Lab:
                     observed_at=now,
                 )
             )
-            facts = [(Predicate.LICENCE, licence), (Predicate.FULL_TEXT_LOCATION, location)]
+            facts = [
+                (Predicate.LICENCE, licence),
+                (Predicate.FULL_TEXT_LOCATION, location),
+                (Predicate.TITLE, title),
+            ]
             await uow.observations.add_assertions(
                 [
                     SourceAssertion(
@@ -243,6 +262,7 @@ class _Lab:
                     if value is not None
                 ]
             )
+            await refresh_summaries(uow, self.ws, [work.id], now=now)
             await uow.commit()
         return work.id
 
@@ -323,6 +343,88 @@ class TestWhatTheFetchIsTold:
         assert (IdentifierScheme.PMCID, "PMC77") in sent
 
 
+class TestTheIdentityCheck:
+    async def test_a_file_naming_the_title_is_the_paper(self, lab) -> None:
+        plan = await lab.plan(
+            await lab.paper("10.9/titled", licence="cc-by-4.0", title=TITLE), OPEN
+        )
+        assert (await lab.fetch(plan)).status is StageStatus.SUCCEEDED
+        async with lab.harness.context.uow_factory() as uow:
+            [asset] = await uow.assets.list_assets(lab.ws, work_id=plan.work_id)
+        assert asset.identity_verified
+        assert asset.metadata["identity_basis"] == "title"
+        assert asset.metadata["version"] is None
+
+    async def test_a_preprint_of_the_paper_is_accepted_and_marked(self, lab) -> None:
+        plan = await lab.plan(
+            await lab.paper("10.9/published", licence="cc-by-4.0", title=TITLE), OPEN
+        )
+        assert (await lab.fetch(plan)).status is StageStatus.SUCCEEDED
+        async with lab.harness.context.uow_factory() as uow:
+            [asset] = await uow.assets.list_assets(lab.ws, work_id=plan.work_id)
+        assert asset.metadata["version"] == "preprint"
+
+    async def test_a_short_title_is_no_evidence(self, lab) -> None:
+        plan = await lab.plan(
+            await lab.paper("10.9/short", licence="cc-by-4.0", title="Yarrowia lipids"), OPEN
+        )
+        result = await lab.fetch(plan)
+        assert result.status is StageStatus.FAILED
+        assert result.error_class is ErrorClass.IDENTITY_MISMATCH
+
+    async def test_a_file_an_older_rule_rejected_is_checked_again_once(self, lab) -> None:
+        """The stored file is read again, not fetched again, and parsing follows."""
+        context = lab.harness.context
+        plan = await lab.plan(
+            await lab.paper("10.9/titled", licence="cc-by-4.0", title=TITLE), OPEN
+        )
+        await lab.fetch(plan)
+        async with context.uow_factory() as uow:
+            [asset] = await uow.assets.list_assets(lab.ws, work_id=plan.work_id)
+            # As the identifier-only rule left it: unverified, no rule recorded.
+            asset.identity_verified = False
+            asset.metadata = {
+                key: value
+                for key, value in asset.metadata.items()
+                if key not in ("identity_basis", "version", "identity_rule")
+            }
+            await uow.assets.update_asset(asset)
+            stored = await uow.assets.get_plan(lab.ws, plan.id)
+            stored.status = "failed"
+            await uow.assets.update_plan(stored)
+            task = Task(
+                id=context.new_id(),
+                workspace_id=lab.ws,
+                stage=StageName.ACQUISITION,
+                state=TaskState.FAILED,
+                input_fingerprint=str(context.new_id()),
+                inputs={"plan_id": str(plan.id)},
+                attempt=1,
+                error_class=ErrorClass.IDENTITY_MISMATCH,
+                created_at=context.now(),
+            )
+            await uow.tasks.add(task)
+            await uow.commit()
+
+        queue = FetchQueue(context, lab.harness.orchestrator)
+        assert (await queue.retry_waiting(lab.actor))["requeued"] == 1
+        fetched = len(lab.acquirer.requests)
+        result = await lab.fetch(plan)
+        assert result.status is StageStatus.SUCCEEDED_NOOP
+        assert [t.stage for t in result.next_tasks] == [StageName.PARSING]
+        assert len(lab.acquirer.requests) == fetched  # nothing was fetched again
+        async with context.uow_factory() as uow:
+            [asset] = await uow.assets.list_assets(lab.ws, work_id=plan.work_id)
+            assert asset.identity_verified and asset.metadata["identity_basis"] == "title"
+            assert (await uow.assets.get_plan(lab.ws, plan.id)).status == "acquired"
+            again = await uow.tasks.get(lab.ws, task.id)
+            again.state = TaskState.FAILED
+            await uow.tasks.update(again)
+            await uow.commit()
+        # Checked by this rule now: a later press does not read it again.
+        assert (await queue.retry_waiting(lab.actor))["requeued"] == 0
+
+
 class TestParsingWhatWasFetched:
     async def test_the_same_bytes_for_two_papers_parse_twice_without_a_clash(self, lab) -> None:
         """Both assets once shared one parse fingerprint, and the second insert died."""
@@ -351,6 +453,95 @@ class TestParsingWhatWasFetched:
         async with lab.harness.context.uow_factory() as uow:
             for asset in assets:
                 assert await uow.renditions.list_renditions(lab.ws, asset_id=asset.id)
+
+
+class TestParseQualityLimits:
+    async def _degraded(self, lab, doi: str, **metrics: Any) -> UUID:
+        """A fetched PDF whose parse missed a limit, with what the parse measured."""
+        from lab_assistant.contracts.parsing import ParseQualityMetrics
+        from lab_assistant.domain.renditions import ParseRun, Rendition
+        from lab_assistant.domain.states import ParseState
+
+        context = lab.harness.context
+        plan = await lab.plan(await lab.paper(doi, licence="cc-by-4.0"), OPEN)
+        await lab.fetch(plan)
+        async with context.uow_factory() as uow:
+            [asset] = await uow.assets.list_assets(lab.ws, work_id=plan.work_id)
+            run = ParseRun(
+                id=context.new_id(),
+                workspace_id=lab.ws,
+                asset_id=asset.id,
+                parser_id="pypdf-text",
+                parser_version="1.0.0",
+                input_sha256=asset.sha256,
+                run_fingerprint=str(context.new_id()),
+                status="succeeded",
+                quality_metrics=ParseQualityMetrics(
+                    page_count=10,
+                    pages_represented=10,
+                    characters=40_000,
+                    reference_separation=True,
+                    **metrics,
+                ),
+            )
+            await uow.renditions.add_parse_run(run)
+            rendition = Rendition(
+                id=context.new_id(),
+                workspace_id=lab.ws,
+                parse_run_id=run.id,
+                asset_id=asset.id,
+                work_id=plan.work_id,
+                quality_status=ParseState.DEGRADED,
+                created_at=context.now(),
+            )
+            await uow.renditions.add_rendition(rendition)
+            await uow.commit()
+        return rendition.id
+
+    async def test_loosened_limits_promote_degraded_documents_on_the_next_check(self, lab) -> None:
+        from lab_assistant.application.parse_quality import ParseQualityLimits, ParseQualityService
+
+        repeated = await self._degraded(lab, "10.9/licensed", duplicate_paragraph_ratio=0.15)
+        much = await self._degraded(lab, "10.9/twin-a", duplicate_paragraph_ratio=0.6)
+        service = ParseQualityService(lab.harness.context, lab.harness.orchestrator)
+
+        view = await service.view(lab.actor)
+        assert view["degraded"] == 2
+        assert view["degraded_by_reason"] == {"too many repeated paragraphs": 2}
+        assert view["defaults"]["application/pdf"]["max_duplicate_paragraph_ratio"] == 0.10
+
+        # Saving changes nothing already parsed: the check runs on the next press.
+        await service.set_limits(lab.actor, ParseQualityLimits(max_duplicate_paragraph_ratio=0.2))
+        assert (await service.view(lab.actor))["degraded"] == 2
+        assert await service.recheck_degraded(lab.actor) == {"promoted": 1, "still_degraded": 1}
+        async with lab.harness.context.uow_factory() as uow:
+            assert (
+                await uow.renditions.get_rendition(lab.ws, repeated)
+            ).quality_status.value == "ready"
+            assert (
+                await uow.renditions.get_rendition(lab.ws, much)
+            ).quality_status.value == "degraded"
+            queued = await uow.tasks.page_tasks(
+                lab.ws, states=["ready"], stage=StageName.EXTRACTION.value
+            )
+        assert [t.inputs["rendition_id"] for t in queued] == [str(repeated)]
+
+    async def test_new_parses_use_the_limits_in_force(self, lab) -> None:
+        from lab_assistant.application.parse_quality import (
+            ParseQualityLimits,
+            ParseQualityService,
+            apply_limits,
+            current_limits,
+        )
+
+        service = ParseQualityService(lab.harness.context)
+        await service.set_limits(lab.actor, ParseQualityLimits(require_reference_separation=False))
+        parsers = lab.harness.context.require_parsers()
+        async with lab.harness.context.uow_factory() as uow:
+            limits, version = await current_limits(uow, lab.ws)
+        xml = apply_limits(parsers.profile_for("application/xml"), limits)
+        assert xml.require_reference_separation is False
+        assert version.semantic_version == "1.0.0"
 
 
 class TestAScannerThatCannotRun:

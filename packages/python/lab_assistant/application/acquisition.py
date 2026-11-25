@@ -247,6 +247,8 @@ class AcquisitionService:
             if manifestation is None:
                 raise NotFound(f"manifestation {manifestation_id} not found")
             identifiers = await uow.works.list_identifiers(actor.workspace_id, plan.work_id)
+            summaries = await uow.works.get_summaries(actor.workspace_id, [plan.work_id])
+        summary = summaries.get(plan.work_id)
 
         decision = await self.decide_rights(
             actor,
@@ -280,6 +282,7 @@ class AcquisitionService:
                 if i.scheme.is_strong
             ),
             uploaded_by=actor.user_id,
+            expected_title=summary.title if summary else None,
         )
         async with context.uow_factory() as uow:
             await uow.audit.append(
@@ -319,6 +322,7 @@ class AcquisitionService:
         expected_identifiers: tuple[Identifier, ...],
         uploaded_by: UUID | None = None,
         attempt: AcquisitionAttempt | None = None,
+        expected_title: str | None = None,
     ) -> Asset:
         """Quarantine, validate, scan, verify identity, then register."""
         self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
@@ -369,7 +373,8 @@ class AcquisitionService:
         if scan_status is MalwareScanStatus.FAILED:
             validation = ValidationStatus.QUARANTINED
 
-        identity_verified = _identity_matches(content, expected_identifiers)
+        evidence = identity_evidence(content, expected_identifiers, expected_title)
+        identity_verified = evidence.verified
 
         stored = await context.object_store.put(
             content,
@@ -400,6 +405,7 @@ class AcquisitionService:
                 "declared_media_type": declared_media_type,
                 "uploaded_by": str(uploaded_by) if uploaded_by else None,
                 "malware_scan_detail": scan_detail,
+                **evidence.as_metadata(),
             },
         )
         async with context.uow_factory() as uow:
@@ -465,15 +471,68 @@ def _safe_filename(filename: str | None) -> str | None:
     return cleaned[:120] or None
 
 
-def _identity_matches(content: bytes, expected: tuple[Identifier, ...]) -> bool:
-    """Confirm the bytes belong to the intended work.
+#: DOI prefixes of preprint servers: bioRxiv and medRxiv, Research Square,
+#: Preprints.org, arXiv, OSF and its family, SSRN, ChemRxiv, Authorea.
+PREPRINT_DOI_PREFIXES = (
+    "10.1101/",
+    "10.21203/",
+    "10.20944/",
+    "10.48550/",
+    "10.31219/",
+    "10.31234/",
+    "10.31235/",
+    "10.2139/",
+    "10.26434/",
+    "10.22541/",
+)
+#: The identity rule an asset was checked by, recorded with it, so a file checked
+#: by an older rule is checked again and one checked by this rule is not.
+IDENTITY_RULE = "identifier-or-title/1"
+#: A title shorter than this matches too much of any page to identify a paper.
+MIN_TITLE_WORDS = 5
+MIN_TITLE_CHARACTERS = 30
 
-    Looks for a strong identifier in the first part of the document. When no
-    identifier is expected, identity cannot be confirmed and the asset stays
-    unverified rather than being assumed correct.
+
+@dataclass(frozen=True, slots=True)
+class IdentityEvidence:
+    """Why a fetched file is taken to be the intended paper, or that it is not.
+
+    ``basis`` is ``identifier`` (its DOI, PMID or PMCID is in the file) or
+    ``title`` (its title is, word for word). ``version`` is ``preprint`` when
+    the file carries a preprint server's DOI or an arXiv id: Unpaywall offers a
+    preprint as the open copy of the published paper, and that preprint has its
+    own DOI, so only its title says it is the same work.
     """
-    if not expected:
-        return False
+
+    verified: bool
+    basis: str | None = None
+    version: str | None = None
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "identity_basis": self.basis,
+            "version": self.version,
+            "identity_rule": IDENTITY_RULE,
+        }
+
+
+def _plain(text: str) -> str:
+    """Case-folded words only: a title that wraps across lines still matches."""
+    import re
+
+    joined = re.sub(r"-\s*\n\s*", "", text)  # a word hyphenated across a line break
+    return " ".join(re.findall(r"\w+", joined.casefold()))
+
+
+def identity_evidence(
+    content: bytes, expected: tuple[Identifier, ...], title: str | None = None
+) -> IdentityEvidence:
+    """Confirm the bytes belong to the intended work, and say how.
+
+    Looks for a strong identifier, then the work's title, in the first part of
+    the document. When neither is there, identity cannot be confirmed and the
+    asset stays unverified rather than being assumed correct.
+    """
     values = []
     for identifier in expected:
         try:
@@ -482,18 +541,25 @@ def _identity_matches(content: bytes, expected: tuple[Identifier, ...]) -> bool:
             continue
         if value:
             values.append(value)
-    text = content[:200_000].decode("utf-8", errors="ignore").casefold()
-    if any(value in text for value in values):
-        return True
+    text = content[:200_000].decode("utf-8", errors="ignore")
     # A PDF keeps its text compressed, so its bytes almost never show the DOI;
     # its metadata and first pages, read as text, usually do.
     if content.startswith(b"%PDF"):
-        text = _pdf_head_text(content).casefold()
-        return any(value in text for value in values)
-    return False
+        text = f"{text}\n{_pdf_head_text(content)}"
+    folded = text.casefold()
+    if values and any(value in folded for value in values):
+        return IdentityEvidence(verified=True, basis="identifier")
+    words = _plain(title or "")
+    long_enough = len(words.split()) >= MIN_TITLE_WORDS and len(words) >= MIN_TITLE_CHARACTERS
+    if long_enough and words in _plain(text):
+        preprint = any(prefix in folded for prefix in PREPRINT_DOI_PREFIXES) or ("arxiv:" in folded)
+        return IdentityEvidence(
+            verified=True, basis="title", version="preprint" if preprint else None
+        )
+    return IdentityEvidence(verified=False)
 
 
-def _pdf_head_text(content: bytes, *, pages: int = 2) -> str:
+def _pdf_head_text(content: bytes, *, pages: int = 3) -> str:
     """A PDF's metadata and first pages as text; empty when it cannot be read."""
     import io
 
@@ -691,6 +757,39 @@ class AcquisitionHandler:
     def fingerprint(self, command: StageCommand) -> str:
         return task_fingerprint(command, implementation_version=self.implementation_version)
 
+    async def _already_fetched(
+        self,
+        asset: Asset,
+        *,
+        plan_id: UUID,
+        workspace_id: UUID,
+        strong: tuple[Identifier, ...],
+        title: str | None,
+    ) -> StageResult:
+        """A file is stored for this plan: parse it, once it is known to be the paper."""
+        unconfirmed = not asset.identity_verified and bool(strong)
+        if unconfirmed and not await _requalify(
+            self._context,
+            asset,
+            workspace_id=workspace_id,
+            plan_id=plan_id,
+            strong=strong,
+            title=title,
+        ):
+            return StageResult(
+                stage=StageName.ACQUISITION,
+                status=StageStatus.FAILED,
+                metrics={"outcome": AcquisitionOutcome.IDENTITY_MISMATCH.value},
+                error_class=ErrorClass.IDENTITY_MISMATCH,
+                error_detail="the stored file names neither the paper's identifiers nor its title",
+            )
+        return StageResult(
+            stage=StageName.ACQUISITION,
+            status=StageStatus.SUCCEEDED_NOOP,
+            metrics={"outcome": AcquisitionOutcome.ALREADY_AVAILABLE.value},
+            next_tasks=(TaskRequest(stage=StageName.PARSING, inputs={"asset_id": str(asset.id)}),),
+        )
+
     async def execute(self, command: StageCommand) -> StageResult:
         context = self._context
         workspace_id = command.workspace_id
@@ -709,17 +808,8 @@ class AcquisitionHandler:
             identifiers = await uow.works.list_identifiers(workspace_id, plan.work_id)
             existing_assets = await uow.assets.list_assets(workspace_id, work_id=plan.work_id)
             assertions = await uow.observations.list_assertions(workspace_id, work_id=plan.work_id)
-
-        if existing_assets:
-            asset = existing_assets[0]
-            return StageResult(
-                stage=StageName.ACQUISITION,
-                status=StageStatus.SUCCEEDED_NOOP,
-                metrics={"outcome": AcquisitionOutcome.ALREADY_AVAILABLE.value},
-                next_tasks=(
-                    TaskRequest(stage=StageName.PARSING, inputs={"asset_id": str(asset.id)}),
-                ),
-            )
+            summaries = await uow.works.get_summaries(workspace_id, [plan.work_id])
+            summary = summaries.get(plan.work_id)
 
         # What discovery recorded: the licence the plan was decided on, and where
         # the full text was seen. A fetch reports neither, so without them every
@@ -734,6 +824,15 @@ class AcquisitionHandler:
         )
         if locations.pmcid and not any(i.scheme is IdentifierScheme.PMCID for i in strong):
             strong = (*strong, Identifier(scheme=IdentifierScheme.PMCID, value=locations.pmcid))
+
+        if existing_assets:
+            return await self._already_fetched(
+                existing_assets[0],
+                plan_id=plan_id,
+                workspace_id=workspace_id,
+                strong=strong,
+                title=summary.title if summary else None,
+            )
         registry = context.require_connectors()
         limiter = RateLimiter(context)
         attempts: list[AcquisitionAttempt] = []
@@ -848,6 +947,7 @@ class AcquisitionHandler:
                         connector_id=connector_id,
                         expected_identifiers=strong,
                         attempt=attempt,
+                        expected_title=summary.title if summary else None,
                     )
                     outcome = (
                         AcquisitionOutcome.IDENTITY_MISMATCH
@@ -955,6 +1055,58 @@ class AcquisitionHandler:
             ),
             retry_after_seconds=retry_after,
         )
+
+
+async def _requalify(
+    context: ServiceContext,
+    asset: Asset,
+    *,
+    workspace_id: UUID,
+    plan_id: UUID,
+    strong: tuple[Identifier, ...],
+    title: str | None,
+) -> bool:
+    """Check a stored, unverified file again, as the identity check now reads it.
+
+    A file a fetch stored but could not tie to its paper (no identifier in it) is
+    still there. With the title, and preprints, now counted, it may pass: then
+    the asset is verified on the record and its plan acquired.
+    """
+    content = await context.object_store.get(asset.object_id)
+    evidence = identity_evidence(content, strong, title)
+    async with context.uow_factory() as uow:
+        stored = await uow.assets.get_asset(workspace_id, asset.id)
+        if stored is None:  # pragma: no cover - deleted meanwhile
+            return False
+        # Recorded either way: a file this rule could not tie to its paper is not
+        # read again by a later press, only by a later rule.
+        stored.metadata = {**(stored.metadata or {}), **evidence.as_metadata()}
+        if not evidence.verified:
+            await uow.assets.update_asset(stored)
+            await uow.commit()
+            return False
+        stored.identity_verified = True
+        await uow.assets.update_asset(stored)
+        plan = await uow.assets.get_plan(workspace_id, plan_id)
+        if plan is not None and plan.status != "acquired":
+            plan.status = "acquired"
+            plan.version += 1
+            await uow.assets.update_plan(plan)
+        await uow.audit.append(
+            context.audit.build(
+                workspace_id=workspace_id,
+                actor_type=ActorType.WORKER,
+                actor_id=None,
+                action=AuditAction.ASSET_IDENTITY_CONFIRMED,
+                subject_type="asset",
+                subject_id=asset.id,
+                previous_hash=await uow.audit.latest_hash(workspace_id),
+                reason_code=evidence.basis,
+                metadata=evidence.as_metadata(),
+            )
+        )
+        await uow.commit()
+    return True
 
 
 def _error_class_for_outcome(outcome: AcquisitionOutcome) -> ErrorClass:

@@ -210,6 +210,21 @@ export interface Candidate {
   provenance: Record<string, string[]>;
 }
 
+/** The two parse-quality limits a steward can adjust; null keeps a format's default. */
+export interface ParseLimits {
+  max_duplicate_paragraph_ratio: number | null;
+  require_reference_separation: boolean | null;
+}
+
+export interface ParseQuality {
+  limits: ParseLimits;
+  /** Each document format's own defaults, used where a limit is not set. */
+  defaults: Record<string, { profile: string } & { max_duplicate_paragraph_ratio: number; require_reference_separation: boolean }>;
+  set_at: string | null;
+  degraded: number;
+  degraded_by_reason: Record<string, number>;
+}
+
 export interface AcquisitionPlan {
   plan_id: string;
   work_id: string;
@@ -217,6 +232,8 @@ export interface AcquisitionPlan {
   paper?: PaperSummary;
   /** Its DOI, PMID and PMCID. */
   identifiers?: { scheme: string; value: string }[];
+  /** The stored file: how it was tied to the paper, and whether it is a preprint. */
+  file?: { identity_verified: boolean; identity_basis: string | null; version: string | null } | null;
   status: string;
   routes: string[];
   manifestation_ids: string[];

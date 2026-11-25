@@ -5,6 +5,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CollectionsClient } from "@/components/CollectionsClient";
 import type { Candidate } from "@/types";
 
+const QUALITY = {
+  limits: { max_duplicate_paragraph_ratio: null, require_reference_separation: null },
+  defaults: {
+    "application/pdf": { profile: "pdf-born-digital", max_duplicate_paragraph_ratio: 0.1, require_reference_separation: false },
+    "application/xml": { profile: "jats-default", max_duplicate_paragraph_ratio: 0.02, require_reference_separation: true },
+  },
+  set_at: null,
+  degraded: 341,
+  degraded_by_reason: { "reference list not separated": 200, "too many repeated paragraphs": 141 },
+};
+
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
@@ -13,6 +24,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     listDiscoveryRuns: vi.fn(async () => ({ items: [], next_cursor: null, total: 0 })),
     listCandidates: vi.fn(),
     fetchIncluded: vi.fn(),
+    getParseQuality: vi.fn(async () => QUALITY),
+    setParseLimits: vi.fn(async () => ({ ...QUALITY, limits: { max_duplicate_paragraph_ratio: 0.2, require_reference_separation: false } })),
     listPlans: vi.fn(async () => ({ items: [], next_cursor: null, total: 0, status_counts: {} })),
     listConflicts: vi.fn(async () => ({
       conflict_total: 0,
@@ -104,6 +117,8 @@ describe("Fetching included papers", () => {
       kept_for_a_person: 6467,
       already_tried: 12,
       planning_task_id: "t1",
+      degraded_promoted: 40,
+      still_degraded: 301,
     });
     const user = userEvent.setup();
     render(<CollectionsClient />);
@@ -137,5 +152,30 @@ describe("Long lists on the Collections page", () => {
     expect(screen.queryByRole("combobox", { name: "Rows per page of candidates" })).toBeNull();
     expect(screen.getByRole("button", { name: "Hide Acquisition queue" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hide Duplicates and identity conflicts" })).toBeInTheDocument();
+  });
+});
+
+
+describe("Parse quality on the Collections page", () => {
+  it("shows the two limits with each format's default, and saves new ones", async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue({ items: [], next_cursor: null, total: 0 });
+    const user = userEvent.setup();
+    render(<CollectionsClient />);
+    expect(await screen.findByText("341 degraded documents")).toBeInTheDocument();
+    expect(screen.getByText(/200 — reference list not separated/)).toBeInTheDocument();
+    const share = screen.getByLabelText("Repeated paragraphs allowed, up to (%)");
+    expect(share).toHaveAttribute("placeholder", "PDF 10%, XML (JATS) 2%");
+
+    await user.type(share, "20");
+    await user.selectOptions(
+      screen.getByLabelText("Reference list must be separated from the text"),
+      "no",
+    );
+    await user.click(screen.getByRole("button", { name: "Save limits" }));
+    expect(api.setParseLimits).toHaveBeenCalledWith({
+      max_duplicate_paragraph_ratio: 0.2,
+      require_reference_separation: false,
+    });
+    expect(await screen.findByText(/checked against them when you next press Fetch included papers/)).toBeInTheDocument();
   });
 });

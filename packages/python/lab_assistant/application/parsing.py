@@ -83,7 +83,12 @@ class ParsingHandler:
             raise PolicyDenied("asset is not parse-ready", context={"blockers": list(blockers)})
 
         parser = parsers.for_media_type(asset.media_type_detected)
-        profile = parsers.profile_for(asset.media_type_detected)
+        # The steward's limits (Collections > Parse quality) in place of the defaults.
+        from lab_assistant.application.parse_quality import apply_limits, current_limits
+
+        async with context.uow_factory() as uow:
+            limits, _ = await current_limits(uow, workspace_id)
+        profile = apply_limits(parsers.profile_for(asset.media_type_detected), limits)
         fingerprint = parse_run_fingerprint(
             asset_sha256=asset.sha256,
             parser_id=parser.parser_id,

@@ -618,7 +618,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "Acquisition queue",
         about: [
           "Every included paper gets an acquisition plan: the routes tried to fetch its full text, open repositories first. A plan is made after a discovery run, and again whenever papers are included, one at a time, by filter or by the scope's rules. When no permitted route returns the paper, the plan waits for a person, who can upload a copy the lab is entitled to. Open routes are tried only for papers whose licence permits keeping a copy (Creative Commons or public domain); a paper with no known licence can only be uploaded.",
-          "An uploaded copy goes through the same integrity, malware, identity and rights checks as an automatic download, and the paper then continues to parsing. A paper is in a release, and so can be asked about, only once its full text is parsed: an abstract alone is not enough.",
+          "An uploaded copy goes through the same integrity, malware, identity and rights checks as an automatic download, and the paper then continues to parsing. A file is taken to be its paper when it names the paper's DOI, PMID or PMCID, or its full title (five words or more, word for word); a file that also carries a preprint server's DOI (bioRxiv, Research Square, arXiv and others) is kept as the paper's **preprint version**, marked so in the queue. A paper is in a release, and so can be asked about, only once its full text is parsed: an abstract alone is not enough.",
         ],
         howTos: [
           {
@@ -628,7 +628,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Under **Acquisition queue**, select **Fetch included papers**.",
               "Every included paper without a plan is planned, and every fetch that is waiting or ran out of retries, and still has an open route, is tried again. The message says how many were queued and how many can only come from an upload.",
             ],
-            note: "Pressing it again plans only papers included since, and retries only fetches that ran out of retries on a fault or that the current fetcher has not tried. A paper the current fetcher already tried and handed to a person stays waiting, so the same sources are not asked the same question again; upload it instead.",
+            note: "Pressing it again plans only papers included since; retries fetches that ran out of retries on a fault or that a source never answered (rate-limited or down); checks again, without fetching, a stored file an older identity rule could not tie to its paper; and checks degraded documents against the **Parse quality** limits. A paper every source already answered stays waiting for a person, so the same sources are not asked the same question again; upload it instead.",
           },
           {
             title: "How to upload a paper the system could not fetch",
@@ -639,6 +639,26 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "In **Attestation**, say how the copy was obtained.",
               "Choose the file and select **Upload**.",
             ],
+          },
+        ],
+      },
+      {
+        id: "parse-quality",
+        title: "Parse quality",
+        about: [
+          "A parsed document that misses a quality limit is **degraded**: it is not extracted or released. Two limits decide most of them, and both are judgement calls about a collection: how many paragraphs may repeat (running heads, page furniture), and whether the reference list must come out separate from the main text. **Parse quality** on the Collections page lists why documents are degraded, shows each format's default (PDF and XML), and lets a steward set both. Every change is recorded with who made it.",
+          "New parses use the limits at once. Documents already degraded are checked again when you next press **Fetch included papers**, from what their parse measured, without parsing them again; one that now passes goes on to extraction. Tightening a limit never takes out a document already accepted.",
+        ],
+        howTos: [
+          {
+            title: "How to let more degraded documents through",
+            needs: STEWARD,
+            steps: [
+              "Under **Parse quality**, read why documents are degraded.",
+              "Raise **Repeated paragraphs allowed**, or set **Reference list must be separated** to No, and select **Save limits**.",
+              "Under **Acquisition queue**, press **Fetch included papers**. Its message says how many degraded documents now pass.",
+            ],
+            note: "Leave the share empty to keep each format's own default.",
           },
         ],
       },
@@ -832,7 +852,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "Drafting, validating and approving",
         about: [
           "A release is a frozen, citable snapshot of the collection: its papers, their parsed texts and the reviewed claims. Ask answers only from the release being served, so nothing changes under a reader's feet.",
-          "A draft is validated against its gates (for example, every claim reviewed). Passing them makes it **validated**, not approved: a person approves it with **Approve and index**, which records who approved it and builds the search index. A draft, validated or rejected release can be deleted; once approved it is indexed and kept.",
+          "A draft is validated against its gates (for example, every claim reviewed). Passing them makes it **validated**, not approved: a person approves it with **Approve and index**, which records who approved it and builds the search index. A release can be deleted until it is published: a draft, validated or rejected one, and an approved one that was never published (its search index goes with it). Once published it is what answers cite, so it stays; withdraw it instead.",
         ],
         howTos: [
           {

@@ -6,6 +6,7 @@ import { BulkImport } from "@/components/BulkImport";
 import { CandidateReview } from "@/components/CandidateReview";
 import { CollectionSetup } from "@/components/CollectionSetup";
 import { DuplicateReview } from "@/components/DuplicateReview";
+import { ParseQuality } from "@/components/ParseQuality";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { PageCount, Pager } from "@/components/ui/Pager";
@@ -169,7 +170,9 @@ export function CollectionsClient() {
                     `${done.requeued.toLocaleString()} fetches will be tried again. ` +
                     `${done.already_tried.toLocaleString()} were already tried by the current fetcher ` +
                     `and stay with a person; ` +
-                    `${done.kept_for_a_person.toLocaleString()} can only come from an upload.`,
+                    `${done.kept_for_a_person.toLocaleString()} can only come from an upload. ` +
+                    `${done.degraded_promoted.toLocaleString()} degraded documents now pass the parse ` +
+                    `limits and go on to extraction; ${done.still_degraded.toLocaleString()} stay degraded.`,
                 );
                 setError(null);
               } catch (caught) {
@@ -183,10 +186,11 @@ export function CollectionsClient() {
             Fetch included papers
           </Button>
           <span className="max-w-xl text-xs text-muted">
-            Plans included papers that have no plan, and tries again the fetches that failed on a
-            fault or that the current fetcher has not tried. Pressing it again does nothing twice: a
-            planned paper is not planned again, and a paper the current fetcher already tried stays
-            with a person.
+            Plans included papers that have no plan, tries again the fetches that failed on a fault
+            or that no source answered, checks files again that an older identity rule could not tie
+            to their paper, and checks degraded documents against the parse limits below. Pressing it
+            again does nothing twice: a planned paper is not planned again, and a paper every source
+            already answered stays with a person.
           </span>
           <StatusFilter
             label="Status"
@@ -209,6 +213,19 @@ export function CollectionsClient() {
               <div className="flex flex-wrap items-center gap-2">
                 <strong className="text-heading">{plan.paper?.title ?? "Untitled"}</strong>
                 <StateChip state={plan.status} kind="acquisition" />
+                {plan.file?.version === "preprint" ? (
+                  <span className="rounded-badge border border-border px-1.5 py-0.5 text-xs text-muted">
+                    preprint version
+                  </span>
+                ) : null}
+                {plan.file?.identity_basis === "title" ? (
+                  <span
+                    className="text-xs text-muted"
+                    title="The file names the paper's title, not its identifier"
+                  >
+                    matched by title
+                  </span>
+                ) : null}
                 <span className="text-xs text-muted">
                   routes: {plan.routes.join(" → ")}
                 </span>
@@ -267,6 +284,8 @@ export function CollectionsClient() {
           sizes={PAGE_SIZES}
         />
       </CollapsiblePanel>
+
+      <ParseQuality refreshKey={notice} />
 
       <BulkImport
         // The plans on the page above: filter the queue by status to choose from more.

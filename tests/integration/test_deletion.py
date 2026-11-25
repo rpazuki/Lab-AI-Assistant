@@ -232,7 +232,7 @@ class TestTemplates:
 
 
 class TestReleases:
-    async def test_a_draft_is_deleted_and_an_approved_one_refused(
+    async def test_a_draft_is_deleted_and_a_published_one_refused(
         self, harness, provisioned
     ) -> None:
         actor = provisioned["steward_actor"]
@@ -248,10 +248,19 @@ class TestReleases:
         kept, _, _ = await service.draft(
             actor, ReleaseDraftRequest(name="corpus", semantic_version="0.2.0")
         )
+        # Published, it is what answers cite: it stays, and is withdrawn instead.
         async with harness.context.uow_factory() as uow:
-            await uow.releases.update(kept.model_copy(update={"status": ReleaseState.APPROVED}))
+            await uow.releases.update(
+                kept.model_copy(
+                    update={
+                        "status": ReleaseState.PUBLISHED,
+                        "manifest_sha256": kept.manifest_sha256 or "0" * 64,
+                        "published_at": harness.context.now(),
+                    }
+                )
+            )
             await uow.commit()
-        with pytest.raises(StateTransitionError, match="only a draft or rejected"):
+        with pytest.raises(StateTransitionError, match="only one that was never published"):
             await service.delete_draft(actor, release_id=kept.id)
 
     async def test_a_draft_another_release_builds_on_is_refused(self, harness, provisioned) -> None:

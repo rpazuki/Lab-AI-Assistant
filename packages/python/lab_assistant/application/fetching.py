@@ -18,6 +18,11 @@ answer:
   would send the same requests for the same answer, so a second press leaves the
   paper waiting for a person.
 
+* a fetch that failed because its file could not be tied to its paper, once,
+  when the identity rule has changed since (it now also accepts the paper's
+  title, and a preprint of it): the stored file is checked again without being
+  fetched again.
+
 A paper whose only route is a person's upload is never queued again here.
 """
 
@@ -27,9 +32,10 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from lab_assistant.application.acquisition import IDENTITY_RULE
 from lab_assistant.application.acquisition import IMPLEMENTATION_VERSION as FETCHER_VERSION
 from lab_assistant.application.context import ActorContext, ServiceContext
-from lab_assistant.contracts.errors import AcquisitionOutcome
+from lab_assistant.contracts.errors import AcquisitionOutcome, ErrorClass
 from lab_assistant.contracts.events import ActorType, AuditAction
 from lab_assistant.contracts.stage import StageName
 from lab_assistant.domain.installation import InstallationCapability
@@ -48,6 +54,17 @@ _NO_ANSWER = frozenset(
         AcquisitionOutcome.SOURCE_UNAVAILABLE_RETRYABLE,
     }
 )
+
+
+async def _recheckable(uow: Any, ws: UUID, task: Any, work_id: UUID) -> bool:
+    """A fetch that failed on identity, whose stored file an older rule checked."""
+    if task.error_class is not ErrorClass.IDENTITY_MISMATCH:
+        return False
+    assets = await uow.assets.list_assets(ws, work_id=work_id)
+    return any(
+        not asset.identity_verified and (asset.metadata or {}).get("identity_rule") != IDENTITY_RULE
+        for asset in assets
+    )
 
 
 def _answered(attempts: list[Any]) -> bool:
@@ -127,7 +144,11 @@ class FetchQueue:
             async with context.uow_factory() as uow:
                 page = await uow.tasks.page_tasks(
                     ws,
-                    states=[TaskState.AWAITING_USER.value, TaskState.DEAD_LETTER.value],
+                    states=[
+                        TaskState.AWAITING_USER.value,
+                        TaskState.DEAD_LETTER.value,
+                        TaskState.FAILED.value,
+                    ],
                     stage=StageName.ACQUISITION.value,
                     limit=_PAGE,
                     after=after,
@@ -137,6 +158,11 @@ class FetchQueue:
                     plan = await uow.assets.get_plan(ws, UUID(str(plan_id))) if plan_id else None
                     if plan is None or not any(route.is_automatic for route in plan.route_order):
                         kept += 1
+                        continue
+                    if task.state is TaskState.FAILED and not await _recheckable(
+                        uow, ws, task, plan.work_id
+                    ):
+                        tried += 1
                         continue
                     if task.state is TaskState.AWAITING_USER and _answered(
                         await uow.assets.list_attempts(ws, plan_id=plan.id)

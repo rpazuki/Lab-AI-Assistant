@@ -632,13 +632,17 @@ class ReleaseService:
         return release
 
     async def delete_draft(self, actor: ActorContext, *, release_id: UUID) -> None:
-        """Delete a release that was never approved and that nothing points at.
+        """Delete a release that was never published and that nothing points at.
 
-        Only ``draft`` and ``rejected``: from ``approved`` on, a release has been
-        indexed, may have been served, and is what answers and exports cite. Even a
-        draft stays while another release names it as its parent, an alias serves
-        it, a chat is pinned to it, an evaluation ran against it, or a task names
-        it. Its manifest and validation report stay in the object store.
+        ``draft``, ``validated``, ``rejected``, and ``approved`` while it has never
+        been published: an approved release is indexed but has not been served, so
+        nothing was answered from it. Its search index goes with it. From
+        publishing on, a release is what answers and exports cite, and it stays
+        (withdraw it instead). Any release stays while another release names it as
+        its parent, an alias serves it, a chat is pinned to it, an evaluation ran
+        against it, or a task naming it is still queued or running; a finished task
+        that names it (its indexing) goes with it. Its manifest and validation
+        report stay in the object store.
         """
         self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
         actor.require(Capability.MANAGE_RELEASE)
@@ -647,14 +651,20 @@ class ReleaseService:
             release = await uow.releases.get(actor.workspace_id, release_id)
             if release is None:
                 raise NotFound(f"release {release_id} not found")
-            if release.status not in (
-                ReleaseState.DRAFT,
-                ReleaseState.VALIDATED,
-                ReleaseState.REJECTED,
+            never_published = release.published_at is None
+            if (
+                release.status
+                not in (
+                    ReleaseState.DRAFT,
+                    ReleaseState.VALIDATED,
+                    ReleaseState.REJECTED,
+                    ReleaseState.APPROVED,
+                )
+                or not never_published
             ):
                 raise StateTransitionError(
-                    f"a {release.status.value} release cannot be deleted; "
-                    "only a draft or rejected one can",
+                    f"a {release.status.value} release cannot be deleted; only one that "
+                    "was never published can (withdraw a published one instead)",
                     context={"status": release.status.value},
                 )
             others = await collect_pages(
@@ -680,9 +690,16 @@ class ReleaseService:
                 for session in await every_session(uow, actor.workspace_id)
             ):
                 raise StateTransitionError("a conversation is pinned to this release")
-            tasks = await uow.tasks.list_tasks(actor.workspace_id, limit=100_000)
-            if any(str(task.inputs.get("release_id")) == str(release_id) for task in tasks):
-                raise StateTransitionError("a background task names this release")
+            naming = [
+                task
+                for task in await uow.tasks.list_tasks(actor.workspace_id, limit=100_000)
+                if str(task.inputs.get("release_id")) == str(release_id)
+            ]
+            if any(not task.state.is_settled for task in naming):
+                raise StateTransitionError(
+                    "a background task for this release is still queued or running"
+                )
+            await uow.tasks.delete_tasks(actor.workspace_id, [task.id for task in naming])
             await uow.releases.delete(actor.workspace_id, release_id)
             await uow.audit.append(
                 context.audit.build(
@@ -693,16 +710,24 @@ class ReleaseService:
                     subject_type="corpus_release",
                     subject_id=release_id,
                     previous_hash=await uow.audit.latest_hash(actor.workspace_id),
-                    reason_code="draft_deleted",
+                    reason_code=(
+                        "approved_unpublished_deleted"
+                        if release.status is ReleaseState.APPROVED
+                        else "draft_deleted"
+                    ),
                     metadata={
                         "name": release.name,
                         "semantic_version": release.semantic_version,
                         "status": release.status.value,
+                        "approved_by": str(release.approved_by) if release.approved_by else None,
                         "manifest_sha256": release.manifest_sha256,
                     },
                 )
             )
             await uow.commit()
+        # An approved release was indexed: its search projections go too.
+        if context.search_index is not None:
+            await context.search_index.delete_release_projections(actor.workspace_id, release_id)
 
     async def active_release_id(
         self, workspace_id: UUID, *, alias: str = DEFAULT_ALIAS

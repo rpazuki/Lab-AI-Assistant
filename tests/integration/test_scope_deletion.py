@@ -269,3 +269,72 @@ class TestWhatStopsIt:
 
         view = (await deleting.deletion.plan(deleting.actor, scope.id)).view()
         assert any("same query" in blocker for blocker in view["blockers"])
+
+
+class TestDeletingAReleaseNeverPublished:
+    async def test_an_approved_release_goes_with_its_finished_indexing(
+        self, deleting: DeletionLab
+    ) -> None:
+        from lab_assistant.application.releases import ReleaseService
+
+        context = deleting.harness.context
+        scope = await deleting.scope()
+        run = await deleting.run(scope)
+        paper = await deleting.screened("Yarrowia lipid")
+        await deleting.found(run, paper)
+        approved = await deleting.release(paper, ReleaseState.APPROVED)
+        indexing = Task(
+            id=context.new_id(),
+            workspace_id=deleting.ws,
+            stage=StageName.INDEXING,
+            state=TaskState.SUCCEEDED,
+            input_fingerprint=str(context.new_id()),
+            inputs={"release_id": str(approved.id)},
+            created_at=context.now(),
+        )
+        async with context.uow_factory() as uow:
+            await uow.tasks.add(indexing)
+            await uow.commit()
+
+        await ReleaseService(context).delete_draft(deleting.actor, release_id=approved.id)
+        async with context.uow_factory() as uow:
+            assert await uow.releases.get(deleting.ws, approved.id) is None
+            assert await uow.tasks.get(deleting.ws, indexing.id) is None
+
+    async def test_a_published_one_stays(self, deleting: DeletionLab) -> None:
+        from lab_assistant.application.releases import ReleaseService
+
+        context = deleting.harness.context
+        paper = await deleting.screened("Yarrowia lipid")
+        published = await deleting.release(paper, ReleaseState.APPROVED)
+        async with context.uow_factory() as uow:
+            stored = await uow.releases.get(deleting.ws, published.id)
+            stored.status = ReleaseState.PUBLISHED
+            stored.manifest_sha256 = "0" * 64
+            stored.published_at = context.now()
+            await uow.releases.update(stored)
+            await uow.commit()
+        with pytest.raises(StateTransitionError, match="withdraw a published one"):
+            await ReleaseService(context).delete_draft(deleting.actor, release_id=published.id)
+
+    async def test_an_unfinished_task_for_it_stops_it(self, deleting: DeletionLab) -> None:
+        from lab_assistant.application.releases import ReleaseService
+
+        context = deleting.harness.context
+        paper = await deleting.screened("Yarrowia lipid")
+        approved = await deleting.release(paper, ReleaseState.APPROVED)
+        async with context.uow_factory() as uow:
+            await uow.tasks.add(
+                Task(
+                    id=context.new_id(),
+                    workspace_id=deleting.ws,
+                    stage=StageName.INDEXING,
+                    state=TaskState.LEASED,
+                    input_fingerprint=str(context.new_id()),
+                    inputs={"release_id": str(approved.id)},
+                    created_at=context.now(),
+                )
+            )
+            await uow.commit()
+        with pytest.raises(StateTransitionError, match="still queued or running"):
+            await ReleaseService(context).delete_draft(deleting.actor, release_id=approved.id)

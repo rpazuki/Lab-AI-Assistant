@@ -38,6 +38,8 @@ import type {
   MergePlan,
   MergeRule,
   Page,
+  ParseLimits,
+  ParseQuality,
   ProblemDetails,
   QueueTask,
   Release,
@@ -454,9 +456,17 @@ export const mergeWorks = (keepWorkId: string, mergeWorkId: string, reasonCode: 
     body: JSON.stringify({ keep_work_id: keepWorkId, merge_work_id: mergeWorkId, reason_code: reasonCode }),
   });
 
+/** The adjustable parse-quality limits, each format's default, and why documents degrade. */
+export const getParseQuality = () => request<ParseQuality>("/parse-quality-limits");
+
+/** New parse-quality limits; degraded documents are checked again on the next fetch press. */
+export const setParseLimits = (limits: ParseLimits) =>
+  request<ParseQuality>("/parse-quality-limits", { method: "PUT", body: JSON.stringify(limits) });
+
 /**
- * Plan every included paper that has no plan, and put waiting fetches that still
- * have an automatic route back in the queue.
+ * Plan every included paper that has no plan, put waiting fetches that still
+ * have an automatic route back in the queue, and check degraded documents
+ * against the parse-quality limits in force.
  */
 export const fetchIncluded = () =>
   request<{
@@ -464,6 +474,8 @@ export const fetchIncluded = () =>
     kept_for_a_person: number;
     already_tried: number;
     planning_task_id: string;
+    degraded_promoted: number;
+    still_degraded: number;
   }>(
     "/acquisition-plans/fetch-included",
     { method: "POST" },

@@ -37,6 +37,7 @@ from lab_assistant.application.datasheets import DatasheetService
 from lab_assistant.application.discovery import DiscoveryService
 from lab_assistant.application.export import ExportService
 from lab_assistant.application.fetching import FetchQueue
+from lab_assistant.application.parse_quality import ParseQualityLimits, ParseQualityService
 from lab_assistant.application.reconciliation import IdentityService
 from lab_assistant.application.refresh import RefreshService
 from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseService
@@ -1506,7 +1507,45 @@ async def fetch_included(actor: CurrentActor, container: Container) -> dict[str,
     queue = FetchQueue(container.context, container.orchestrator)
     retried = await queue.retry_waiting(actor)
     task = await queue.plan_included(actor, reason="fetch_included")
-    return {**retried, "planning_task_id": str(task.id)}
+    # Degraded documents are checked against the parse-quality limits in force.
+    quality = ParseQualityService(container.context, container.orchestrator)
+    rechecked = await quality.recheck_degraded(actor)
+    return {
+        **retried,
+        "planning_task_id": str(task.id),
+        "degraded_promoted": rechecked["promoted"],
+        "still_degraded": rechecked["still_degraded"],
+    }
+
+
+class ParseLimitsRequest(BaseModel):
+    #: Most share of paragraphs that may repeat, 0 to 1; null keeps each format's default.
+    max_duplicate_paragraph_ratio: float | None = Field(default=None, ge=0, le=1)
+    #: Whether the reference list must come out separate; null keeps the default.
+    require_reference_separation: bool | None = None
+
+
+@router.get("/parse-quality-limits")
+async def parse_quality_limits(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """The two adjustable parse limits, each format's default, and why documents degrade."""
+    return await ParseQualityService(container.context).view(actor)
+
+
+@router.put(
+    "/parse-quality-limits",
+    dependencies=[requires(InstallationCapability.PROCESS_CONTENT)],
+)
+async def set_parse_quality_limits(
+    actor: CurrentActor, container: Container, payload: ParseLimitsRequest = Body(...)
+) -> dict[str, Any]:
+    """New limits: new parses use them at once, degraded ones on the next fetch press."""
+    return await ParseQualityService(container.context).set_limits(
+        actor,
+        ParseQualityLimits(
+            max_duplicate_paragraph_ratio=payload.max_duplicate_paragraph_ratio,
+            require_reference_separation=payload.require_reference_separation,
+        ),
+    )
 
 
 @router.post("/decisions/merge", dependencies=[requires(InstallationCapability.CURATE_CORPUS)])
@@ -1564,11 +1603,22 @@ async def list_plans(
         for plan in plans:
             attempts = await uow.assets.list_attempts(actor.workspace_id, plan_id=plan.id)
             identifiers = await uow.works.list_identifiers(actor.workspace_id, plan.work_id)
+            files = await uow.assets.list_assets(actor.workspace_id, work_id=plan.work_id)
             items.append(
                 {
                     "plan_id": str(plan.id),
                     "work_id": str(plan.work_id),
                     "paper": paper(plan.work_id, summaries.get(plan.work_id)),
+                    # How the stored file was tied to the paper, and which version.
+                    "file": (
+                        {
+                            "identity_verified": files[0].identity_verified,
+                            "identity_basis": (files[0].metadata or {}).get("identity_basis"),
+                            "version": (files[0].metadata or {}).get("version"),
+                        }
+                        if files
+                        else None
+                    ),
                     "identifiers": [
                         {"scheme": i.scheme.value, "value": i.value_display}
                         for i in identifiers

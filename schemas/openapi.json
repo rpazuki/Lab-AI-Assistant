@@ -115,6 +115,8 @@
           "rights_decided",
           "acquisition_attempted",
           "acquisition_requeued",
+          "asset_identity_confirmed",
+          "parse_limits_changed",
           "asset_registered",
           "asset_quarantined",
           "assisted_upload_accepted",
@@ -712,6 +714,36 @@
           }
         },
         "title": "MergeRule",
+        "type": "object"
+      },
+      "ParseLimitsRequest": {
+        "properties": {
+          "max_duplicate_paragraph_ratio": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Duplicate Paragraph Ratio"
+          },
+          "require_reference_separation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Require Reference Separation"
+          }
+        },
+        "title": "ParseLimitsRequest",
         "type": "object"
       },
       "QueryTermsRequest": {
@@ -9042,6 +9074,144 @@
           }
         },
         "summary": "Retry Task"
+      }
+    },
+    "/api/v1/parse-quality-limits": {
+      "get": {
+        "description": "The two adjustable parse limits, each format's default, and why documents degrade.",
+        "operationId": "parse_quality_limits_api_v1_parse_quality_limits_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Parse Quality Limits Api V1 Parse Quality Limits Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Parse Quality Limits"
+      },
+      "put": {
+        "description": "New limits: new parses use them at once, degraded ones on the next fetch press.",
+        "operationId": "set_parse_quality_limits_api_v1_parse_quality_limits_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParseLimitsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Parse Quality Limits Api V1 Parse Quality Limits Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Parse Quality Limits"
       }
     },
     "/api/v1/refresh/retractions": {
