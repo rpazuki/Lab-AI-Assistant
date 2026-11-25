@@ -33,20 +33,36 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.context import ActorContext, ServiceContext, resolve_actor
 from lab_assistant.application.discovery import cursor_lineage_key
 from lab_assistant.application.pagination import collect_pages, every_session
 from lab_assistant.application.reconciliation import refresh_summaries
 from lab_assistant.contracts.errors import NotFound, StateTransitionError, ValidationFailure
 from lab_assistant.contracts.events import ActorType, AuditAction
+from lab_assistant.contracts.stage import (
+    StageCommand,
+    StageName,
+    StageResult,
+    StageStatus,
+)
 from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.observation import DiscoveryRun
 from lab_assistant.domain.release import CorpusRelease
 from lab_assistant.domain.scope import ScopeVersion
-from lab_assistant.domain.states import ReleaseState
+from lab_assistant.domain.states import ReleaseState, TaskState
+from lab_assistant.domain.tasks import Task
 from lab_assistant.domain.workspace import Capability
+from lab_assistant.provenance.fingerprints import task_fingerprint
 
-__all__ = ["ScopeDeletionPlan", "ScopeDeletionService"]
+__all__ = ["ScopeDeletionHandler", "ScopeDeletionPlan", "ScopeDeletionService"]
+
+#: A deletion already in one of these is doing, or about to do, the same purge.
+_IN_FLIGHT = (
+    TaskState.PENDING.value,
+    TaskState.READY.value,
+    TaskState.BLOCKED.value,
+    TaskState.LEASED.value,
+)
 
 #: A release in one of these states has never been indexed or served.
 _DELETABLE_RELEASES = frozenset({ReleaseState.DRAFT, ReleaseState.VALIDATED, ReleaseState.REJECTED})
@@ -120,8 +136,59 @@ def _searches(run: DiscoveryRun) -> set[tuple[str, str, str]]:
 
 
 class ScopeDeletionService:
-    def __init__(self, context: ServiceContext) -> None:
+    def __init__(self, context: ServiceContext, orchestrator: Any | None = None) -> None:
         self._context = context
+        self._orchestrator = orchestrator
+
+    async def start(
+        self, actor: ActorContext, scope_version_id: UUID, *, confirm_name: str
+    ) -> Task:
+        """Confirm the name and queue the deletion, returning the task to watch.
+
+        Only the name is checked here, which costs one read of the scope's
+        versions: a mistyped name is the one refusal worth answering while the
+        person is still looking at the form. Everything else — what goes, and what
+        stops it — is worked out again by the handler inside the transaction that
+        does the purge, because a blocker can appear between this press and the
+        work, and a plan read here would be a promise about rows nobody holds.
+        """
+        context = self._context
+        context.require_installation(InstallationCapability.CURATE_CORPUS)
+        actor.require(Capability.MANAGE_SCOPE)
+        ws = actor.workspace_id
+        async with context.uow_factory() as uow:
+            named = await uow.configs.get_scope_version(ws, scope_version_id)
+            if named is None:
+                raise NotFound(f"scope version {scope_version_id} not found")
+            versions = [
+                v for v in await uow.configs.list_scope_versions(ws) if v.scope_id == named.scope_id
+            ]
+            latest = max(versions, key=lambda v: v.version)
+            in_flight = await uow.tasks.page_tasks(
+                ws, states=list(_IN_FLIGHT), stage=StageName.SCOPE_DELETION.value, limit=100
+            )
+        if confirm_name.strip() != latest.name.strip():
+            raise ValidationFailure(
+                "type the scope's name exactly to confirm deleting it",
+                context={"name": latest.name},
+            )
+        # Never two purges of one scope at once: the second would fight the first
+        # for the same rows, and the person pressing twice meant it once.
+        mine = str(named.scope_id)
+        for task in in_flight:
+            if str(task.inputs.get("scope_id")) == mine:
+                return task
+        return await self._orchestrator.submit(
+            workspace_id=ws,
+            actor_id=actor.user_id,
+            stage=StageName.SCOPE_DELETION,
+            inputs={
+                "scope_version_id": str(scope_version_id),
+                "scope_id": mine,
+                "confirm_name": latest.name,
+            },
+            idempotency_key=f"delete-scope:{context.new_id()}",
+        )
 
     async def plan(self, actor: ActorContext, scope_version_id: UUID) -> ScopeDeletionPlan:
         """What deleting the scope of this version would remove. Changes nothing."""
@@ -329,3 +396,48 @@ class ScopeDeletionService:
                 f"{'are' if unsettled != 1 else 'is'} still queued or running; cancel or wait"
             )
         return plan
+
+
+class ScopeDeletionHandler:
+    """Stage: delete a whole scope, off the request path.
+
+    The work is two passes over the workspace — one to decide what goes, one to
+    purge it — and on a corpus of tens of thousands that is minutes inside a
+    single transaction. Held in the request it raced the gateway's read timeout,
+    and a person watching a destructive press time out cannot tell whether it
+    happened. Queued, the press returns at once and the page watches the task.
+
+    What the press does **not** do is decide anything. The plan, the blockers and
+    the purge all happen here, in one transaction, exactly as they did when this
+    ran inline: a blocker can appear between the press and the work, and only a
+    plan read inside the purge's own transaction is true when the rows go.
+    """
+
+    stage_name = StageName.SCOPE_DELETION
+    #: The deletion's own rules, not the fetcher's: its version moves when what
+    #: goes, or what stops it, changes.
+    implementation_version = "scope-deletion/1"
+
+    def __init__(self, context: ServiceContext) -> None:
+        self._context = context
+
+    def fingerprint(self, command: StageCommand) -> str:
+        return task_fingerprint(command, implementation_version=self.implementation_version)
+
+    async def execute(self, command: StageCommand) -> StageResult:
+        context = self._context
+        # The presser's real membership: deleting needs MANAGE_SCOPE, and the
+        # audit row names them, not the workspace.
+        actor = await resolve_actor(
+            context, user_id=command.actor_id, workspace_id=command.workspace_id
+        )
+        counts = await ScopeDeletionService(context).delete(
+            actor,
+            UUID(str(command.inputs["scope_version_id"])),
+            confirm_name=str(command.inputs["confirm_name"]),
+        )
+        return StageResult(
+            stage=self.stage_name,
+            status=StageStatus.SUCCEEDED,
+            metrics=dict(counts),
+        )

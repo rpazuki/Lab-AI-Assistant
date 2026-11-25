@@ -7,7 +7,12 @@ import type { ScopeDeletionPlan, ScopeVersion } from "@/types";
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, previewScopeDeletion: vi.fn(), deleteScope: vi.fn() };
+  return {
+    ...actual,
+    previewScopeDeletion: vi.fn(),
+    deleteScope: vi.fn(),
+    scopeDeletion: vi.fn(),
+  };
 });
 
 const api = await import("@/lib/api");
@@ -60,9 +65,16 @@ const plan: ScopeDeletionPlan = {
 describe("Deleting a whole scope", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("stays disabled until the scope's name is typed, then deletes", async () => {
+  it("stays disabled until the name is typed, then queues the deletion", async () => {
     vi.mocked(api.previewScopeDeletion).mockResolvedValue(plan);
-    vi.mocked(api.deleteScope).mockResolvedValue({ deleted: counts });
+    vi.mocked(api.deleteScope).mockResolvedValue({ task_id: "t9", state: "ready" });
+    vi.mocked(api.scopeDeletion).mockResolvedValue({
+      task_id: "t9",
+      state: "succeeded",
+      settled: true,
+      error: null,
+      counts,
+    });
     const onDeleted = vi.fn();
     const user = userEvent.setup();
     render(<ScopeDeletion scope={scope} onDeleted={onDeleted} />);
@@ -80,7 +92,7 @@ describe("Deleting a whole scope", () => {
 
   it("says it is working while the request is in flight", async () => {
     vi.mocked(api.previewScopeDeletion).mockResolvedValue(plan);
-    let finish: (value: { deleted: ScopeDeletionPlan["counts"] }) => void = () => undefined;
+    let finish: (value: { task_id: string; state: string }) => void = () => undefined;
     vi.mocked(api.deleteScope).mockReturnValue(
       new Promise((resolve) => {
         finish = resolve;
@@ -94,8 +106,15 @@ describe("Deleting a whole scope", () => {
     await user.click(screen.getByRole("button", { name: "Delete the scope" }));
 
     expect(await screen.findByRole("button", { name: "Deleting…" })).toBeDisabled();
-    expect(screen.getByText(/takes a few minutes; leave the page open/)).toBeInTheDocument();
-    finish({ deleted: counts });
+    expect(screen.getByText(/carries on whether or not you stay here/)).toBeInTheDocument();
+    vi.mocked(api.scopeDeletion).mockResolvedValue({
+      task_id: "t9",
+      state: "succeeded",
+      settled: true,
+      error: null,
+      counts,
+    });
+    finish({ task_id: "t9", state: "ready" });
     await waitFor(() => expect(onDeleted).toHaveBeenCalled());
   });
 

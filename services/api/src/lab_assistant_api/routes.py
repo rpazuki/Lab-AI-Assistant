@@ -808,11 +808,40 @@ async def delete_scope(
     actor: CurrentActor,
     container: Container,
 ) -> dict[str, Any]:
-    """Delete every version of this version's scope, its runs and the papers only it found."""
-    counts = await ScopeDeletionService(container.context).delete(
+    """Queue deleting every version of this version's scope, its runs and its papers.
+
+    Only the typed name is checked here. Working out what goes and purging it are
+    two passes over the workspace inside one transaction, which outran the
+    gateway's read timeout and left a person unable to tell whether a destructive
+    press had happened. Watch the task with ``scope_deletion_status``.
+    """
+    task = await ScopeDeletionService(container.context, container.orchestrator).start(
         actor, scope_version_id, confirm_name=payload.name
     )
-    return {"deleted": counts}
+    return {"task_id": str(task.id), "state": task.state.value}
+
+
+@router.get("/scope-deletions/{task_id}")
+async def scope_deletion_status(
+    task_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """How the queued deletion is getting on, and its counts once it has settled.
+
+    Its own route, not one under the scope: by the time it succeeds the scope it
+    names is gone, and a status that 404s the moment it works is no status.
+    """
+    actor.require(Capability.MANAGE_SCOPE)
+    async with container.context.uow_factory() as uow:
+        task = await uow.tasks.get(actor.workspace_id, task_id)
+    if task is None or task.stage is not StageName.SCOPE_DELETION:
+        raise NotFound(f"no scope deletion {task_id}")
+    return {
+        "task_id": str(task.id),
+        "state": task.state.value,
+        "settled": task.state.is_settled,
+        "counts": task.result.get("metrics") or None,
+        "error": task.error_detail,
+    }
 
 
 @router.get("/scopes")

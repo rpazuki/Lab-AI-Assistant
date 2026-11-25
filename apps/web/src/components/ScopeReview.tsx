@@ -8,12 +8,14 @@ import { Alert, Button, Empty, Input, StateChip, row, rowList } from "@/componen
 import {
   applyScopeRules,
   deleteScope,
+  scopeDeletion,
   listReviewHistory,
   previewScopeDeletion,
   previewScopeRules,
 } from "@/lib/api";
 import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
+import { watchTask } from "@/lib/watchTask";
 import type {
   Page,
   PaperSummary,
@@ -412,9 +414,15 @@ export function ScopeDeletion({
     setBusy(true);
     setError(null);
     try {
-      const { deleted } = await deleteScope(scope.id, typed);
+      const queued = await deleteScope(scope.id, typed);
       await onDeleted(
-        `Scope “${plan.name}” deleted: ${plural(deleted.versions, "version")}, ${plural(deleted.runs, "discovery run")} and ${plural(deleted.papers, "paper")}.`,
+        await watchTask({
+          poll: () => scopeDeletion(queued.task_id),
+          stillRunning: "the scope is still going.",
+          said: (deleted) =>
+            `Scope “${plan.name}” deleted: ${plural(deleted.versions, "version")}, ` +
+            `${plural(deleted.runs, "discovery run")} and ${plural(deleted.papers, "paper")}.`,
+        }),
       );
     } catch (caught) {
       // The reload comes first: `load` clears the error on success, so setting
@@ -496,8 +504,8 @@ export function ScopeDeletion({
           )}
           {busy ? (
             <p className="text-sm text-muted" aria-live="polite">
-              Deleting {plural(c.papers, "paper")} and everything made from them. On a large scope
-              this takes a few minutes; leave the page open.
+              Deleting {plural(c.papers, "paper")} and everything made from them. On a large
+              scope this takes a few minutes. It carries on whether or not you stay here.
             </p>
           ) : null}
         </>

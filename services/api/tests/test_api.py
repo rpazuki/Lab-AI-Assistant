@@ -869,7 +869,12 @@ class TestCollections:
     async def test_a_scope_with_only_a_purpose_passes_its_gate_and_is_deleted_whole(
         self, api
     ) -> None:
-        """Purpose replaces the criteria lists; deleting needs the name typed exactly."""
+        """Purpose replaces the criteria lists; deleting needs the name typed exactly.
+
+        Deleting is queued: the press confirms the name and returns a task, and the
+        scope is still there until a worker has run it.
+        """
+        harness = api["harness"]
         token = await _login(api["client"], "steward@lab.invalid")
         body = {
             "name": "Yarrowia",
@@ -891,12 +896,22 @@ class TestCollections:
             f"/api/v1/scopes/{v1['id']}/delete-scope", headers=_auth(token), json={"name": "Y"}
         )
         assert wrong.status_code == 422
-        deleted = await api["client"].post(
+        queued = await api["client"].post(
             f"/api/v1/scopes/{v1['id']}/delete-scope",
             headers=_auth(token),
             json={"name": "Yarrowia"},
         )
-        assert deleted.json()["deleted"]["versions"] == 1
+        task_id = queued.json()["task_id"]
+        still = await api["client"].get("/api/v1/scopes", headers=_auth(token))
+        assert v1["id"] in {item["id"] for item in still.json()["items"]}
+
+        await harness.run_all_tasks()
+
+        status = await api["client"].get(
+            f"/api/v1/scope-deletions/{task_id}", headers=_auth(token)
+        )
+        assert status.json()["settled"] is True, status.json()["error"]
+        assert status.json()["counts"]["versions"] == 1
         listed = await api["client"].get("/api/v1/scopes", headers=_auth(token))
         assert v1["id"] not in {item["id"] for item in listed.json()["items"]}
 

@@ -1228,6 +1228,7 @@
       "StageName": {
         "enum": [
           "scope_freeze",
+          "scope_deletion",
           "discovery",
           "reconciliation",
           "acquisition_planning",
@@ -10027,6 +10028,81 @@
         "summary": "Decide Review"
       }
     },
+    "/api/v1/scope-deletions/{task_id}": {
+      "get": {
+        "description": "How the queued deletion is getting on, and its counts once it has settled.\n\nIts own route, not one under the scope: by the time it succeeds the scope it\nnames is gone, and a status that 404s the moment it works is no status.",
+        "operationId": "scope_deletion_status_api_v1_scope_deletions__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Scope Deletion Status Api V1 Scope Deletions  Task Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scope Deletion Status"
+      }
+    },
     "/api/v1/scopes": {
       "get": {
         "operationId": "list_scopes_api_v1_scopes_get",
@@ -10403,7 +10479,7 @@
     },
     "/api/v1/scopes/{scope_version_id}/delete-scope": {
       "post": {
-        "description": "Delete every version of this version's scope, its runs and the papers only it found.",
+        "description": "Queue deleting every version of this version's scope, its runs and its papers.\n\nOnly the typed name is checked here. Working out what goes and purging it are\ntwo passes over the workspace inside one transaction, which outran the\ngateway's read timeout and left a person unable to tell whether a destructive\npress had happened. Watch the task with ``scope_deletion_status``.",
         "operationId": "delete_scope_api_v1_scopes__scope_version_id__delete_scope_post",
         "parameters": [
           {

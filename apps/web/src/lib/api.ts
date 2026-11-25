@@ -60,6 +60,7 @@ import type {
   WorkingSheet,
 } from "@/types";
 import { appPath } from "@/lib/config";
+import type { TaskWatch } from "@/lib/watchTask";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -485,12 +486,22 @@ export const applyScopeRules = (
 export const previewScopeDeletion = (scopeVersionId: string) =>
   request<ScopeDeletionPlan>(`/scopes/${scopeVersionId}/deletion`);
 
-/** Delete every version of the scope, its runs and the papers only it found. */
+/**
+ * Queue deleting every version of the scope, its runs and the papers only it found.
+ *
+ * Only the typed name is checked before it is queued; what goes, and what stops
+ * it, are worked out inside the transaction that purges. Watch it with
+ * `scopeDeletion`.
+ */
 export const deleteScope = (scopeVersionId: string, name: string) =>
-  request<{ deleted: ScopeDeletionPlan["counts"] }>(`/scopes/${scopeVersionId}/delete-scope`, {
+  request<{ task_id: string; state: string }>(`/scopes/${scopeVersionId}/delete-scope`, {
     method: "POST",
     body: JSON.stringify({ name }),
   });
+
+/** How the queued deletion is getting on, and its counts once it has settled. */
+export const scopeDeletion = (taskId: string) =>
+  request<TaskWatch<ScopeDeletionPlan["counts"]>>(`/scope-deletions/${taskId}`);
 
 /** The review history, newest first; with `scope_version_id`, only that version's steps. */
 export const listReviewHistory = (
@@ -559,13 +570,7 @@ export const fetchIncluded = () =>
 
 /** How the queued sweep is getting on, and its counts once it has settled. */
 export const fetchSweep = (taskId: string) =>
-  request<{
-    task_id: string;
-    state: string;
-    settled: boolean;
-    counts: FetchSweepCounts | null;
-    error: string | null;
-  }>(`/acquisition-plans/fetch-included/${taskId}`);
+  request<TaskWatch<FetchSweepCounts>>(`/acquisition-plans/fetch-included/${taskId}`);
 
 /** One page of acquisition plans, and how many plans are in each status. */
 export const listPlans = (options: PageRequest & { status?: string } = {}) =>

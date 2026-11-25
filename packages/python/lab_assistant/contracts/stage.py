@@ -28,6 +28,10 @@ __all__ = [
 
 class StageName(StrEnum):
     SCOPE_FREEZE = "scope_freeze"
+    #: Deleting a whole scope: every version, run, and paper only it found. It
+    #: reads the workspace twice over and purges tens of thousands of rows in one
+    #: transaction, so it is queued rather than held in the request.
+    SCOPE_DELETION = "scope_deletion"
     DISCOVERY = "discovery"
     RECONCILIATION = "reconciliation"
     ACQUISITION_PLANNING = "acquisition_planning"

@@ -24,6 +24,7 @@ from lab_assistant.application.refresh import RefreshService
 from lab_assistant.application.releases import ReleaseDraftRequest, ReleaseService
 from lab_assistant.application.retrieval import RetrievalService
 from lab_assistant.application.review import ReviewService
+from lab_assistant.application.scope_deletion import ScopeDeletionHandler
 from lab_assistant.application.scopes import ScopeService
 from lab_assistant.application.tasks import HandlerRegistry, TaskOrchestrator
 
@@ -53,6 +54,7 @@ __all__ = [
     "ReleaseService",
     "RetrievalService",
     "ReviewService",
+    "ScopeDeletionHandler",
     "ScopeService",
     "ServiceContext",
     "TaskOrchestrator",
@@ -73,4 +75,5 @@ def build_handler_registry(context: ServiceContext) -> HandlerRegistry:
     registry.register(ParsingHandler(context))
     registry.register(ExtractionHandler(context))
     registry.register(IndexingHandler(context))
+    registry.register(ScopeDeletionHandler(context))
     return registry

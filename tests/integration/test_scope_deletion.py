@@ -14,10 +14,10 @@ from test_bulk_review import lab  # noqa: F401  (the fixture)
 from test_scope_rules import ScopeLab
 
 from lab_assistant.application.reconciliation import IdentityService
-from lab_assistant.application.scope_deletion import ScopeDeletionService
+from lab_assistant.application.scope_deletion import ScopeDeletionHandler, ScopeDeletionService
 from lab_assistant.contracts.errors import StateTransitionError, ValidationFailure
 from lab_assistant.contracts.release import ReleaseItemRecord
-from lab_assistant.contracts.stage import StageName
+from lab_assistant.contracts.stage import StageCommand, StageName, StageStatus
 from lab_assistant.domain.observation import (
     ConnectorRunState,
     DiscoveryRun,
@@ -154,7 +154,7 @@ class DeletionLab(ScopeLab):
 
     @property
     def deletion(self) -> ScopeDeletionService:
-        return ScopeDeletionService(self.harness.context)
+        return ScopeDeletionService(self.harness.context, self.harness.orchestrator)
 
 
 @pytest.fixture
@@ -338,3 +338,86 @@ class TestDeletingAReleaseNeverPublished:
             await uow.commit()
         with pytest.raises(StateTransitionError, match="still queued or running"):
             await ReleaseService(context).delete_draft(deleting.actor, release_id=approved.id)
+
+
+class TestTheDeletionRunsInTheQueue:
+    """Deleting reads the workspace twice over and purges in one transaction.
+
+    On the internal corpus that is minutes, and a destructive press that the
+    gateway cuts off leaves a person unable to tell whether it happened. The
+    press confirms the name and queues; the handler does the rest.
+    """
+
+    async def test_the_press_confirms_the_name_and_queues_nothing_else(
+        self, deleting: DeletionLab
+    ) -> None:
+        scope = await deleting.scope()
+        run = await deleting.run(scope)
+        paper = await deleting.screened("Yarrowia lipid factories")
+        await deleting.found(run, paper)
+
+        with pytest.raises(ValidationFailure):
+            await deleting.deletion.start(deleting.actor, scope.id, confirm_name="Yarrow")
+
+        task = await deleting.deletion.start(deleting.actor, scope.id, confirm_name="Yarrowia")
+
+        assert task.stage is StageName.SCOPE_DELETION
+        assert task.state is TaskState.READY
+        # Queued, not done: nothing has gone yet.
+        assert await deleting.exists(paper)
+
+    async def test_a_second_press_joins_the_deletion_already_queued(
+        self, deleting: DeletionLab
+    ) -> None:
+        """Two purges of one scope at once would fight over the same rows."""
+        scope = await deleting.scope()
+        task = await deleting.deletion.start(deleting.actor, scope.id, confirm_name="Yarrowia")
+
+        again = await deleting.deletion.start(deleting.actor, scope.id, confirm_name="Yarrowia")
+
+        assert again.id == task.id
+
+    async def test_the_handler_purges_and_reports_the_counts(self, deleting: DeletionLab) -> None:
+        scope = await deleting.scope()
+        run = await deleting.run(scope)
+        paper = await deleting.screened("Yarrowia lipid factories")
+        await deleting.found(run, paper)
+        task = await deleting.deletion.start(deleting.actor, scope.id, confirm_name="Yarrowia")
+
+        result = await ScopeDeletionHandler(deleting.harness.context).execute(
+            StageCommand(
+                stage=StageName.SCOPE_DELETION,
+                workspace_id=deleting.ws,
+                actor_id=deleting.actor.user_id,
+                inputs=dict(task.inputs),
+            )
+        )
+
+        assert result.status is StageStatus.SUCCEEDED
+        assert result.metrics["papers"] == 1
+        assert result.metrics["versions"] == 1
+        assert not await deleting.exists(paper)
+
+    async def test_a_blocker_that_appeared_after_the_press_stops_the_handler(
+        self, deleting: DeletionLab
+    ) -> None:
+        """The plan is read inside the purge's own transaction, not at the press.
+
+        Between queuing and running, work can be queued for the scope's papers.
+        A plan read at the press would be a promise about rows nobody holds.
+        """
+        scope = await deleting.scope()
+        run = await deleting.run(scope)
+        await deleting.found(run, await deleting.screened("Yarrowia lipid factories"))
+        task = await deleting.deletion.start(deleting.actor, scope.id, confirm_name="Yarrowia")
+        await deleting.task(run, TaskState.READY)
+
+        with pytest.raises(StateTransitionError):
+            await ScopeDeletionHandler(deleting.harness.context).execute(
+                StageCommand(
+                    stage=StageName.SCOPE_DELETION,
+                    workspace_id=deleting.ws,
+                    actor_id=deleting.actor.user_id,
+                    inputs=dict(task.inputs),
+                )
+            )

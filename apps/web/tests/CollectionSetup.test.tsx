@@ -29,6 +29,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     listReviewHistory: vi.fn(),
     previewScopeDeletion: vi.fn(),
     deleteScope: vi.fn(),
+    scopeDeletion: vi.fn(),
   };
 });
 
@@ -239,8 +240,14 @@ describe("CollectionSetup", () => {
       blockers: [],
       deletable: true,
     });
-    vi.mocked(api.deleteScope).mockResolvedValue({
-      deleted: { versions: 1, runs: 2, papers: 28044 } as never,
+    vi.mocked(api.deleteScope).mockResolvedValue({ task_id: "t9", state: "ready" });
+    // Queued now: the panel watches the task and says what it did when it ends.
+    vi.mocked(api.scopeDeletion).mockResolvedValue({
+      task_id: "t9",
+      state: "succeeded",
+      settled: true,
+      error: null,
+      counts: { versions: 1, runs: 2, papers: 28044 } as never,
     });
     const user = userEvent.setup();
     render(<CollectionSetup />);

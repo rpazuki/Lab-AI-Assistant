@@ -88,7 +88,7 @@ describe("Watching a queued fetch sweep", () => {
 
     const said = await settle(watchSweep("t1"));
 
-    expect(said).toMatch(/nothing has picked the sweep up/);
+    expect(said).toMatch(/nothing has picked it up/);
     expect(said).toMatch(/Operations/);
     expect(said).not.toMatch(/Still running/);
   });
