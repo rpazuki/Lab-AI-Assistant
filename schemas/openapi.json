@@ -1673,7 +1673,7 @@
     },
     "/api/v1/acquisition-plans": {
       "get": {
-        "description": "One page of acquisition plans, and how many plans are in each status.",
+        "description": "One page of the acquisition plans found, and how many plans are in each status.",
         "operationId": "list_plans_api_v1_acquisition_plans_get",
         "parameters": [
           {
@@ -1690,6 +1690,42 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "description": "words each in the paper's title or one of its identifiers (a DOI)",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words each in the paper's title or one of its identifiers (a DOI)",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "the latest attempt's outcome; none for never tried",
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "the latest attempt's outcome; none for never tried",
+              "title": "Outcome"
             }
           },
           {
@@ -3097,7 +3133,7 @@
     },
     "/api/v1/candidates/conflicts": {
       "get": {
-        "description": "How many works are in conflict, and one page of open duplicate pairs.\n\nMost similar first. A pair someone merged or dismissed is no longer open, so\nit leaves this list; each pair carries both papers so it can be judged here.",
+        "description": "How many works are in conflict, and one page of the open duplicate pairs found.\n\nMost similar first. A pair someone merged or dismissed is no longer open, so\nit leaves this list; each pair carries both papers so it can be judged here.",
         "operationId": "list_conflicts_api_v1_candidates_conflicts_get",
         "parameters": [
           {
@@ -3131,6 +3167,24 @@
             }
           },
           {
+            "description": "words that must all appear in either paper's title",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in either paper's title",
+              "title": "Q"
+            }
+          },
+          {
             "in": "query",
             "name": "min_similarity",
             "required": false,
@@ -3146,6 +3200,43 @@
                 }
               ],
               "title": "Min Similarity"
+            }
+          },
+          {
+            "description": "true: same year; false: different years",
+            "in": "query",
+            "name": "same_year",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "true: same year; false: different years",
+              "title": "Same Year"
+            }
+          },
+          {
+            "description": "first authors agree or differ",
+            "in": "query",
+            "name": "authors",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(agree|differ)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "first authors agree or differ",
+              "title": "Authors"
             }
           },
           {
@@ -5662,6 +5753,79 @@
             }
           },
           {
+            "description": "words that must all appear in either paper's title",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in either paper's title",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_similarity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Similarity"
+            }
+          },
+          {
+            "description": "true: same year; false: different years",
+            "in": "query",
+            "name": "same_year",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "true: same year; false: different years",
+              "title": "Same Year"
+            }
+          },
+          {
+            "description": "first authors agree or differ",
+            "in": "query",
+            "name": "authors",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(agree|differ)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "first authors agree or differ",
+              "title": "Authors"
+            }
+          },
+          {
             "in": "header",
             "name": "X-Workspace",
             "required": false,
@@ -5733,9 +5897,82 @@
     },
     "/api/v1/duplicates/merge-rule/preview": {
       "post": {
-        "description": "What the rule would merge now, and how many pairs each guard would skip. Changes nothing.",
+        "description": "What the rule would merge of the pairs the search finds. Changes nothing.",
         "operationId": "preview_merge_rule_api_v1_duplicates_merge_rule_preview_post",
         "parameters": [
+          {
+            "description": "words that must all appear in either paper's title",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in either paper's title",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_similarity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Similarity"
+            }
+          },
+          {
+            "description": "true: same year; false: different years",
+            "in": "query",
+            "name": "same_year",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "true: same year; false: different years",
+              "title": "Same Year"
+            }
+          },
+          {
+            "description": "first authors agree or differ",
+            "in": "query",
+            "name": "authors",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(agree|differ)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "first authors agree or differ",
+              "title": "Authors"
+            }
+          },
           {
             "in": "header",
             "name": "X-Workspace",
@@ -8430,6 +8667,280 @@
           }
         },
         "summary": "Add Feedback"
+      }
+    },
+    "/api/v1/identity-conflicts": {
+      "get": {
+        "description": "Papers in conflict, each with the other paper(s) involved and why.",
+        "operationId": "list_identity_conflicts_api_v1_identity_conflicts_get",
+        "parameters": [
+          {
+            "description": "words that must all appear in the title",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in the title",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "next_cursor from the previous page",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "next_cursor from the previous page",
+              "title": "After"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Identity Conflicts Api V1 Identity Conflicts Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Identity Conflicts"
+      }
+    },
+    "/api/v1/identity-conflicts/keep-separate": {
+      "post": {
+        "description": "Keep up to 200 of the conflicts the search finds separate; repeat until none remain.",
+        "operationId": "keep_conflicts_separate_api_v1_identity_conflicts_keep_separate_post",
+        "parameters": [
+          {
+            "description": "words that must all appear in the title",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in the title",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Keep Conflicts Separate Api V1 Identity Conflicts Keep Separate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Keep Conflicts Separate"
+      }
+    },
+    "/api/v1/identity-conflicts/{work_id}/keep-separate": {
+      "post": {
+        "description": "Different papers: this one is resolved, its identifiers stay where they are.",
+        "operationId": "keep_conflict_separate_api_v1_identity_conflicts__work_id__keep_separate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "work_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Work Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Keep Conflict Separate Api V1 Identity Conflicts  Work Id  Keep Separate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Keep Conflict Separate"
       }
     },
     "/api/v1/invitations": {

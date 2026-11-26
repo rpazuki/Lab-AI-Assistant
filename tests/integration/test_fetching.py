@@ -1189,3 +1189,40 @@ class TestTheSweepRunsInTheQueue:
                     inputs={},
                 )
             )
+
+
+class TestSearchingTheQueue:
+    async def test_by_title_word_identifier_and_last_answer(self, lab) -> None:
+        context = lab.harness.context
+        titled = await lab.plan(
+            await lab.paper("10.9/titled", title="Honeybee sterols from yeast"), OPEN
+        )
+        other = await lab.plan(await lab.paper("10.9/other", title="Corn ethanol"), OPEN)
+        async with context.uow_factory() as uow:
+            await uow.assets.add_attempt(
+                AcquisitionAttempt(
+                    id=context.new_id(),
+                    workspace_id=lab.ws,
+                    acquisition_plan_id=other.id,
+                    manifestation_id=other.manifestation_ids[0],
+                    connector_id="unpaywall",
+                    route=AcquisitionRoute.OPEN_REPOSITORY,
+                    outcome=AcquisitionOutcome.NOT_FOUND,
+                    worker_version=FETCHER_VERSION,
+                    requested_at=context.now(),
+                )
+            )
+            await uow.commit()
+
+        async def found(**search: Any) -> list[UUID]:
+            async with context.uow_factory() as uow:
+                plans = await uow.assets.list_plans(lab.ws, limit=50, **search)
+                total = await uow.assets.count_plans(lab.ws, **search)
+            assert total == len(plans)
+            return [plan.id for plan in plans]
+
+        assert await found(words=("honeybee",)) == [titled.id]
+        assert await found(words=("10.9/other",)) == [other.id]  # a DOI, or part of one
+        assert await found(outcome="not_found") == [other.id]
+        assert await found(outcome="none") == [titled.id]
+        assert await found(words=("honeybee",), outcome="not_found") == []

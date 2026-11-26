@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { PanelFrame } from "@/components/ui/CollapsiblePanel";
 import { Alert, Button, Field, Input } from "@/components/ui/primitives";
 import { getParseQuality, setParseLimits } from "@/lib/api";
 import type { ParseQuality as ParseQualityView } from "@/types";
@@ -18,7 +18,14 @@ const percent = (ratio: number) => `${Math.round(ratio * 1000) / 10}%`;
  * against them again on the next press of **Fetch included papers**, from the
  * metrics their parse recorded, without parsing anything again.
  */
-export function ParseQuality({ refreshKey }: { refreshKey?: unknown }) {
+export function ParseQuality({
+  refreshKey,
+  embedded = false,
+}: {
+  refreshKey?: unknown;
+  /** Shown inside Collection settings rather than as its own panel. */
+  embedded?: boolean;
+}) {
   const [view, setView] = useState<ParseQualityView | null>(null);
   const [ratio, setRatio] = useState("");
   const [separation, setSeparation] = useState("default");
@@ -66,7 +73,8 @@ export function ParseQuality({ refreshKey }: { refreshKey?: unknown }) {
 
   const defaults = view?.defaults ?? {};
   return (
-    <CollapsiblePanel
+    <PanelFrame
+      embedded={embedded}
       title="Parse quality"
       storageKey="collections.parse-quality"
       count={
@@ -142,6 +150,6 @@ export function ParseQuality({ refreshKey }: { refreshKey?: unknown }) {
           Save limits
         </Button>
       </div>
-    </CollapsiblePanel>
+    </PanelFrame>
   );
 }

@@ -5,17 +5,23 @@ import { useCallback, useEffect, useState } from "react";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { PageCount, Pager } from "@/components/ui/Pager";
+import { PanelSection } from "@/components/ui/PanelSection";
 import { Alert, Button, Empty, Input } from "@/components/ui/primitives";
 import {
   applyMergeRule,
   dismissDuplicate,
+  keepConflictSeparate,
+  keepConflictsSeparate,
   listConflicts,
+  listIdentityConflicts,
   mergeDuplicate,
+  mergeWorks,
   previewMergeRule,
+  type PairSearch,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { PAGE_SIZES, usePager } from "@/lib/usePager";
-import type { DuplicateProposal, MergePlan, MergeRule, Page, PaperSummary } from "@/types";
+import type { DuplicateProposal, IdentityConflict, MergePlan, MergeRule, Page, PaperSummary } from "@/types";
 
 /** The cautious rule: exact titles, same year, no contradicting authors or DOIs. */
 export const DEFAULT_RULE: MergeRule = {
@@ -77,9 +83,12 @@ export function DuplicateReview({
   live: boolean;
   onChanged?: () => void;
 }) {
+  const [view, setView] = useState<"pairs" | "conflicts">("pairs");
   const [pairs, setPairs] = useState<Page<DuplicateProposal>>(EMPTY);
   const [conflicts, setConflicts] = useState(0);
-  const [minSimilarity, setMinSimilarity] = useState<number | null>(null);
+  // The search on screen, and the one the list and the rule were asked for.
+  const [draft, setDraft] = useState<PairSearch>({});
+  const [search, setSearch] = useState<PairSearch>({});
   const [rule, setRule] = useState<MergeRule>(DEFAULT_RULE);
   const [plan, setPlan] = useState<MergePlan | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -92,7 +101,7 @@ export function DuplicateReview({
       const body = await listConflicts({
         after: pager.cursor,
         limit: pager.pageSize,
-        min_similarity: minSimilarity,
+        ...search,
       });
       setPairs({ items: body.duplicate_proposals, next_cursor: body.next_cursor, total: body.proposal_total });
       setConflicts(body.conflict_total);
@@ -100,7 +109,7 @@ export function DuplicateReview({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "the duplicate queue could not be loaded");
     }
-  }, [pager.cursor, pager.pageSize, minSimilarity]);
+  }, [pager.cursor, pager.pageSize, search]);
 
   const live = useLiveRefresh(refresh, { active: parentLive });
   const reload = live.refresh;
@@ -119,7 +128,7 @@ export function DuplicateReview({
     setMessage(null);
     try {
       setBusy("Checking every open pair against the rule");
-      setPlan(await previewMergeRule(rule));
+      setPlan(await previewMergeRule(rule, search));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "the rule could not be checked");
     } finally {
@@ -144,7 +153,7 @@ export function DuplicateReview({
       let stepId: string | null = null;
       for (let round = 0; remaining > 0 && round < 500; round++) {
         setBusy(`Merging: ${merged.toLocaleString()} of ${plan.works_merged.toLocaleString()} papers`);
-        const step = await applyMergeRule(rule, stepId);
+        const step = await applyMergeRule(rule, stepId, search);
         stepId = step.step_id ?? stepId;
         merged += step.works_merged;
         remaining = step.remaining_groups;
@@ -160,6 +169,13 @@ export function DuplicateReview({
     } finally {
       setBusy(null);
     }
+  }
+
+  function find(next: PairSearch) {
+    setSearch(next);
+    // A preview answers the pairs it was asked about, not the ones now shown.
+    setPlan(null);
+    pager.reset();
   }
 
   async function decide(pair: DuplicateProposal, action: "merge" | "dismiss") {
@@ -181,14 +197,138 @@ export function DuplicateReview({
       flush
       aside={<LiveStatus {...live} />}
     >
-      <div className="space-y-3 border-b border-border px-5 py-4">
-        {conflicts > 0 ? (
+      <div role="tablist" aria-label="Show" className="flex gap-1 border-b border-border px-5 pt-2">
+        {(
+          [
+            ["pairs", `Pairs to review (${pairs.total.toLocaleString()})`],
+            ["conflicts", `Identity conflicts (${conflicts.toLocaleString()})`],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={view === key}
+            onClick={() => setView(key)}
+            className={`-mb-px rounded-t-control border px-3 py-1.5 text-sm ${
+              view === key
+                ? "border-border border-b-surface bg-surface font-semibold text-heading"
+                : "border-transparent text-muted hover:text-heading"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "conflicts" ? (
+        <ConflictReview onChanged={() => { live.kick(); onChanged?.(); }} />
+      ) : (
+      <>
+      {conflicts > 0 ? (
+        <div className="px-5 pt-3">
           <Alert tone="danger">
-            {conflicts.toLocaleString()} work{conflicts === 1 ? "" : "s"} hold contradictory strong
-            identifiers and cannot enter a release until resolved.
+            {conflicts.toLocaleString()} paper{conflicts === 1 ? "" : "s"} hold contradictory strong
+            identifiers and cannot enter a release until settled: see{" "}
+            <button type="button" className="underline" onClick={() => setView("conflicts")}>
+              Identity conflicts
+            </button>
+            .
           </Alert>
-        ) : null}
-        <h3 className="text-sm font-semibold text-heading">Merge by rule</h3>
+        </div>
+      ) : null}
+      <PanelSection title="Search" hint="Narrows the pairs below. Merge by rule acts on exactly what it finds.">
+        <form
+          className="flex flex-wrap items-end gap-x-5 gap-y-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            find(draft);
+          }}
+        >
+          <label className="space-y-1 text-xs text-muted">
+            <span className="block">Either title has all of</span>
+            <Input
+              aria-label="Either title has all of"
+              placeholder="yarrowia, lipid"
+              value={draft.q ?? ""}
+              onChange={(event) => setDraft({ ...draft, q: event.target.value })}
+            />
+          </label>
+          <label className="space-y-1 text-xs text-muted">
+            <span className="block">Similarity at least</span>
+            <select
+              aria-label="Show pairs with similarity at least"
+              className="rounded-control border border-border-strong bg-surface px-2 py-1.5 text-sm text-ink"
+              value={draft.min_similarity ?? ""}
+              onChange={(event) => {
+                const next = { ...draft, min_similarity: event.target.value ? Number(event.target.value) : null };
+                setDraft(next);
+                find(next);
+              }}
+            >
+              <option value="">any</option>
+              {[0.9, 0.95, 1].map((value) => (
+                <option key={value} value={value}>
+                  {value.toFixed(2)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="space-y-1 text-xs text-muted">
+            <span className="block">Years</span>
+            <select
+              aria-label="Filter pairs by year"
+              className="rounded-control border border-border-strong bg-surface px-2 py-1.5 text-sm text-ink"
+              value={draft.same_year === null || draft.same_year === undefined ? "" : String(draft.same_year)}
+              onChange={(event) => {
+                const value = event.target.value;
+                const next = { ...draft, same_year: value === "" ? null : value === "true" };
+                setDraft(next);
+                find(next);
+              }}
+            >
+              <option value="">Either</option>
+              <option value="true">Same year</option>
+              <option value="false">Different years</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-xs text-muted">
+            <span className="block">First authors</span>
+            <select
+              aria-label="Filter pairs by first author"
+              className="rounded-control border border-border-strong bg-surface px-2 py-1.5 text-sm text-ink"
+              value={draft.authors ?? ""}
+              onChange={(event) => {
+                const next = { ...draft, authors: (event.target.value || null) as PairSearch["authors"] };
+                setDraft(next);
+                find(next);
+              }}
+            >
+              <option value="">Either</option>
+              <option value="agree">Agree</option>
+              <option value="differ">Differ</option>
+            </select>
+          </label>
+          <span className="flex gap-2">
+            <Button type="submit" size="sm">
+              Search
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setDraft({});
+                find({});
+              }}
+            >
+              Clear
+            </Button>
+          </span>
+        </form>
+      </PanelSection>
+
+      <PanelSection title="Bulk action" hint="Merge by rule: of the pairs the search found, merge those the rule accepts.">
         <div className="flex flex-wrap items-end gap-x-5 gap-y-3">
           <label className="space-y-1 text-xs text-muted">
             <span className="block">Title similarity at least</span>
@@ -322,30 +462,11 @@ export function DuplicateReview({
             ) : null}
           </div>
         ) : null}
-      </div>
+      </PanelSection>
 
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-2.5 text-sm">
         <h3 className="font-semibold text-heading">Pairs to review</h3>
         <PageCount pager={pager} shown={pairs.items.length} total={pairs.total} label="duplicate pairs" />
-        <label className="ml-auto flex items-center gap-1.5 text-xs text-muted">
-          Similarity at least
-          <select
-            aria-label="Show pairs with similarity at least"
-            className="rounded-control border border-border-strong bg-surface px-2 py-1 text-xs text-ink"
-            value={minSimilarity ?? ""}
-            onChange={(event) => {
-              setMinSimilarity(event.target.value ? Number(event.target.value) : null);
-              pager.reset();
-            }}
-          >
-            <option value="">any</option>
-            {[0.9, 0.95, 1].map((value) => (
-              <option key={value} value={value}>
-                {value.toFixed(2)}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
       {pairs.items.length === 0 ? (
         <div className="px-5 py-3">
@@ -383,6 +504,224 @@ export function DuplicateReview({
         label="duplicate pairs"
         sizes={PAGE_SIZES}
       />
+      </>
+      )}
     </CollapsiblePanel>
+  );
+}
+
+const WHY: Record<string, string> = {
+  two_papers_matched_one_record:
+    "A source record named identifiers both papers hold, and they could not be merged automatically",
+  identifier_held_by_another_paper: "A source gave this paper an identifier the other paper already holds",
+};
+
+const NO_CONFLICTS: Page<IdentityConflict> = { items: [], next_cursor: null, total: 0 };
+
+/**
+ * Papers whose strong identifiers the sources disagree on. Each is shown with the
+ * other paper involved and why, to settle as one paper (merge) or two (keep
+ * separate). A conflicted paper cannot enter a release until settled.
+ */
+function ConflictReview({ onChanged }: { onChanged?: () => void }) {
+  const [rows, setRows] = useState<Page<IdentityConflict>>(NO_CONFLICTS);
+  const [draft, setDraft] = useState("");
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pager = usePager();
+
+  const refresh = useCallback(async () => {
+    try {
+      setRows(await listIdentityConflicts({ after: pager.cursor, limit: pager.pageSize, q: query || undefined }));
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "the conflicts could not be loaded");
+    }
+  }, [pager.cursor, pager.pageSize, query]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  async function settle(action: () => Promise<unknown>, done: string) {
+    setError(null);
+    setMessage(null);
+    try {
+      await action();
+      setMessage(done);
+      onChanged?.();
+      await refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "the decision could not be saved");
+    }
+  }
+
+  async function keepAll() {
+    if (rows.total === 0) return;
+    if (
+      !window.confirm(
+        `Keep all ${rows.total.toLocaleString()} conflicted paper${rows.total === 1 ? "" : "s"} the search found ` +
+          "separate? Each is marked resolved with its identifiers where they are now, and recorded as your decision. " +
+          "Merge any that are the same paper first.",
+      )
+    ) {
+      return;
+    }
+    let resolved = 0;
+    try {
+      for (let round = 0; round < 200; round++) {
+        setBusy(`Keeping separate: ${resolved.toLocaleString()} of ${rows.total.toLocaleString()}`);
+        const step = await keepConflictsSeparate(query || undefined);
+        resolved += step.resolved;
+        if (step.remaining === 0 || step.resolved === 0) break;
+      }
+      setMessage(`${resolved.toLocaleString()} paper${resolved === 1 ? "" : "s"} kept separate.`);
+      pager.reset();
+      onChanged?.();
+      await refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "stopped part way; press again to continue");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <>
+      <PanelSection title="Search" hint="Narrows the conflicts below. The bulk action acts on exactly what it finds.">
+        <form
+          className="flex flex-wrap items-end gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setQuery(draft.trim());
+            pager.reset();
+          }}
+        >
+          <label className="space-y-1 text-xs text-muted">
+            <span className="block">Title has all of</span>
+            <Input
+              aria-label="Conflict title has all of"
+              placeholder="fatty acid"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+            />
+          </label>
+          <Button type="submit" size="sm">
+            Search
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setDraft("");
+              setQuery("");
+              pager.reset();
+            }}
+          >
+            Clear
+          </Button>
+        </form>
+      </PanelSection>
+
+      <PanelSection title="Bulk action" hint="Keep separate: for conflicts that are different papers, as they are now.">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-ink">
+            {rows.total.toLocaleString()} conflict{rows.total === 1 ? "" : "s"}
+            {query ? " match this search" : ""}.
+          </span>
+          <Button size="sm" variant="ghost" disabled={busy !== null || rows.total === 0} onClick={() => void keepAll()}>
+            Keep all {rows.total.toLocaleString()} separate
+          </Button>
+          {busy ? <span className="text-xs text-muted">{busy}…</span> : null}
+        </div>
+      </PanelSection>
+
+      {message ? (
+        <div className="px-5 pt-3">
+          <Alert tone="success">{message}</Alert>
+        </div>
+      ) : null}
+      {error ? (
+        <div className="px-5 pt-3">
+          <Alert tone="danger" role="alert">
+            {error}
+          </Alert>
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-2.5 text-sm">
+        <h3 className="font-semibold text-heading">Identity conflicts</h3>
+        <PageCount pager={pager} shown={rows.items.length} total={rows.total} label="identity conflicts" />
+      </div>
+      {rows.items.length === 0 ? (
+        <div className="px-5 py-3">
+          <Empty>{query ? "No conflict matches this search." : "No paper is in conflict."}</Empty>
+        </div>
+      ) : null}
+      <ul className="divide-y divide-border" aria-label="Identity conflicts">
+        {rows.items.map((row) => (
+          <li key={row.work_id} className="space-y-2 px-5 py-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+              {row.identifiers.map((identifier) => (
+                <span key={`${identifier.scheme}:${identifier.value}`} className="font-mono">
+                  {identifier.scheme.toUpperCase()} {identifier.value}
+                </span>
+              ))}
+              <span className="ml-auto">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    void settle(() => keepConflictSeparate(row.work_id), `“${row.title ?? "Untitled"}” kept separate.`)
+                  }
+                >
+                  Keep separate
+                </Button>
+              </span>
+            </div>
+            <Paper paper={row} />
+            {row.with.length === 0 ? (
+              <p className="text-xs text-muted">
+                The other paper is no longer in the collection: keeping this one separate settles it.
+              </p>
+            ) : null}
+            {row.with.map((other) => (
+              <div key={other.work_id} className="space-y-1 border-l-2 border-border pl-3">
+                <p className="text-xs text-muted">
+                  {WHY[other.reason] ?? other.reason}
+                  {other.identifier ? ` (${other.identifier})` : ""}:
+                </p>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Paper paper={other} />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      void settle(
+                        () => mergeWorks(row.work_id, other.work_id, "steward_same_paper"),
+                        "Merged: the two are now one paper.",
+                      )
+                    }
+                  >
+                    Same paper: merge
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </li>
+        ))}
+      </ul>
+      <Pager
+        pager={pager}
+        shown={rows.items.length}
+        total={rows.total}
+        nextCursor={rows.next_cursor}
+        label="identity conflicts"
+        sizes={PAGE_SIZES}
+      />
+    </>
   );
 }

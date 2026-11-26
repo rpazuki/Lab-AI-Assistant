@@ -181,6 +181,17 @@ export interface BulkRelevanceResult {
   step_id?: string;
 }
 
+/** A paper whose identifiers the sources disagree on, and the other paper(s) involved. */
+export interface IdentityConflict extends PaperSummary {
+  identifiers: { scheme: string; value: string }[];
+  with: (PaperSummary & {
+    /** two_papers_matched_one_record, or identifier_held_by_another_paper. */
+    reason: string;
+    /** For an identifier held by another paper: which one, as "doi:10.…". */
+    identifier: string | null;
+  })[];
+}
+
 export interface MergeRule {
   min_similarity: number;
   require_same_year: boolean;

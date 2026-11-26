@@ -570,14 +570,15 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         title: "Duplicates and identity conflicts",
         about: [
           "Different sources often describe the same paper. They are merged automatically only on strong identifiers (DOI, PMID, PMCID). Records that only look alike, by title, year and first author, are proposed as pairs for a person to decide, because titles alone are not reliable. A pair leaves the queue once it is merged or marked as two different papers.",
-          "Most pairs are clear-cut, so merge them by rule first and review the rest by hand. Papers whose identifiers contradict each other are listed as conflicts and cannot enter a release until resolved.",
+          "Each list on Collections reads the same way: **Search** narrows what the list shows, **Bulk action** acts on exactly what the search found, then the list. Here the list has two views. **Pairs to review**: merge by rule first, then the rest by hand. **Identity conflicts**: papers whose identifiers contradict another paper's, shown with that paper and why; they cannot enter a release until settled.",
         ],
         howTos: [
           {
             title: "How to merge many duplicates at once",
             needs: STEWARD,
             steps: [
-              "Under **Merge by rule**, set **Title similarity at least**. Start at 1.00: identical titles.",
+              "Under **Search**, narrow the pairs if you want (words in either title, similarity, same or different years, whether first authors agree). **Merge by rule** acts only on the pairs the search found.",
+              "Under **Bulk action**, set **Title similarity at least**. Start at 1.00: identical titles.",
               "Keep the guards on unless you have a reason: **Same year**, **First authors do not differ**, **Not two different DOIs** (a preprint and its article, or an article and its dataset, are related publications, not duplicates), and **Skip titles in more than 3 pairs** (titles such as Editorial or Correction pair with everything).",
               "Select **Preview**. It says how many papers the rule merges, and how many pairs each guard skips, with examples. Open the examples and adjust the rule until the skipped pairs look right to skip.",
               "Select **Merge N papers** and confirm. Each merge keeps the paper with more identifiers and is recorded with the rule.",
@@ -589,9 +590,20 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             title: "How to decide one pair",
             needs: "Reviewers, data stewards and admins.",
             steps: [
-              "Under **Pairs to review**, compare the two papers side by side. Narrow the list with **Similarity at least**.",
+              "Under **Pairs to review**, compare the two papers side by side. Narrow the list with the **Search**.",
               "Select **Merge** if they are the same paper, or **Not the same** if they are not. Either way the pair leaves the queue, and no rule will merge a pair marked **Not the same**.",
             ],
+          },
+          {
+            title: "How to settle identity conflicts",
+            needs: "Reviewers, data stewards and admins.",
+            steps: [
+              "Select the **Identity conflicts** tab. Each paper is shown with its identifiers, the other paper involved, and why: a source record named identifiers both hold, or a source gave it an identifier the other already holds.",
+              "If the two are one paper, select **Same paper: merge**.",
+              "If they are different papers, select **Keep separate**: the paper is marked resolved, its identifiers where they are now.",
+              "To settle many: **Search** by title words, check the list, then select **Keep all N separate** under **Bulk action** and confirm. Merge any that are the same paper first.",
+            ],
+            note: "Every decision is recorded with who made it. A conflicted paper cannot enter a release until it is settled.",
           },
         ],
       },
@@ -678,7 +690,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             title: "How to use abstracts for papers that could not be fetched",
             needs: STEWARD,
             steps: [
-              "On **Collections**, open **Abstracts for papers without full text**. It says how many papers could use their abstract.",
+              "On **Collections**, open **Collection settings** › **Abstracts for papers without full text**. It says how many papers could use their abstract.",
               "Tick **Use abstracts in place of full texts that could not be fetched** and confirm. Their abstracts are turned into documents and parsed.",
               "Make a new release under **Releases**: it includes them, marked as abstracts.",
               "Later, after more fetches fail, select **Use abstracts for N more**.",
@@ -691,7 +703,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         id: "parse-quality",
         title: "Parse quality",
         about: [
-          "A parsed document that misses a quality limit is **degraded**: it is not extracted or released. Two limits decide most of them, and both are judgement calls about a collection: how many paragraphs may repeat (running heads, page furniture), and whether the reference list must come out separate from the main text. **Parse quality** on the Collections page lists why documents are degraded, shows each format's default (PDF and XML), and lets a steward set both. Every change is recorded with who made it.",
+          "A parsed document that misses a quality limit is **degraded**: it is not extracted or released. Two limits decide most of them, and both are judgement calls about a collection: how many paragraphs may repeat (running heads, page furniture), and whether the reference list must come out separate from the main text. **Parse quality**, under **Collection settings** on the Collections page, lists why documents are degraded, shows each format's default (PDF and XML), and lets a steward set both. Every change is recorded with who made it.",
           "New parses use the limits at once. Documents already degraded are checked again when you next press **Fetch included papers**, from what their parse measured, without parsing them again; one that now passes goes on to extraction. Tightening a limit never takes out a document already accepted.",
         ],
         howTos: [
@@ -720,7 +732,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             title: "How to import a folder of PDFs",
             needs: STEWARD,
             steps: [
-              "Under **Import many PDFs**, drop the files or choose them.",
+              "Under **Acquisition queue** › **Bulk action**, open **Import many PDFs at once**, and drop the files or choose them.",
               "Fill in the **Access basis** and an **Attestation** that applies to every file.",
               "Select **Check matches** to see what would happen. Nothing is stored yet.",
               "Select **Import**.",

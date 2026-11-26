@@ -12,7 +12,7 @@ import {
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
-import { Pager } from "@/components/ui/Pager";
+import { PageCount, Pager } from "@/components/ui/Pager";
 import { SortHeader } from "@/components/ui/table";
 import {
   Alert,
@@ -20,7 +20,6 @@ import {
   Empty,
   Field,
   Input,
-  Panel,
   StateChip,
   row,
   rowList,
@@ -63,6 +62,9 @@ const lines = (text: string) =>
     .filter(Boolean);
 
 /** A run can be frozen until it has been frozen, or has ended without results. */
+/** Scopes listed at a time: Next and Previous only, no rows menu. */
+const SCOPES_PER_PAGE = 15;
+
 const FREEZABLE = new Set(["planned", "running", "degraded"]);
 /** A run whose sources are still being searched. */
 const SEARCHING = new Set(["planned", "running"]);
@@ -98,6 +100,9 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
   // Two runs a page: a run's card is tall (every connector, with its counts), and
   // comparing a run with the one before it is what the list is read for.
   const runPager = usePager(2);
+  // Scopes come whole from the server: they are paged here, a fixed 15 at a time.
+  const scopePager = usePager(SCOPES_PER_PAGE);
+  const scopeOffset = Number(scopePager.cursor ?? 0);
   const [gates, setGates] = useState<Record<string, ScopeGateReport>>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -189,9 +194,13 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
         </Alert>
       ) : null}
 
-      <Panel
+      <CollapsiblePanel
         title="Scopes"
+        storageKey="collections.scopes"
         flush
+        count={
+          <PageCount pager={scopePager} shown={Math.min(SCOPES_PER_PAGE, Math.max(0, scopes.length - scopeOffset))} total={scopes.length} label="scopes" />
+        }
         aside={
           <Button
             variant="ghost"
@@ -227,7 +236,7 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
           </div>
         ) : (
           <ul className={rowList}>
-            {scopes.map((scope) => {
+            {scopes.slice(scopeOffset, scopeOffset + SCOPES_PER_PAGE).map((scope) => {
               const report = gates[scope.id];
               const approved = scope.approval_state === "approved";
               const editable = !approved && scope.approval_state !== "retired";
@@ -400,7 +409,14 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
             })}
           </ul>
         )}
-      </Panel>
+        <Pager
+          pager={scopePager}
+          shown={Math.min(SCOPES_PER_PAGE, Math.max(0, scopes.length - scopeOffset))}
+          total={scopes.length}
+          nextCursor={scopeOffset + SCOPES_PER_PAGE < scopes.length ? String(scopeOffset + SCOPES_PER_PAGE) : null}
+          label="scopes"
+        />
+      </CollapsiblePanel>
 
       <CollapsiblePanel
         title="Discovery runs"

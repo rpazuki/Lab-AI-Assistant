@@ -11,6 +11,7 @@ import { ParseQuality } from "@/components/ParseQuality";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { PageCount, Pager } from "@/components/ui/Pager";
+import { PanelSection } from "@/components/ui/PanelSection";
 import {
   Alert,
   Button,
@@ -113,6 +114,10 @@ export function CollectionsClient() {
   const [plans, setPlans] = useState<Page<AcquisitionPlan>>(EMPTY_PAGE);
   const [planCounts, setPlanCounts] = useState<Record<string, number>>({});
   const [planStatus, setPlanStatus] = useState("");
+  // The words on screen, and those the list was asked for.
+  const [planDraft, setPlanDraft] = useState("");
+  const [planQuery, setPlanQuery] = useState("");
+  const [planOutcome, setPlanOutcome] = useState("");
   const planPager = usePager();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -125,6 +130,8 @@ export function CollectionsClient() {
         after: planPager.cursor,
         limit: planPager.pageSize,
         status: planStatus,
+        q: planQuery || undefined,
+        outcome: planOutcome || undefined,
       });
       setPlans(nextPlans);
       setPlanCounts(nextPlans.status_counts);
@@ -132,7 +139,7 @@ export function CollectionsClient() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "collections could not be loaded");
     }
-  }, [planPager.cursor, planPager.pageSize, planStatus]);
+  }, [planPager.cursor, planPager.pageSize, planStatus, planQuery, planOutcome]);
 
   const fetching = Object.entries(planCounts).some(
     ([status, count]) => FETCHING.has(status) && count > 0,
@@ -179,54 +186,131 @@ export function CollectionsClient() {
             </Alert>
           </div>
         ) : null}
-        <div className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-2.5">
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={queuing}
-            onClick={async () => {
-              setQueuing(true);
-              setNotice(null);
-              try {
-                const sweep = await fetchIncluded();
-                setError(null);
-                setNotice(
-                  "Queued. Every waiting fetch and every degraded document is being read " +
-                    "again, which takes a few minutes on a corpus this size. It carries on " +
-                    "whether or not you stay on this page.",
-                );
-                setNotice(await watchSweep(sweep.task_id));
-              } catch (caught) {
-                setError(caught instanceof Error ? caught.message : "fetching was not queued");
-              } finally {
-                setQueuing(false);
-              }
-              live.kick();
-            }}
-          >
-            Fetch included papers
-          </Button>
-          <span className="max-w-xl text-xs text-muted">
-            Plans included papers that have no plan, tries again the fetches that failed on a fault
-            or that no source answered, checks files again that an older identity rule could not tie
-            to their paper, gives the open routes to upload-only papers that discovery now records
-            an open licence for, and checks degraded documents against the parse limits below. Pressing it
-            again does nothing twice: a planned paper is not planned again, and a paper every source
-            already answered stays with a person.
-          </span>
-          <StatusFilter
-            label="Status"
-            kind="acquisition"
-            value={planStatus}
-            onChange={(value) => {
-              setPlanStatus(value);
+        <PanelSection title="Search" hint="Narrows the plans below.">
+          <form
+            className="flex flex-wrap items-end gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setPlanQuery(planDraft.trim());
               planPager.reset();
             }}
-          />
-        </div>
+          >
+            <label className="space-y-1 text-xs text-muted">
+              <span className="block">Title or identifier has</span>
+              <Input
+                aria-label="Title or identifier has"
+                placeholder="sterol, 10.1038/…"
+                value={planDraft}
+                onChange={(event) => setPlanDraft(event.target.value)}
+              />
+            </label>
+            <StatusFilter
+              label="Status"
+              kind="acquisition"
+              value={planStatus}
+              onChange={(value) => {
+                setPlanStatus(value);
+                planPager.reset();
+              }}
+            />
+            <label className="flex items-center gap-2 text-sm text-muted">
+              Last answer
+              <select
+                aria-label="Filter plans by the last answer"
+                className="rounded-control border border-border-strong bg-surface px-2 py-1.5 text-sm text-ink"
+                value={planOutcome}
+                onChange={(event) => {
+                  setPlanOutcome(event.target.value);
+                  planPager.reset();
+                }}
+              >
+                <option value="">Any</option>
+                <option value="none">Never tried (upload only)</option>
+                {Object.keys(statusGroup("acquisition_outcome").values)
+                  .filter((outcome) => outcome !== "pending")
+                  .map((outcome) => (
+                    <option key={outcome} value={outcome}>
+                      {outcome.replace(/_/g, " ")}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <Button type="submit" size="sm">
+              Search
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setPlanDraft("");
+                setPlanQuery("");
+                setPlanStatus("");
+                setPlanOutcome("");
+                planPager.reset();
+              }}
+            >
+              Clear
+            </Button>
+          </form>
+        </PanelSection>
+
+        <PanelSection title="Bulk action" hint="Fetch what can be fetched, and upload many files at once.">
+          <div className="flex flex-wrap items-center gap-4">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={queuing}
+              onClick={async () => {
+                setQueuing(true);
+                setNotice(null);
+                try {
+                  const sweep = await fetchIncluded();
+                  setError(null);
+                  setNotice(
+                    "Queued. Every waiting fetch and every degraded document is being read " +
+                      "again, which takes a few minutes on a corpus this size. It carries on " +
+                      "whether or not you stay on this page.",
+                  );
+                  setNotice(await watchSweep(sweep.task_id));
+                } catch (caught) {
+                  setError(caught instanceof Error ? caught.message : "fetching was not queued");
+                } finally {
+                  setQueuing(false);
+                }
+                live.kick();
+              }}
+            >
+              Fetch included papers
+            </Button>
+            <span className="max-w-xl text-xs text-muted">
+              Plans included papers that have no plan, tries again the fetches that failed on a fault
+              or that no source answered, checks files again that an older identity rule could not tie
+              to their paper, gives the open routes to upload-only papers that discovery now records
+              an open licence for, and checks degraded documents against the parse limits below. Pressing it
+              again does nothing twice: a planned paper is not planned again, and a paper every source
+              already answered stays with a person.
+            </span>
+          </div>
+          <details>
+            <summary className="cursor-pointer text-sm text-ink">Import many PDFs at once</summary>
+            <div className="mt-2 rounded-control border border-border bg-surface">
+              <BulkImport
+                embedded
+                // The plans shown below: search the queue to choose from others.
+                waiting={plans.items.filter(
+                  (plan) => plan.status === "assisted" || plan.status === "failed" || plan.status === "partial",
+                )}
+                onImported={() => live.kick()}
+              />
+            </div>
+          </details>
+        </PanelSection>
         {plans.items.length === 0 ? (
           <div className="px-5 py-3">
-            <Empty>{planStatus ? "No plans have this status." : "No acquisition plans yet."}</Empty>
+            <Empty>
+              {planStatus || planQuery || planOutcome ? "No plan matches this search." : "No acquisition plans yet."}
+            </Empty>
           </div>
         ) : null}
         <ul className={`${rowList} text-sm`}>
@@ -336,17 +420,10 @@ export function CollectionsClient() {
         />
       </CollapsiblePanel>
 
-      <ParseQuality refreshKey={notice} />
-
-      <AbstractFallback onChanged={() => live.kick()} />
-
-      <BulkImport
-        // The plans on the page above: filter the queue by status to choose from more.
-        waiting={plans.items.filter(
-          (plan) => plan.status === "assisted" || plan.status === "failed" || plan.status === "partial",
-        )}
-        onImported={() => live.kick()}
-      />
+      <CollapsiblePanel title="Collection settings" storageKey="collections.settings" flush>
+        <ParseQuality embedded refreshKey={notice} />
+        <AbstractFallback embedded onChanged={() => live.kick()} />
+      </CollapsiblePanel>
 
     </div>
   );

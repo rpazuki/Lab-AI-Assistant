@@ -11,6 +11,7 @@
 
 import type {
   AbstractFallback,
+  IdentityConflict,
   AcquisitionPlan,
   Allowance,
   AnswerReview,
@@ -429,13 +430,53 @@ export const bulkRelevance = (
   });
 
 /** How many works are in conflict, and one page of open duplicate pairs, most similar first. */
-export const listConflicts = (options: PageRequest & { min_similarity?: number | null } = {}) =>
-  request<{
+/** Which open duplicate pairs to show, and a merge rule to act on. */
+export interface PairSearch {
+  /** Words that must all appear in either paper's title. */
+  q?: string;
+  min_similarity?: number | null;
+  /** true: published the same year; false: different years. */
+  same_year?: boolean | null;
+  /** First authors agree, or differ. */
+  authors?: "agree" | "differ" | null;
+}
+
+function pairQuery(search: PairSearch): Record<string, string | number | null | undefined> {
+  return {
+    q: search.q,
+    min_similarity: search.min_similarity,
+    same_year: search.same_year === null || search.same_year === undefined ? null : String(search.same_year),
+    authors: search.authors,
+  };
+}
+
+export const listConflicts = (options: PageRequest & PairSearch = {}) => {
+  const { after, limit, ...search } = options;
+  return request<{
     conflict_total: number;
     proposal_total: number;
     next_cursor: string | null;
     duplicate_proposals: DuplicateProposal[];
-  }>(`/candidates/conflicts${queryString({ ...options })}`);
+  }>(`/candidates/conflicts${queryString({ after, limit, ...pairQuery(search) })}`);
+};
+
+/** Papers in conflict, each with the other paper(s) involved and why. */
+export const listIdentityConflicts = (options: PageRequest & { q?: string } = {}) =>
+  request<Page<IdentityConflict>>(`/identity-conflicts${queryString({ ...options })}`);
+
+/** Different papers: this one is resolved, its identifiers stay where they are. */
+export const keepConflictSeparate = (workId: string) =>
+  request<{ work_id: string; identity_status: string }>(
+    `/identity-conflicts/${workId}/keep-separate`,
+    { method: "POST" },
+  );
+
+/** Keep up to 200 of the conflicts the search finds separate; repeat until none remain. */
+export const keepConflictsSeparate = (q?: string) =>
+  request<{ resolved: number; remaining: number }>(
+    `/identity-conflicts/keep-separate${queryString({ q })}`,
+    { method: "POST" },
+  );
 
 /** Merge one open pair; the paper with more identifiers is kept. */
 export const mergeDuplicate = (pairId: string) =>
@@ -449,8 +490,8 @@ export const dismissDuplicate = (pairId: string) =>
   request<{ id: string; status: string }>(`/duplicates/${pairId}/dismiss`, { method: "POST" });
 
 /** What a merge rule would merge now, and why it skips the rest. Changes nothing. */
-export const previewMergeRule = (rule: MergeRule) =>
-  request<MergePlan>("/duplicates/merge-rule/preview", {
+export const previewMergeRule = (rule: MergeRule, search: PairSearch = {}) =>
+  request<MergePlan>(`/duplicates/merge-rule/preview${queryString(pairQuery(search))}`, {
     method: "POST",
     body: JSON.stringify(rule),
   });
@@ -459,13 +500,17 @@ export const previewMergeRule = (rule: MergeRule) =>
  * Merge up to 200 groups the rule accepts; repeat until `remaining_groups` is 0,
  * passing back the `step_id` the first call returned so the history shows one step.
  */
-export const applyMergeRule = (rule: MergeRule, stepId: string | null = null) =>
+export const applyMergeRule = (
+  rule: MergeRule,
+  stepId: string | null = null,
+  search: PairSearch = {},
+) =>
   request<{
     groups_merged: number;
     works_merged: number;
     remaining_groups: number;
     step_id?: string;
-  }>(`/duplicates/merge-rule/apply${queryString({ step_id: stepId })}`, {
+  }>(`/duplicates/merge-rule/apply${queryString({ step_id: stepId, ...pairQuery(search) })}`, {
     method: "POST",
     body: JSON.stringify(rule),
   });
@@ -643,7 +688,15 @@ export const fetchSweep = (taskId: string) =>
   request<TaskWatch<FetchSweepCounts>>(`/acquisition-plans/fetch-included/${taskId}`);
 
 /** One page of acquisition plans, and how many plans are in each status. */
-export const listPlans = (options: PageRequest & { status?: string } = {}) =>
+export const listPlans = (
+  options: PageRequest & {
+    status?: string;
+    /** Words each in the paper's title or one of its identifiers (a DOI). */
+    q?: string;
+    /** The latest attempt's outcome; "none" for never tried. */
+    outcome?: string;
+  } = {},
+) =>
   request<Page<AcquisitionPlan> & { status_counts: Record<string, number> }>(
     `/acquisition-plans${queryString({ ...options })}`,
   );

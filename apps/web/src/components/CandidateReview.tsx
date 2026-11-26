@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { PageCount, Pager } from "@/components/ui/Pager";
+import { PanelSection } from "@/components/ui/PanelSection";
 import { Alert, Button, Empty, Input, StateChip, row, rowList } from "@/components/ui/primitives";
 import { bulkRelevance, candidateFacets, listCandidates, setRelevance } from "@/lib/api";
 import { languageName } from "@/lib/languages";
@@ -157,8 +158,9 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
       count={<PageCount pager={pager} shown={page.items.length} total={page.total} label="candidates" />}
       aside={<LiveStatus {...live} />}
     >
+      <PanelSection title="Search" hint="Narrows the candidates below. The bulk action acts on exactly what it finds.">
       <form
-        className="space-y-3 border-b border-border px-5 py-3"
+        className="space-y-3"
         onSubmit={(event) => {
           event.preventDefault();
           apply(draft);
@@ -354,8 +356,10 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
           </span>
         </div>
       </form>
+      </PanelSection>
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-subtle px-5 py-2.5 text-sm">
+      <PanelSection title="Bulk action" hint="Decide every candidate the search found at once.">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="text-ink">
           {page.total.toLocaleString()} match{page.total === 1 ? "es" : ""}
           {active(filters) ? " these filters" : ""}. With all of them:
@@ -380,6 +384,7 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
           Leave candidates already decided as they are
         </label>
       </div>
+      </PanelSection>
 
       {busy ? (
         <p className="px-5 py-2 text-sm text-muted" aria-live="polite">

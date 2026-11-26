@@ -85,3 +85,62 @@ export function CollapsiblePanel({
     </section>
   );
 }
+
+/**
+ * A panel's content shown inside another panel: the same title, count and body,
+ * under a sub-header instead of its own folding box. Used where related panels
+ * are gathered in one (Collection settings), so the outer box reads as a group.
+ */
+export function SubPanel({
+  title,
+  count,
+  flush = false,
+  children,
+}: {
+  title: string;
+  count?: ReactNode;
+  flush?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <section aria-label={title} className="border-b border-border last:border-b-0">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 pb-1 pt-4">
+        <h3 className="text-sm font-semibold text-heading">{title}</h3>
+        {count}
+      </header>
+      <div className={flush ? "" : "px-5 pb-5 pt-2"}>{children}</div>
+    </section>
+  );
+}
+
+/** A panel's own folding box, or a sub-panel when it is shown inside another. */
+export function PanelFrame({
+  embedded,
+  title,
+  storageKey,
+  count,
+  aside,
+  flush,
+  children,
+}: {
+  embedded?: boolean;
+  title: string;
+  storageKey: string;
+  count?: ReactNode;
+  aside?: ReactNode;
+  flush?: boolean;
+  children: ReactNode;
+}) {
+  if (embedded) {
+    return (
+      <SubPanel title={title} count={count} flush={flush}>
+        {children}
+      </SubPanel>
+    );
+  }
+  return (
+    <CollapsiblePanel title={title} storageKey={storageKey} count={count} aside={aside} flush={flush}>
+      {children}
+    </CollapsiblePanel>
+  );
+}

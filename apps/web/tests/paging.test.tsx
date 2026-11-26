@@ -293,3 +293,36 @@ describe("Filtering candidates by language and by the abstract", () => {
     );
   });
 });
+
+
+describe("The Collections page groups its settings and searches its queue", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    vi.mocked(api.listCandidates).mockResolvedValue({ items: [], next_cursor: null, total: 0 });
+    vi.mocked(api.listPlans).mockResolvedValue({ items: [], next_cursor: null, total: 0, status_counts: {} });
+  });
+
+  it("holds parse quality and the abstracts in one Collection settings box", async () => {
+    render(<CollectionsClient />);
+    expect(await screen.findByRole("heading", { name: "Collection settings" })).toBeInTheDocument();
+    const settings = screen.getByRole("heading", { name: "Collection settings" }).closest("section")!;
+    expect(within(settings).getByRole("region", { name: "Parse quality" })).toBeInTheDocument();
+    expect(within(settings).getByRole("region", { name: "Abstracts for papers without full text" })).toBeInTheDocument();
+  });
+
+  it("searches the acquisition queue by title or identifier and by the last answer", async () => {
+    const user = userEvent.setup();
+    render(<CollectionsClient />);
+    await user.type(await screen.findByLabelText("Title or identifier has"), "10.1038");
+    const queue = screen.getByLabelText("Title or identifier has").closest("form")!;
+    await user.click(within(queue).getByRole("button", { name: "Search" }));
+    await waitFor(() =>
+      expect(api.listPlans).toHaveBeenLastCalledWith(expect.objectContaining({ q: "10.1038" })),
+    );
+    await user.selectOptions(screen.getByLabelText("Filter plans by the last answer"), "none");
+    await waitFor(() =>
+      expect(api.listPlans).toHaveBeenLastCalledWith(expect.objectContaining({ q: "10.1038", outcome: "none" })),
+    );
+  });
+});

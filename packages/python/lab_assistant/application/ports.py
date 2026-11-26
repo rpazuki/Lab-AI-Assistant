@@ -799,11 +799,28 @@ class AssetRepository(Protocol):
         status: str | None = None,
         limit: int | None = None,
         after_id: UUID | None = None,
+        words: tuple[str, ...] = (),
+        outcome: str | None = None,
     ) -> list[AcquisitionPlan]:
-        """Plans, oldest first; with ``limit``, a keyset page ordered by id."""
+        """Plans, oldest first; with ``limit``, a keyset page ordered by id.
+
+        ``words`` must each appear in the paper's title or one of its identifiers;
+        ``outcome`` is the latest attempt's outcome, ``none`` for never tried.
+        """
         ...
 
     async def count_plans_by_status(self, workspace_id: UUID) -> dict[str, int]: ...
+    async def count_plans(
+        self,
+        workspace_id: UUID,
+        *,
+        status: str | None = None,
+        words: tuple[str, ...] = (),
+        outcome: str | None = None,
+    ) -> int:
+        """How many plans ``list_plans`` would return for the same filter."""
+        ...
+
     async def latest_outcomes(self, workspace_id: UUID, *, status: str) -> dict[str, int]:
         """Plans in ``status`` by their latest attempt's outcome; ``none`` when never tried."""
         ...

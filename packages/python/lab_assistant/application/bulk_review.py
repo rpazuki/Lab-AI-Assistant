@@ -42,6 +42,7 @@ from lab_assistant.domain.review import (
     DuplicateCandidate,
     DuplicateStatus,
     MergeRule,
+    PairFilter,
     ReviewStepKind,
     WorkSummary,
 )
@@ -239,8 +240,24 @@ class BulkReviewService:
         min_similarity: float | None,
         limit: int,
         after: tuple[float, UUID] | None,
+        search: PairFilter | None = None,
     ) -> tuple[list[DuplicateCandidate], int, dict[UUID, WorkSummary]]:
-        """One page of open pairs, most similar first, with both papers' summaries."""
+        """One page of open pairs, most similar first, with both papers' summaries.
+
+        With a ``search`` that says more than a similarity, every open pair is read
+        and narrowed here (titles live in the summaries); otherwise the database
+        pages them.
+        """
+        if search is not None and search.narrows:
+            rows = await self._searched_pairs(actor, search, min_similarity)
+            total = len(rows)
+            if after is not None:
+                rows = [r for r in rows if (-r.similarity, str(r.id)) > (-after[0], str(after[1]))]
+            page = rows[:limit]
+            async with self._context.uow_factory() as uow:
+                ids = {w for row in page for w in (row.left_work_id, row.right_work_id)}
+                summaries = await uow.works.get_summaries(actor.workspace_id, list(ids))
+            return page, total, summaries
         async with self._context.uow_factory() as uow:
             rows = await uow.works.list_duplicate_candidates(
                 actor.workspace_id,
@@ -333,12 +350,38 @@ class BulkReviewService:
         return row
 
     # ── bulk merge ──────────────────────────────────────────────────────────
-    async def plan_merge(self, actor: ActorContext, rule: MergeRule) -> MergePlan:
-        """Which open pairs the rule merges, as groups, and why it skips the others."""
+    async def _searched_pairs(
+        self, actor: ActorContext, search: PairFilter, min_similarity: float | None = None
+    ) -> list[DuplicateCandidate]:
+        """Every open pair the search keeps, most similar first."""
+        floor = max(
+            (v for v in (min_similarity, search.min_similarity) if v is not None), default=None
+        )
         async with self._context.uow_factory() as uow:
             rows = await uow.works.list_duplicate_candidates(
-                actor.workspace_id, status=DuplicateStatus.OPEN.value
+                actor.workspace_id, status=DuplicateStatus.OPEN.value, min_similarity=floor
             )
+            ids = {w for row in rows for w in (row.left_work_id, row.right_work_id)}
+            summaries = await uow.works.get_summaries(actor.workspace_id, list(ids))
+        kept = [row for row in rows if search.matches(row, summaries)]
+        return sorted(kept, key=lambda r: (-r.similarity, str(r.id)))
+
+    async def plan_merge(
+        self, actor: ActorContext, rule: MergeRule, *, search: PairFilter | None = None
+    ) -> MergePlan:
+        """Which open pairs the rule merges, as groups, and why it skips the others.
+
+        With a ``search``, only the pairs it finds are considered: a rule acts on
+        what the queue shows.
+        """
+        if search is not None and (search.narrows or search.min_similarity is not None):
+            rows = await self._searched_pairs(actor, search)
+        else:
+            async with self._context.uow_factory() as uow:
+                rows = await uow.works.list_duplicate_candidates(
+                    actor.workspace_id, status=DuplicateStatus.OPEN.value
+                )
+        async with self._context.uow_factory() as uow:
             works = {
                 w.id: w
                 for w in await collect_pages(
@@ -395,11 +438,16 @@ class BulkReviewService:
         return plan
 
     async def apply_merge(
-        self, actor: ActorContext, rule: MergeRule, *, step_id: UUID | None = None
+        self,
+        actor: ActorContext,
+        rule: MergeRule,
+        *,
+        step_id: UUID | None = None,
+        search: PairFilter | None = None,
     ) -> dict[str, Any]:
         """Merge up to ``MERGE_CHUNK`` groups the rule accepts; report what is left."""
         self._require(actor)
-        plan = await self.plan_merge(actor, rule)
+        plan = await self.plan_merge(actor, rule, search=search)
         context = self._context
         chosen = plan.groups[:MERGE_CHUNK]
         merged = 0

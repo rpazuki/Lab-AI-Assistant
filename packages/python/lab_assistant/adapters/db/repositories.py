@@ -51,6 +51,7 @@ from lab_assistant.domain.identity import (
     Work,
     WorkIdentifier,
     WorkRelation,
+    normalise_title,
 )
 from lab_assistant.domain.language import UNKNOWN_LANGUAGE
 from lab_assistant.domain.objects import ObjectRecord
@@ -1531,6 +1532,87 @@ class _Assets(_Base):
             PLANS, self._scope(PLANS, workspace_id), t.acquisition_plans.c.id == plan_id
         )
 
+    def _plan_conditions(
+        self,
+        workspace_id: UUID,
+        status: str | None,
+        words: tuple[str, ...],
+        outcome: str | None,
+    ) -> list[Any]:
+        p = t.acquisition_plans
+        conditions: list[Any] = [self._scope(PLANS, workspace_id)]
+        if status is not None:
+            conditions.append(p.c.status == status)
+        s, i = t.work_summaries, t.work_identifiers
+        for word in words:
+            title_word = normalise_title(word)
+            either = [
+                p.c.work_id.in_(
+                    select(i.c.work_id).where(
+                        i.c.workspace_id == workspace_id,
+                        func.lower(i.c.value_normalized).like(
+                            _contains(word.casefold()), escape="\\"
+                        ),
+                    )
+                )
+            ]
+            if title_word:
+                either.append(
+                    p.c.work_id.in_(
+                        select(s.c.work_id).where(
+                            s.c.workspace_id == workspace_id,
+                            s.c.title_search.like(_contains(title_word), escape="\\"),
+                        )
+                    )
+                )
+            conditions.append(or_(*either))
+        if outcome is not None:
+            a = t.acquisition_attempts
+            if outcome == "none":
+                conditions.append(
+                    p.c.id.not_in(
+                        select(a.c.acquisition_plan_id).where(a.c.workspace_id == workspace_id)
+                    )
+                )
+            else:
+                ranked = (
+                    select(
+                        a.c.acquisition_plan_id.label("plan_id"),
+                        a.c.outcome.label("outcome"),
+                        func.row_number()
+                        .over(
+                            partition_by=a.c.acquisition_plan_id,
+                            order_by=(a.c.requested_at.desc(), a.c.attempt_number.desc()),
+                        )
+                        .label("rank"),
+                    )
+                    .where(a.c.workspace_id == workspace_id)
+                    .subquery()
+                )
+                conditions.append(
+                    p.c.id.in_(
+                        select(ranked.c.plan_id).where(
+                            ranked.c.rank == 1, ranked.c.outcome == outcome
+                        )
+                    )
+                )
+        return conditions
+
+    async def count_plans(
+        self,
+        workspace_id: UUID,
+        *,
+        status: str | None = None,
+        words: tuple[str, ...] = (),
+        outcome: str | None = None,
+    ) -> int:
+        result = await self._c.execute(
+            select(func.count())
+            .select_from(t.acquisition_plans)
+            .where(*self._plan_conditions(workspace_id, status, words, outcome))
+        )
+        return int(result.scalar() or 0)
+
     async def list_plans(
         self,
         workspace_id: UUID,
@@ -1538,10 +1620,10 @@ class _Assets(_Base):
         status: str | None = None,
         limit: int | None = None,
         after_id: UUID | None = None,
+        words: tuple[str, ...] = (),
+        outcome: str | None = None,
     ) -> list[AcquisitionPlan]:
-        conditions = [self._scope(PLANS, workspace_id)]
-        if status is not None:
-            conditions.append(t.acquisition_plans.c.status == status)
+        conditions = self._plan_conditions(workspace_id, status, words, outcome)
         if limit is None and after_id is None:
             return await self._many(PLANS, *conditions, order=t.acquisition_plans.c.created_at)
         if after_id is not None:

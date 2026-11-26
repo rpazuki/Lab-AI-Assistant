@@ -15,6 +15,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
     dismissDuplicate: vi.fn(async () => ({ id: "p1", status: "dismissed" })),
     previewMergeRule: vi.fn(),
     applyMergeRule: vi.fn(),
+    listIdentityConflicts: vi.fn(async () => ({ items: [], next_cursor: null, total: 0 })),
+    keepConflictSeparate: vi.fn(async () => ({ work_id: "c1", identity_status: "resolved" })),
+    keepConflictsSeparate: vi.fn(async () => ({ resolved: 2, remaining: 0 })),
+    mergeWorks: vi.fn(async () => ({ decision_id: "d2", after: {} })),
     listCandidates: vi.fn(async () => ({ items: [], next_cursor: null, total: 240 })),
     candidateFacets: vi.fn(async () => ({
       kinds: { article: 200, dataset: 40 },
@@ -101,7 +105,7 @@ describe("Duplicate review", () => {
     await screen.findByText("Lipid production in Yarrowia");
 
     await user.click(screen.getByRole("button", { name: "Preview" }));
-    expect(api.previewMergeRule).toHaveBeenCalledWith(DEFAULT_RULE);
+    expect(api.previewMergeRule).toHaveBeenCalledWith(DEFAULT_RULE, {});
     expect(await screen.findByText(/each has its own DOI/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Merge 1,900 papers" }));
@@ -176,5 +180,80 @@ describe("Candidate review", () => {
     render(<CandidateReview live={false} />);
     await user.click(await screen.findByRole("button", { name: "Include all" }));
     expect(api.bulkRelevance).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("Searching and settling duplicates and conflicts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    vi.mocked(api.listConflicts).mockResolvedValue({
+      conflict_total: 2,
+      proposal_total: 1,
+      next_cursor: null,
+      duplicate_proposals: [pair],
+    });
+  });
+
+  it("searches pairs by title words, and the rule previews the same search", async () => {
+    vi.mocked(api.previewMergeRule).mockResolvedValue({
+      considered: 1,
+      accepted_pairs: 1,
+      groups: 1,
+      works_merged: 1,
+      skipped: [],
+      sample_groups: [],
+    });
+    const user = userEvent.setup();
+    render(<DuplicateReview live={false} />);
+    await user.type(await screen.findByLabelText("Either title has all of"), "yarrowia");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() =>
+      expect(api.listConflicts).toHaveBeenLastCalledWith(expect.objectContaining({ q: "yarrowia" })),
+    );
+    await user.click(screen.getByRole("button", { name: "Preview" }));
+    expect(api.previewMergeRule).toHaveBeenCalledWith(DEFAULT_RULE, expect.objectContaining({ q: "yarrowia" }));
+  });
+
+  it("lists each conflict with the other paper, and keeps one or all separate", async () => {
+    vi.mocked(api.listIdentityConflicts).mockResolvedValue({
+      items: [
+        {
+          ...paper("c1", "Microbial fatty acid specificity"),
+          identifiers: [{ scheme: "doi", value: "10.1007/bf02898718" }],
+          with: [
+            {
+              ...paper("c2", "Microbial fatty acid specificity"),
+              reason: "two_papers_matched_one_record",
+              identifier: null,
+            },
+          ],
+        },
+      ],
+      next_cursor: null,
+      total: 2,
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<DuplicateReview live={false} />);
+    await user.click(await screen.findByRole("tab", { name: "Identity conflicts (2)" }));
+
+    expect(await screen.findByText("DOI 10.1007/bf02898718")).toBeInTheDocument();
+    expect(screen.getByText(/could not be merged automatically/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Same paper: merge" }));
+    expect(api.mergeWorks).toHaveBeenCalledWith("c1", "c2", "steward_same_paper");
+
+    await user.click(screen.getByRole("button", { name: "Keep separate" }));
+    expect(api.keepConflictSeparate).toHaveBeenCalledWith("c1");
+
+    await user.type(screen.getByLabelText("Conflict title has all of"), "fatty");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() =>
+      expect(api.listIdentityConflicts).toHaveBeenLastCalledWith(expect.objectContaining({ q: "fatty" })),
+    );
+    await user.click(screen.getByRole("button", { name: "Keep all 2 separate" }));
+    expect(api.keepConflictsSeparate).toHaveBeenCalledWith("fatty");
+    expect(await screen.findByText("2 papers kept separate.")).toBeInTheDocument();
   });
 });

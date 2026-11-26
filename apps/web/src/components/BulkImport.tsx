@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { PanelFrame } from "@/components/ui/CollapsiblePanel";
 import { Alert, Button, Field, Input, StateChip } from "@/components/ui/primitives";
 import { SortHeader, TableSearch } from "@/components/ui/table";
 import { assistedUpload, bulkImport, type BulkImportItem } from "@/lib/api";
@@ -24,9 +24,12 @@ const BATCH = 200;
 export function BulkImport({
   waiting,
   onImported,
+  embedded = false,
 }: {
   waiting: AcquisitionPlan[];
   onImported: () => void;
+  /** Shown inside the acquisition queue's bulk action rather than as its own panel. */
+  embedded?: boolean;
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [accessBasis, setAccessBasis] = useState("institutional_subscription_copy");
@@ -114,7 +117,8 @@ export function BulkImport({
   }, {});
 
   return (
-    <CollapsiblePanel title="Import many PDFs" storageKey="collections.import">
+    <PanelFrame
+      embedded={embedded} title="Import many PDFs" storageKey="collections.import">
       <div className="space-y-4">
         <label
           onDragOver={(event) => {
@@ -242,6 +246,6 @@ export function BulkImport({
           </div>
         ) : null}
       </div>
-    </CollapsiblePanel>
+    </PanelFrame>
   );
 }

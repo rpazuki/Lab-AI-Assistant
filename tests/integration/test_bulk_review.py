@@ -431,3 +431,86 @@ class TestQueue:
                 break
             after = (rows[-1].similarity, rows[-1].id)
         assert seen == [1.0, 0.95, 0.9]
+
+
+class TestSearchingPairs:
+    """The queue shows, and a merge rule acts on, the pairs the search finds."""
+
+    async def test_by_title_words_year_and_authors(self, lab) -> None:
+        from lab_assistant.domain.review import PairFilter
+
+        yeast = await lab.paper("Lipids of oleaginous yeast")
+        yeast2 = await lab.paper("Lipids of oleaginous yeast")
+        corn = await lab.paper("Corn ethanol economics")
+        corn2 = await lab.paper("Corn ethanol economics")
+        await lab.pair(yeast, yeast2, similarity=1.0, year_gap=0, authors=True)
+        await lab.pair(corn, corn2, similarity=0.95, year_gap=3, authors=False)
+
+        async def found(**search: Any) -> list[float]:
+            rows, total, _ = await lab.service.duplicate_queue(
+                lab.actor, min_similarity=None, limit=50, after=None, search=PairFilter(**search)
+            )
+            assert total == len(rows)
+            return [row.similarity for row in rows]
+
+        assert await found(words=["oleaginous"]) == [1.0]
+        assert await found(same_year=False) == [0.95]
+        assert await found(authors="agree") == [1.0]
+        assert await found(words=["ethanol"], authors="agree") == []
+
+        plan = await lab.service.plan_merge(
+            lab.actor, MergeRule(min_similarity=0.9), search=PairFilter(words=["corn"])
+        )
+        assert plan.considered == 1
+
+
+class TestIdentityConflicts:
+    async def conflict(self, lab) -> tuple[UUID, UUID]:
+        """Two papers a record matched, whose merge was refused."""
+        from lab_assistant.domain.identity import IdentityDecision, IdentityDecisionType
+
+        left = await lab.paper("Microbial fatty acid specificity", doi="10.1007/bf02898718")
+        right = await lab.paper("Microbial fatty acid specificity", doi="10.1007/other")
+        context = lab.harness.context
+        async with context.uow_factory() as uow:
+            for work_id in (left, right):
+                work = await uow.works.get(lab.ws, work_id)
+                work.identity_status = IdentityState.CONFLICT
+                await uow.works.update(work)
+            await uow.works.add_decision(
+                IdentityDecision(
+                    id=context.new_id(),
+                    workspace_id=lab.ws,
+                    decision_type=IdentityDecisionType.REOPEN,
+                    subject_work_ids=(left, right),
+                    reason_code="different_dois",
+                    decided_by_type="automatic_rule",
+                    decided_at=context.now(),
+                )
+            )
+            await uow.commit()
+        return left, right
+
+    async def test_listed_with_the_other_paper_and_kept_separate(self, lab) -> None:
+        from lab_assistant.application.identity_conflicts import IdentityConflictService
+
+        left, right = await self.conflict(lab)
+        await lab.paper("An unrelated paper")
+        service = IdentityConflictService(lab.harness.context)
+
+        page = await service.page(lab.actor)
+        assert page["total"] == 2
+        row = next(item for item in page["items"] if item["work_id"] == str(left))
+        assert row["identifiers"] == [{"scheme": "doi", "value": "10.1007/bf02898718"}]
+        [other] = row["with"]
+        assert other["work_id"] == str(right)
+        assert other["reason"] == "two_papers_matched_one_record"
+        assert (await service.page(lab.actor, words=("unrelated",)))["total"] == 0
+
+        await service.keep_separate(lab.actor, left)
+        assert (await lab.work(left)).identity_status is IdentityState.RESOLVED
+        assert (await service.page(lab.actor))["total"] == 1
+
+        done = await service.keep_all_separate(lab.actor, words=("fatty",))
+        assert done == {"resolved": 1, "remaining": 0}
+        assert (await lab.work(right)).identity_status is IdentityState.RESOLVED

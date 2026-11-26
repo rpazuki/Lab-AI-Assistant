@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
+import { PanelFrame } from "@/components/ui/CollapsiblePanel";
 import { Alert, Button } from "@/components/ui/primitives";
 import { buildAbstractDocuments, getAbstractFallback, setAbstractFallback } from "@/lib/api";
 import { utcWhen } from "@/lib/when";
@@ -19,7 +19,14 @@ const n = (value: number) => value.toLocaleString();
  * no file becomes **partial**: its abstract is in the next release, and Ask
  * marks every source that is an abstract. An upload later replaces it.
  */
-export function AbstractFallback({ onChanged }: { onChanged?: () => void }) {
+export function AbstractFallback({
+  onChanged,
+  embedded = false,
+}: {
+  onChanged?: () => void;
+  /** Shown inside Collection settings rather than as its own panel. */
+  embedded?: boolean;
+}) {
   const [view, setView] = useState<Fallback | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +94,8 @@ export function AbstractFallback({ onChanged }: { onChanged?: () => void }) {
   }
 
   return (
-    <CollapsiblePanel title="Abstracts for papers without full text" storageKey="collections.abstracts">
+    <PanelFrame
+      embedded={embedded} title="Abstracts for papers without full text" storageKey="collections.abstracts">
       <div className="space-y-3 px-5 py-3 text-sm">
         {error ? (
           <Alert tone="danger" role="alert">
@@ -133,6 +141,6 @@ export function AbstractFallback({ onChanged }: { onChanged?: () => void }) {
           <p className="text-xs text-muted">Loading…</p>
         )}
       </div>
-    </CollapsiblePanel>
+    </PanelFrame>
   );
 }

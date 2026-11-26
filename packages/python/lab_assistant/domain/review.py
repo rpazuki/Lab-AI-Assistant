@@ -360,6 +360,60 @@ class CandidateFilter(BaseModel):
         return self.has_abstract is None or summary.has_abstract is self.has_abstract
 
 
+class PairFilter(BaseModel):
+    """Which open duplicate pairs the queue shows, and a merge rule acts on.
+
+    ``words`` must all appear in either paper's title; ``same_year`` keeps pairs
+    published the same year (or, false, different years); ``authors`` keeps pairs
+    whose first authors ``agree`` or ``differ``.
+    """
+
+    model_config = {"frozen": True}
+
+    words: tuple[str, ...] = ()
+    min_similarity: float | None = Field(default=None, ge=0, le=1)
+    same_year: bool | None = None
+    authors: str | None = Field(default=None, pattern="^(agree|differ)$")
+
+    @field_validator("words", mode="before")
+    @classmethod
+    def _normalise(cls, value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            value = value.split(",") if "," in value else value.split()
+        return _words([str(v) for v in value])
+
+    @property
+    def narrows(self) -> bool:
+        """Whether it says more than a similarity, which the database filters alone."""
+        return bool(self.words) or self.same_year is not None or self.authors is not None
+
+    def matches(self, row: Any, summaries: dict[Any, WorkSummary]) -> bool:
+        if self.min_similarity is not None and row.similarity < self.min_similarity:
+            return False
+        if (
+            self.same_year is not None
+            and row.year_gap is not None
+            and self.same_year != (row.year_gap == 0)
+        ):
+            return False
+        if (
+            self.authors is not None
+            and row.first_author_match is not None
+            and (self.authors == "agree") != bool(row.first_author_match)
+        ):
+            return False
+        if self.words:
+            titles = [
+                (summaries.get(work_id).title_search if summaries.get(work_id) else "")
+                for work_id in (row.left_work_id, row.right_work_id)
+            ]
+            if not any(all(word in title for word in self.words) for title in titles):
+                return False
+        return True
+
+
 class MergeRule(BaseModel):
     """Which open duplicate pairs a bulk merge takes. Each guard is a reason to skip.
 

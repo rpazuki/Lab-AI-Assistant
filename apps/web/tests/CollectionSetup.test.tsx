@@ -198,6 +198,23 @@ describe("CollectionSetup", () => {
     await waitFor(() => expect(api.retryDiscoverySource).toHaveBeenCalledWith("run-2", "datacite"));
   });
 
+  it("lists scopes 15 at a time, with Next and Previous and no rows menu", async () => {
+    vi.mocked(api.listScopes).mockResolvedValue(
+      Array.from({ length: 20 }, (_, n) =>
+        scope({ id: `v${n}`, scope_id: `s${n}`, name: `Scope ${String(n).padStart(2, "0")}` }),
+      ),
+    );
+    const user = userEvent.setup();
+    render(<CollectionSetup />);
+    expect(await screen.findByText("Scope 00")).toBeInTheDocument();
+    expect(screen.getByText("Scope 14")).toBeInTheDocument();
+    expect(screen.queryByText("Scope 15")).toBeNull();
+    expect(screen.queryByLabelText("Rows per page of scopes")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /next.*scopes/i }));
+    expect(await screen.findByText("Scope 19")).toBeInTheDocument();
+    expect(screen.queryByText("Scope 00")).toBeNull();
+  });
+
   it("offers Edit and Delete on unapproved versions only", async () => {
     vi.mocked(api.listScopes).mockResolvedValue([
       scope(),

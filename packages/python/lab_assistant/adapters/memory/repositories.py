@@ -47,6 +47,7 @@ from lab_assistant.domain.identity import (
     Work,
     WorkIdentifier,
     WorkRelation,
+    normalise_title,
 )
 from lab_assistant.domain.language import UNKNOWN_LANGUAGE
 from lab_assistant.domain.objects import ObjectRecord
@@ -1185,6 +1186,63 @@ class _Assets:
         _check_workspace(workspace_id, plan)
         return plan
 
+    def _plans_matching(
+        self,
+        workspace_id: UUID,
+        status: str | None,
+        words: tuple[str, ...],
+        outcome: str | None,
+    ) -> list[AcquisitionPlan]:
+        plans = [p for p in self._db.plans.values() if p.workspace_id == workspace_id]
+        if status is not None:
+            plans = [p for p in plans if p.status == status]
+        for word in words:
+            title_word = normalise_title(word)
+
+            def has(plan: AcquisitionPlan, word: str = word, title_word: str = title_word) -> bool:
+                summary = self._db.summaries.get(plan.work_id)
+                if title_word and summary is not None and title_word in summary.title_search:
+                    return True
+                return any(
+                    i.work_id == plan.work_id and word.casefold() in i.value_normalized.casefold()
+                    for i in self._db.identifiers.values()
+                )
+
+            plans = [p for p in plans if has(p)]
+        if outcome is not None:
+            latest: dict[UUID, AcquisitionAttempt] = {}
+            for attempt in self._db.attempts.values():
+                if attempt.workspace_id != workspace_id:
+                    continue
+                key = (attempt.requested_at or _EPOCH, attempt.attempt_number)
+                current = latest.get(attempt.acquisition_plan_id)
+                if current is None or key > (
+                    current.requested_at or _EPOCH,
+                    current.attempt_number,
+                ):
+                    latest[attempt.acquisition_plan_id] = attempt
+            plans = [
+                p
+                for p in plans
+                if (
+                    (latest[p.id].outcome.value if latest[p.id].outcome else "none")
+                    if p.id in latest
+                    else "none"
+                )
+                == outcome
+            ]
+        return plans
+
+    async def count_plans(
+        self,
+        workspace_id: UUID,
+        *,
+        status: str | None = None,
+        words: tuple[str, ...] = (),
+        outcome: str | None = None,
+    ) -> int:
+        return len(self._plans_matching(workspace_id, status, words, outcome))
+
     async def list_plans(
         self,
         workspace_id: UUID,
@@ -1192,10 +1250,10 @@ class _Assets:
         status: str | None = None,
         limit: int | None = None,
         after_id: UUID | None = None,
+        words: tuple[str, ...] = (),
+        outcome: str | None = None,
     ) -> list[AcquisitionPlan]:
-        plans = [p for p in self._db.plans.values() if p.workspace_id == workspace_id]
-        if status is not None:
-            plans = [p for p in plans if p.status == status]
+        plans = self._plans_matching(workspace_id, status, words, outcome)
         ordered = sorted(plans, key=lambda p: str(p.id))
         if after_id is not None:
             ordered = [p for p in ordered if str(p.id) > str(after_id)]

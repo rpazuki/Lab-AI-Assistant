@@ -39,6 +39,7 @@ from lab_assistant.application.datasheets import DatasheetService
 from lab_assistant.application.discovery import DiscoveryService
 from lab_assistant.application.export import ExportService
 from lab_assistant.application.fetching import FetchQueue
+from lab_assistant.application.identity_conflicts import IdentityConflictService
 from lab_assistant.application.parse_quality import ParseQualityLimits, ParseQualityService
 from lab_assistant.application.reconciliation import IdentityService
 from lab_assistant.application.refresh import RefreshService
@@ -59,7 +60,7 @@ from lab_assistant.contracts.stage import StageName
 from lab_assistant.domain.chat import UsageTotals
 from lab_assistant.domain.claims import ReviewDecision
 from lab_assistant.domain.installation import InstallationCapability
-from lab_assistant.domain.review import CandidateFilter, MergeRule, ReviewStepKind
+from lab_assistant.domain.review import CandidateFilter, MergeRule, PairFilter, ReviewStepKind
 from lab_assistant.domain.scope import ConnectorPlanEntry, RelevancePolicy
 from lab_assistant.domain.states import IdentityState, RelevanceState
 from lab_assistant.domain.workspace import Capability, MembershipStatus, Role
@@ -1428,22 +1429,42 @@ def _queue_cursor(value: str | None) -> tuple[float, UUID] | None:
         raise ValidationFailure("after must be a next_cursor this endpoint returned") from error
 
 
+def _pair_search(
+    q: Annotated[
+        str | None, Query(description="words that must all appear in either paper's title")
+    ] = None,
+    min_similarity: Annotated[float | None, Query(ge=0, le=1)] = None,
+    same_year: Annotated[
+        bool | None, Query(description="true: same year; false: different years")
+    ] = None,
+    authors: Annotated[
+        str | None, Query(pattern="^(agree|differ)$", description="first authors agree or differ")
+    ] = None,
+) -> PairFilter:
+    """Which open pairs the queue shows, and the merge rule acts on."""
+    return PairFilter(words=q, min_similarity=min_similarity, same_year=same_year, authors=authors)
+
+
 @router.get("/candidates/conflicts")
 async def list_conflicts(
     actor: CurrentActor,
     container: Container,
+    search: Annotated[PairFilter, Depends(_pair_search)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     after: Annotated[str | None, Query(description="next_cursor from the previous page")] = None,
-    min_similarity: Annotated[float | None, Query(ge=0, le=1)] = None,
 ) -> dict[str, Any]:
-    """How many works are in conflict, and one page of open duplicate pairs.
+    """How many works are in conflict, and one page of the open duplicate pairs found.
 
     Most similar first. A pair someone merged or dismissed is no longer open, so
     it leaves this list; each pair carries both papers so it can be judged here.
     """
     conflict_total = await IdentityService(container.context).count_conflicts(actor)
     rows, total, summaries = await BulkReviewService(container.context).duplicate_queue(
-        actor, min_similarity=min_similarity, limit=limit, after=_queue_cursor(after)
+        actor,
+        min_similarity=search.min_similarity,
+        limit=limit,
+        after=_queue_cursor(after),
+        search=search,
     )
     last = rows[-1] if len(rows) == limit else None
     return {
@@ -1531,11 +1552,14 @@ def _plan_view(plan: MergePlan, summaries: dict[UUID, Any]) -> dict[str, Any]:
     dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
 )
 async def preview_merge_rule(
-    actor: CurrentActor, container: Container, rule: MergeRule = Body(...)
+    actor: CurrentActor,
+    container: Container,
+    search: Annotated[PairFilter, Depends(_pair_search)],
+    rule: MergeRule = Body(...),
 ) -> dict[str, Any]:
-    """What the rule would merge now, and how many pairs each guard would skip. Changes nothing."""
+    """What the rule would merge of the pairs the search finds. Changes nothing."""
     service = BulkReviewService(container.context)
-    plan = await service.plan_merge(actor, rule)
+    plan = await service.plan_merge(actor, rule, search=search)
     ids = {w for group in plan.groups[:12] for w in group}
     for rows in plan.skipped_examples.values():
         ids.update(w for row in rows for w in (row.left_work_id, row.right_work_id))
@@ -1551,6 +1575,7 @@ async def preview_merge_rule(
 async def apply_merge_rule(
     actor: CurrentActor,
     container: Container,
+    search: Annotated[PairFilter, Depends(_pair_search)],
     rule: MergeRule = Body(...),
     step_id: Annotated[UUID | None, Query()] = None,
 ) -> dict[str, Any]:
@@ -1559,7 +1584,51 @@ async def apply_merge_rule(
     Pass the ``step_id`` the first call returned to every later one, so the whole
     application is one step in the review history.
     """
-    return await BulkReviewService(container.context).apply_merge(actor, rule, step_id=step_id)
+    return await BulkReviewService(container.context).apply_merge(
+        actor, rule, step_id=step_id, search=search
+    )
+
+
+# ── identity conflicts ─────────────────────────────────────────────────────
+@router.get("/identity-conflicts")
+async def list_identity_conflicts(
+    actor: CurrentActor,
+    container: Container,
+    q: Annotated[str | None, Query(description="words that must all appear in the title")] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    after: Annotated[UUID | None, Query(description="next_cursor from the previous page")] = None,
+) -> dict[str, Any]:
+    """Papers in conflict, each with the other paper(s) involved and why."""
+    return await IdentityConflictService(container.context).page(
+        actor, words=tuple((q or "").split()), limit=limit, after=after
+    )
+
+
+@router.post(
+    "/identity-conflicts/{work_id}/keep-separate",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def keep_conflict_separate(
+    work_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Different papers: this one is resolved, its identifiers stay where they are."""
+    await IdentityConflictService(container.context).keep_separate(actor, work_id)
+    return {"work_id": str(work_id), "identity_status": "resolved"}
+
+
+@router.post(
+    "/identity-conflicts/keep-separate",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def keep_conflicts_separate(
+    actor: CurrentActor,
+    container: Container,
+    q: Annotated[str | None, Query(description="words that must all appear in the title")] = None,
+) -> dict[str, int]:
+    """Keep up to 200 of the conflicts the search finds separate; repeat until none remain."""
+    return await IdentityConflictService(container.context).keep_all_separate(
+        actor, words=tuple((q or "").split())
+    )
 
 
 # ── a scope's screening rules, and the review history ──────────────────────
@@ -1868,13 +1937,33 @@ async def list_plans(
     actor: CurrentActor,
     container: Container,
     status: Annotated[str | None, Query()] = None,
+    q: Annotated[
+        str | None,
+        Query(description="words each in the paper's title or one of its identifiers (a DOI)"),
+    ] = None,
+    outcome: Annotated[
+        str | None, Query(description="the latest attempt's outcome; none for never tried")
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     after: Annotated[UUID | None, Query(description="next_cursor from the previous page")] = None,
 ) -> dict[str, Any]:
-    """One page of acquisition plans, and how many plans are in each status."""
+    """One page of the acquisition plans found, and how many plans are in each status."""
+    words = tuple((q or "").split())
     async with container.context.uow_factory() as uow:
         plans = await uow.assets.list_plans(
-            actor.workspace_id, status=status, limit=limit, after_id=after
+            actor.workspace_id,
+            status=status,
+            limit=limit,
+            after_id=after,
+            words=words,
+            outcome=outcome,
+        )
+        searched = (
+            await uow.assets.count_plans(
+                actor.workspace_id, status=status, words=words, outcome=outcome
+            )
+            if words or outcome
+            else None
         )
         status_counts = await uow.assets.count_plans_by_status(actor.workspace_id)
         # Which paper each plan is for: a plan id alone names nothing a person knows.
@@ -1921,7 +2010,13 @@ async def list_plans(
                     ],
                 }
             )
-    total = status_counts.get(status, 0) if status else sum(status_counts.values())
+    total = (
+        searched
+        if searched is not None
+        else status_counts.get(status, 0)
+        if status
+        else sum(status_counts.values())
+    )
     return {
         "items": items,
         "next_cursor": str(plans[-1].id) if len(plans) == limit else None,
