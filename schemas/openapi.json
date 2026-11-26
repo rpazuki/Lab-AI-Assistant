@@ -138,6 +138,7 @@
           "asset_identity_confirmed",
           "parse_limits_changed",
           "abstract_fallback_changed",
+          "discovery_source_retried",
           "abstract_documents_built",
           "asset_registered",
           "asset_quarantined",
@@ -5552,6 +5553,90 @@
           }
         },
         "summary": "Freeze Discovery"
+      }
+    },
+    "/api/v1/discovery-runs/{run_id}/sources/{connector_id}/retry": {
+      "post": {
+        "description": "Run one source of an unfrozen run again, from where its cursor stands.",
+        "operationId": "retry_discovery_source_api_v1_discovery_runs__run_id__sources__connector_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Retry Discovery Source Api V1 Discovery Runs  Run Id  Sources  Connector Id  Retry Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Discovery Source"
       }
     },
     "/api/v1/duplicates/merge-rule/apply": {

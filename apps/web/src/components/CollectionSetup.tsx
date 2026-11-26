@@ -32,6 +32,7 @@ import {
   deleteDiscoveryRun,
   deleteScopeDraft,
   freezeDiscovery,
+  retryDiscoverySource,
   listDiscoveryRuns,
   listScopes,
   startDiscovery,
@@ -465,7 +466,20 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
                 {run.degraded_reason ? (
                   <p className="mt-1 text-xs text-warning-strong">{run.degraded_reason}</p>
                 ) : null}
-                {run.connectors.length > 0 ? <SourceTable connectors={run.connectors} /> : null}
+                {run.connectors.length > 0 ? (
+                  <SourceTable
+                    connectors={run.connectors}
+                    onRetry={
+                      run.status === "frozen"
+                        ? undefined
+                        : (connectorId) =>
+                            void act(
+                              () => retryDiscoverySource(run.id, connectorId),
+                              `${connectorId} is fetching again, from where it stopped.`,
+                            )
+                    }
+                  />
+                ) : null}
               </li>
             ))}
           </ul>
@@ -488,7 +502,22 @@ export function CollectionSetup({ onChanged }: { onChanged?: () => void }) {
  * leaving the one opened unchanged.
  */
 /** One run's sources: what each returned, sortable like every table. */
-function SourceTable({ connectors }: { connectors: DiscoveryRun["connectors"] }) {
+/** A source that ended without its records: failed for good, or degraded. */
+const RETRYABLE_OUTCOMES = new Set([
+  "degraded_partial",
+  "authentication_required",
+  "policy_blocked",
+  "invalid_query",
+  "failed_permanent",
+]);
+
+function SourceTable({
+  connectors,
+  onRetry,
+}: {
+  connectors: DiscoveryRun["connectors"];
+  onRetry?: (connectorId: string) => void;
+}) {
   const table = useTable(connectors, {
     columns: {
       source: (state) => state.connector_id,
@@ -513,6 +542,9 @@ function SourceTable({ connectors }: { connectors: DiscoveryRun["connectors"] })
           <SortHeader table={table} column="declared" numeric>
             Declared
           </SortHeader>
+          <th scope="col">
+            <span className="sr-only">Actions</span>
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -527,6 +559,13 @@ function SourceTable({ connectors }: { connectors: DiscoveryRun["connectors"] })
             </td>
             <td className="numeric">{state.records_seen}</td>
             <td className="numeric">{state.declared_total ?? "—"}</td>
+            <td>
+              {onRetry && state.outcome && RETRYABLE_OUTCOMES.has(state.outcome) ? (
+                <Button size="sm" variant="ghost" onClick={() => onRetry(state.connector_id)}>
+                  Retry this source
+                </Button>
+              ) : null}
+            </td>
           </tr>
         ))}
       </tbody>

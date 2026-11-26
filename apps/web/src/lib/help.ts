@@ -558,7 +558,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             needs: STEWARD,
             steps: [
               "When the sources have answered, select **Freeze** on the run.",
-              "If the run is degraded, select **Freeze, accepting the gap** and confirm.",
+              "If the run is degraded, first select **Retry this source** beside the source that failed: it fetches again from where it stopped. Only if it cannot finish, select **Freeze, accepting the gap** and confirm.",
             ],
             note: "Only freeze a degraded run when you know why a source fell short: the release will record that it was accepted.",
           },

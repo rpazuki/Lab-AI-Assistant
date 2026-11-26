@@ -366,6 +366,13 @@ export const startDiscovery = (scopeVersionId: string) =>
 export const deleteDiscoveryRun = (runId: string) =>
   request<void>(`/discovery-runs/${runId}`, { method: "DELETE" });
 
+/** Run one source of an unfrozen run again, after it failed or ended degraded. */
+export const retryDiscoverySource = (runId: string, connectorId: string) =>
+  request<{ task_id: string; state: string; connector_id: string }>(
+    `/discovery-runs/${runId}/sources/${encodeURIComponent(connectorId)}/retry`,
+    { method: "POST" },
+  );
+
 /** Freeze a run. A degraded run freezes only when the steward accepts the gap. */
 export const freezeDiscovery = (runId: string, acceptDegraded = false) =>
   request<{ run_id: string; status: string }>(

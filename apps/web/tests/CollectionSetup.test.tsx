@@ -24,6 +24,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     approveScope: vi.fn(),
     startDiscovery: vi.fn(),
     freezeDiscovery: vi.fn(),
+    retryDiscoverySource: vi.fn(async () => ({ task_id: "t1", state: "ready", connector_id: "datacite" })),
     previewScopeRules: vi.fn(),
     applyScopeRules: vi.fn(),
     listReviewHistory: vi.fn(),
@@ -164,6 +165,37 @@ describe("CollectionSetup", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("runs a failed source of an unfrozen run again", async () => {
+    vi.mocked(api.listScopes).mockResolvedValue([scope({ approval_state: "approved" })]);
+    const source = (connector_id: string, outcome: string) => ({
+      connector_id,
+      required: true,
+      outcome,
+      records_seen: 0,
+      declared_total: null,
+      accepted_degraded: false,
+    });
+    vi.mocked(api.listDiscoveryRuns).mockResolvedValue(
+      page([
+        {
+          id: "run-2",
+          status: "degraded",
+          started_at: null,
+          frozen_at: null,
+          degraded_reason: "duplicate key",
+          metrics: {},
+          connectors: [source("openalex", "succeeded"), source("datacite", "failed_permanent")],
+        },
+      ]),
+    );
+    const user = userEvent.setup();
+    render(<CollectionSetup />);
+    const [retry] = await screen.findAllByRole("button", { name: "Retry this source" });
+    expect(screen.getAllByRole("button", { name: "Retry this source" })).toHaveLength(1);
+    await user.click(retry!);
+    await waitFor(() => expect(api.retryDiscoverySource).toHaveBeenCalledWith("run-2", "datacite"));
   });
 
   it("offers Edit and Delete on unapproved versions only", async () => {

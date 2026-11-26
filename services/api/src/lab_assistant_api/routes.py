@@ -1142,6 +1142,20 @@ async def list_discovery_runs(
 
 
 @router.post(
+    "/discovery-runs/{run_id}/sources/{connector_id}/retry",
+    dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
+)
+async def retry_discovery_source(
+    run_id: UUID, connector_id: str, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Run one source of an unfrozen run again, from where its cursor stands."""
+    task = await DiscoveryService(container.context).retry_source(
+        actor, run_id=run_id, connector_id=connector_id
+    )
+    return {"task_id": str(task.id), "state": task.state.value, "connector_id": connector_id}
+
+
+@router.post(
     "/discovery-runs/{run_id}/freeze",
     dependencies=[requires(InstallationCapability.ACQUIRE_SOURCES)],
 )

@@ -87,6 +87,7 @@ class AuditAction(StrEnum):
     #: The parse-quality limits were changed, or degraded documents re-checked against them.
     PARSE_LIMITS_CHANGED = "parse_limits_changed"
     ABSTRACT_FALLBACK_CHANGED = "abstract_fallback_changed"
+    DISCOVERY_SOURCE_RETRIED = "discovery_source_retried"
     ABSTRACT_DOCUMENTS_BUILT = "abstract_documents_built"
     ASSET_REGISTERED = "asset_registered"
     ASSET_QUARANTINED = "asset_quarantined"

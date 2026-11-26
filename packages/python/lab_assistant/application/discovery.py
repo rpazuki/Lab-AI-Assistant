@@ -26,6 +26,7 @@ from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.objects import register_object
 from lab_assistant.application.rate_limit import RateLimiter, budget_key, host_of
 from lab_assistant.application.review_history import record_step
+from lab_assistant.contracts.canonical import fingerprint as make_fingerprint
 from lab_assistant.contracts.connector import (
     BodyKind,
     CompiledQuery,
@@ -62,6 +63,8 @@ from lab_assistant.domain.observation import (
 )
 from lab_assistant.domain.review import ReviewStepKind
 from lab_assistant.domain.scope import ScopeVersion
+from lab_assistant.domain.states import TaskState
+from lab_assistant.domain.tasks import Task
 from lab_assistant.domain.workspace import Capability
 from lab_assistant.provenance.fingerprints import source_request_fingerprint
 
@@ -306,6 +309,74 @@ class DiscoveryService:
         return run, (
             TaskRequest(stage=StageName.RECONCILIATION, inputs={"discovery_run_id": str(run.id)}),
         )
+
+    async def retry_source(self, actor: ActorContext, *, run_id: UUID, connector_id: str) -> Task:
+        """Run one source of an unfrozen run again, after it failed or ended degraded.
+
+        Its task goes back in the queue from the source's stored cursor, so pages
+        already kept are not fetched again; its outcome is cleared and the run is
+        running again. Refused for a frozen run, and for a source that is still
+        running or that succeeded.
+        """
+        self._context.require_installation(InstallationCapability.ACQUIRE_SOURCES)
+        actor.require(Capability.RUN_DISCOVERY)
+        context = self._context
+        ws = actor.workspace_id
+        async with context.uow_factory() as uow:
+            run = await uow.observations.get_run(ws, run_id)
+            if run is None:
+                raise NotFound(f"discovery run {run_id} not found")
+            if run.status is DiscoveryRunStatus.FROZEN:
+                raise StateTransitionError("a frozen run cannot fetch again; start a new run")
+            tasks = [
+                task
+                for task in await uow.tasks.list_run_tasks(ws, run_id)
+                if task.stage is StageName.DISCOVERY
+                and task.inputs.get("connector_id") == connector_id
+            ]
+            if not tasks:
+                raise NotFound(f"{connector_id} has no task in this run")
+            task = max(tasks, key=lambda t: (t.created_at is not None, t.created_at, str(t.id)))
+            if not task.state.is_settled or task.state is TaskState.SUCCEEDED:
+                raise StateTransitionError(
+                    f"{connector_id} is {task.state.value}: only a source that failed or "
+                    "ended degraded is run again"
+                )
+            task.state = TaskState.READY
+            task.attempt = 0
+            task.not_before = None
+            task.error_class = None
+            task.error_detail = None
+            task.human_action_required = None
+            task.completed_at = None
+            task.version += 1
+            await uow.tasks.update(task)
+            run.connector_states = tuple(
+                state.model_copy(
+                    update={"outcome": None, "error_class": None, "degraded_reason": None}
+                )
+                if state.connector_id == connector_id
+                else state
+                for state in run.connector_states
+            )
+            run.status = DiscoveryRunStatus.RUNNING
+            run.degraded_reason = None
+            await uow.observations.update_run(run)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=ws,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.DISCOVERY_SOURCE_RETRIED,
+                    subject_type="discovery_run",
+                    subject_id=run.id,
+                    previous_hash=await uow.audit.latest_hash(ws),
+                    reason_code=connector_id,
+                    metadata={"task_id": str(task.id)},
+                )
+            )
+            await uow.commit()
+        return task
 
     async def delete_run(self, actor: ActorContext, *, run_id: UUID) -> None:
         """Delete a run that nothing else depends on, with every page it fetched.
@@ -726,6 +797,23 @@ class DiscoveryHandler:
             if existing is not None and existing.response_sha256 == stored.sha256:
                 # At-least-once delivery replayed this page; one logical result.
                 return existing.record_count, 0
+            if existing is not None:
+                if existing.discovery_run_id == run.id:
+                    # This run stored the page already, and a retry got other
+                    # bytes back: the first answer stands, as for a replay.
+                    return existing.record_count, 0
+                # The same request in a later run, answered differently: the
+                # source's data changed (a new paper, a new total). It is a new
+                # observation and is stored for this run under its own identity.
+                # Under the shared one the insert broke the request_fingerprint
+                # constraint, and the whole source failed.
+                request_fp = make_fingerprint(
+                    kind="source_request_in_run",
+                    parts={"request": request_fp, "discovery_run_id": str(run.id)},
+                )
+                again = await uow.observations.find_request_by_fingerprint(workspace_id, request_fp)
+                if again is not None:
+                    return again.record_count, 0
 
             source_request = SourceRequest(
                 id=context.new_id(),
