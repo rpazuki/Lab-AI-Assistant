@@ -436,17 +436,17 @@ export interface PairSearch {
   /** Words that must all appear in either paper's title. */
   q?: string;
   min_similarity?: number | null;
-  /** true: published the same year; false: different years. */
-  same_year?: boolean | null;
-  /** First authors agree, or differ. */
-  authors?: "agree" | "differ" | null;
+  /** Same year, different years, or either year unknown. */
+  year?: "same" | "different" | "unknown" | null;
+  /** First authors agree, differ, or either is unknown. */
+  authors?: "agree" | "differ" | "unknown" | null;
 }
 
 function pairQuery(search: PairSearch): Record<string, string | number | null | undefined> {
   return {
     q: search.q,
     min_similarity: search.min_similarity,
-    same_year: search.same_year === null || search.same_year === undefined ? null : String(search.same_year),
+    year: search.year,
     authors: search.authors,
   };
 }

@@ -445,6 +445,10 @@ class TestSearchingPairs:
         corn2 = await lab.paper("Corn ethanol economics")
         await lab.pair(yeast, yeast2, similarity=1.0, year_gap=0, authors=True)
         await lab.pair(corn, corn2, similarity=0.95, year_gap=3, authors=False)
+        # No year on one record, no first author on one: neither agrees nor differs.
+        sterol = await lab.paper("Sterol uptake in yeast")
+        sterol2 = await lab.paper("Sterol uptake in yeast")
+        await lab.pair(sterol, sterol2, similarity=0.9, year_gap=None, authors=None)
 
         async def found(**search: Any) -> list[float]:
             rows, total, _ = await lab.service.duplicate_queue(
@@ -454,8 +458,12 @@ class TestSearchingPairs:
             return [row.similarity for row in rows]
 
         assert await found(words=["oleaginous"]) == [1.0]
-        assert await found(same_year=False) == [0.95]
+        assert await found(year="same") == [1.0]
+        assert await found(year="different") == [0.95]
+        assert await found(year="unknown") == [0.9]
         assert await found(authors="agree") == [1.0]
+        assert await found(authors="differ") == [0.95]
+        assert await found(authors="unknown") == [0.9]
         assert await found(words=["ethanol"], authors="agree") == []
 
         plan = await lab.service.plan_merge(
@@ -678,3 +686,56 @@ class TestIdentityConflicts:
                 lab.ws, scheme="doi", value_normalized="10.1016/j.ymben.2020.01.001"
             )
         assert found is not None and found.id == holder
+
+
+class TestOverridingASkip:
+    """ "Merge these anyway": the pairs skipped for one reason, with that guard off."""
+
+    async def test_only_that_reason_and_every_other_guard_still_holds(self, lab) -> None:
+        no_year = await lab.paper("Lipid bodies in yeast", year=None)
+        no_year2 = await lab.paper("Lipid bodies in yeast")
+        await lab.pair(no_year, no_year2, similarity=1.0, year_gap=None, authors=True)
+        # No year either, but two DOIs: still skipped, for its DOIs.
+        preprint = await lab.paper("Sterol uptake", year=None, doi="10.1101/1")
+        article = await lab.paper("Sterol uptake", doi="10.1016/2")
+        await lab.pair(preprint, article, similarity=1.0, year_gap=None, authors=True)
+        # Merged by the plain rule: an override does not take it.
+        plain = await lab.paper("Oleic acid titre")
+        plain2 = await lab.paper("Oleic acid titre")
+        plain_pair = await lab.pair(plain, plain2, similarity=1.0, year_gap=0, authors=True)
+
+        base = await lab.service.plan_merge(lab.actor, MergeRule())
+        assert base.skipped == {"unknown_year": 2}
+        assert base.accepted_pairs == 1
+
+        rule = MergeRule(override="unknown_year")
+        plan = await lab.service.plan_merge(lab.actor, rule)
+        assert plan.considered == 2
+        assert plan.accepted_pairs == 1
+        assert plan.skipped == {"different_doi": 1}
+        assert plan.groups == [sorted([no_year, no_year2], key=str)]
+
+        done = await lab.service.apply_merge(lab.actor, rule)
+        assert done["works_merged"] == 1
+        merged = [await lab.work(w) for w in (no_year, no_year2)]
+        assert sum(w.identity_status is IdentityState.MERGED for w in merged) == 1
+        assert (await lab.work(preprint)).is_active and (await lab.work(article)).is_active
+        rows, _, _ = await lab.service.duplicate_queue(
+            lab.actor, min_similarity=None, limit=50, after=None
+        )
+        assert plain_pair in {row.id for row in rows}
+
+    async def test_a_group_too_large_can_be_merged_anyway(self, lab) -> None:
+        works = [await lab.paper("Editorial note") for _ in range(4)]
+        for left, right in itertools.pairwise(works):
+            await lab.pair(left, right, similarity=1.0, year_gap=0, authors=True)
+        assert (await lab.service.plan_merge(lab.actor, MergeRule())).skipped == {
+            "group_too_large": 3
+        }
+        plan = await lab.service.plan_merge(lab.actor, MergeRule(override="group_too_large"))
+        assert plan.works_merged == 3
+
+    def test_a_merged_work_or_a_low_similarity_cannot_be_overridden(self) -> None:
+        for reason in ("already_merged", "below_threshold", "anything"):
+            with pytest.raises(ValueError, match="cannot be overridden"):
+                MergeRule(override=reason)

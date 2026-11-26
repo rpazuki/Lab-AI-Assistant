@@ -92,6 +92,7 @@ describe("Duplicate review", () => {
           reason: "different_doi",
           description: "each has its own DOI: two publications, not one",
           count: 400,
+          overridable: true,
           examples: [],
         },
       ],
@@ -113,6 +114,70 @@ describe("Duplicate review", () => {
     expect(confirm.mock.calls[0]![0]).toMatch(/Merge 1,900 papers into 1,850/);
     expect(await screen.findByText("1,900 papers merged.")).toBeInTheDocument();
     expect(api.applyMergeRule).toHaveBeenCalledTimes(2);
+  });
+
+  it("finds pairs missing a year, and merges the ones skipped for it anyway", async () => {
+    const skippedForYear = {
+      reason: "unknown_year",
+      description: "one record has no year",
+      count: 23,
+      overridable: true,
+      examples: [],
+    };
+    vi.mocked(api.previewMergeRule)
+      .mockResolvedValueOnce({
+        considered: 23,
+        accepted_pairs: 0,
+        groups: 0,
+        works_merged: 0,
+        skipped: [skippedForYear],
+        sample_groups: [],
+      })
+      .mockResolvedValueOnce({
+        considered: 23,
+        accepted_pairs: 20,
+        groups: 20,
+        works_merged: 20,
+        skipped: [
+          {
+            reason: "different_doi",
+            description: "each has its own DOI: two publications, not one",
+            count: 3,
+            overridable: true,
+            examples: [],
+          },
+        ],
+        sample_groups: [],
+      })
+      .mockResolvedValueOnce({
+        considered: 3,
+        accepted_pairs: 0,
+        groups: 0,
+        works_merged: 0,
+        skipped: [{ ...skippedForYear, count: 3 }],
+        sample_groups: [],
+      });
+    vi.mocked(api.applyMergeRule).mockResolvedValueOnce({ groups_merged: 20, works_merged: 20, remaining_groups: 0 });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<DuplicateReview live={false} />);
+    await screen.findByText("Lipid production in Yarrowia");
+
+    await user.selectOptions(screen.getByLabelText("Filter pairs by year"), "A year is missing");
+    await waitFor(() =>
+      expect(api.listConflicts).toHaveBeenLastCalledWith(expect.objectContaining({ year: "unknown" })),
+    );
+    await user.click(screen.getByRole("button", { name: "Preview" }));
+    await user.click(await screen.findByRole("button", { name: "Merge these 23 pairs anyway" }));
+
+    const overridden = { ...DEFAULT_RULE, override: "unknown_year" };
+    expect(api.previewMergeRule).toHaveBeenNthCalledWith(2, overridden, { year: "unknown" });
+    expect(confirm.mock.calls[0]![0]).toMatch(/Merge 20 papers into 20 \(20 of the 23 pairs skipped because one record has no year\)/);
+    expect(confirm.mock.calls[0]![0]).toMatch(/3 stay skipped, for another reason/);
+    expect(api.applyMergeRule).toHaveBeenCalledWith(overridden, null, { year: "unknown" });
+    expect(await screen.findByText("20 papers merged, overriding: one record has no year.")).toBeInTheDocument();
+    // The report is asked for again under the plain rule.
+    expect(api.previewMergeRule).toHaveBeenLastCalledWith(DEFAULT_RULE, { year: "unknown" });
   });
 
   it("forgets a preview once the rule changes", async () => {

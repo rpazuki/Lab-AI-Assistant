@@ -730,6 +730,17 @@
             "title": "Min Similarity",
             "type": "number"
           },
+          "override": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override"
+          },
           "require_known_authors": {
             "default": false,
             "title": "Require Known Authors",
@@ -3203,39 +3214,40 @@
             }
           },
           {
-            "description": "true: same year; false: different years",
+            "description": "same year, different years, or either year unknown",
             "in": "query",
-            "name": "same_year",
+            "name": "year",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "true: same year; false: different years",
-              "title": "Same Year"
-            }
-          },
-          {
-            "description": "first authors agree or differ",
-            "in": "query",
-            "name": "authors",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "pattern": "^(agree|differ)$",
+                  "pattern": "^(same|different|unknown)$",
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "first authors agree or differ",
+              "description": "same year, different years, or either year unknown",
+              "title": "Year"
+            }
+          },
+          {
+            "description": "first authors agree, differ, or either is unknown",
+            "in": "query",
+            "name": "authors",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(agree|differ|unknown)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "first authors agree, differ, or either is unknown",
               "title": "Authors"
             }
           },
@@ -5789,39 +5801,40 @@
             }
           },
           {
-            "description": "true: same year; false: different years",
+            "description": "same year, different years, or either year unknown",
             "in": "query",
-            "name": "same_year",
+            "name": "year",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "true: same year; false: different years",
-              "title": "Same Year"
-            }
-          },
-          {
-            "description": "first authors agree or differ",
-            "in": "query",
-            "name": "authors",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "pattern": "^(agree|differ)$",
+                  "pattern": "^(same|different|unknown)$",
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "first authors agree or differ",
+              "description": "same year, different years, or either year unknown",
+              "title": "Year"
+            }
+          },
+          {
+            "description": "first authors agree, differ, or either is unknown",
+            "in": "query",
+            "name": "authors",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(agree|differ|unknown)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "first authors agree, differ, or either is unknown",
               "title": "Authors"
             }
           },
@@ -5937,39 +5950,40 @@
             }
           },
           {
-            "description": "true: same year; false: different years",
+            "description": "same year, different years, or either year unknown",
             "in": "query",
-            "name": "same_year",
+            "name": "year",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "true: same year; false: different years",
-              "title": "Same Year"
-            }
-          },
-          {
-            "description": "first authors agree or differ",
-            "in": "query",
-            "name": "authors",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "pattern": "^(agree|differ)$",
+                  "pattern": "^(same|different|unknown)$",
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "first authors agree or differ",
+              "description": "same year, different years, or either year unknown",
+              "title": "Year"
+            }
+          },
+          {
+            "description": "first authors agree, differ, or either is unknown",
+            "in": "query",
+            "name": "authors",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(agree|differ|unknown)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "first authors agree, differ, or either is unknown",
               "title": "Authors"
             }
           },

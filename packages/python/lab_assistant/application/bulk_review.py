@@ -82,6 +82,8 @@ class MergePlan:
     accepted_pairs: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
     skipped_examples: dict[str, list[DuplicateCandidate]] = field(default_factory=dict)
+    #: Every skipped pair by reason: what an override of that reason starts from.
+    skipped_rows: dict[str, list[DuplicateCandidate]] = field(default_factory=dict)
 
     @property
     def works_merged(self) -> int:
@@ -89,6 +91,7 @@ class MergePlan:
 
     def skip(self, reason: str, rows: list[DuplicateCandidate]) -> None:
         self.skipped[reason] = self.skipped.get(reason, 0) + len(rows)
+        self.skipped_rows.setdefault(reason, []).extend(rows)
         examples = self.skipped_examples.setdefault(reason, [])
         examples.extend(rows[: max(0, 3 - len(examples))])
 
@@ -372,7 +375,9 @@ class BulkReviewService:
         """Which open pairs the rule merges, as groups, and why it skips the others.
 
         With a ``search``, only the pairs it finds are considered: a rule acts on
-        what the queue shows.
+        what the queue shows. With ``rule.override``, only the pairs the rule
+        without it skips for that reason are considered, judged with that guard
+        off: "merge these anyway", and nothing the plain rule would merge.
         """
         if search is not None and (search.narrows or search.min_similarity is not None):
             rows = await self._searched_pairs(actor, search)
@@ -406,36 +411,12 @@ class BulkReviewService:
             pairs_per_work[row.left_work_id] += 1
             pairs_per_work[row.right_work_id] += 1
 
-        plan = MergePlan(considered=len(rows))
-        accepted: list[DuplicateCandidate] = []
-        for row in rows:
-            reason = _skip_reason(row, rule, works, dois, pairs_per_work)
-            if reason:
-                plan.skip(reason, [row])
-            else:
-                accepted.append(row)
-
-        groups = _Groups()
-        for row in accepted:
-            groups.join(row.left_work_id, row.right_work_id)
-        pairs: dict[UUID, list[DuplicateCandidate]] = defaultdict(list)
-        for row in accepted:
-            pairs[groups.find(row.left_work_id)].append(row)
-        kept: list[tuple[list[UUID], list[DuplicateCandidate]]] = []
-        for group_rows in pairs.values():
-            ids = sorted(
-                {w for row in group_rows for w in (row.left_work_id, row.right_work_id)}, key=str
-            )
-            if len(ids) > rule.max_group_size:
-                plan.skip("group_too_large", group_rows)
-                continue
-            kept.append((ids, group_rows))
-            plan.accepted_pairs += len(group_rows)
-        # Most similar first, so a partial apply takes the safest groups.
-        kept.sort(key=lambda item: (-max(r.similarity for r in item[1]), str(item[0][0])))
-        plan.groups = [ids for ids, _ in kept]
-        plan.group_pairs = [group_rows for _, group_rows in kept]
-        return plan
+        if rule.override is None:
+            return _judge(rows, rule, works, dois, pairs_per_work)
+        plain = _judge(
+            rows, rule.model_copy(update={"override": None}), works, dois, pairs_per_work
+        )
+        return _judge(plain.skipped_rows.get(rule.override, []), rule, works, dois, pairs_per_work)
 
     async def apply_merge(
         self,
@@ -452,6 +433,8 @@ class BulkReviewService:
         chosen = plan.groups[:MERGE_CHUNK]
         merged = 0
         described = rule.model_dump(mode="json")
+        # A merge the steward chose despite a guard is told apart in the log.
+        reason = "steward_merge_rule_override" if rule.override else "steward_merge_rule"
         async with context.uow_factory() as uow:
             for group in chosen:
                 works = [await uow.works.get(actor.workspace_id, work_id) for work_id in group]
@@ -465,7 +448,7 @@ class BulkReviewService:
                         actor,
                         keep=keep,
                         merge=work,
-                        reason_code="steward_merge_rule",
+                        reason_code=reason,
                         rule=described,
                     )
                     merged += 1
@@ -478,7 +461,7 @@ class BulkReviewService:
                     subject_type="workspace",
                     subject_id=actor.workspace_id,
                     previous_hash=await uow.audit.latest_hash(actor.workspace_id),
-                    reason_code="steward_merge_rule",
+                    reason_code=reason,
                     metadata={"groups": len(chosen), "works_merged": merged, "rule": described},
                 )
             )
@@ -554,6 +537,46 @@ class BulkReviewService:
         return {"summarised": summarised, "queued": len(rows), "history": history}
 
 
+def _judge(
+    rows: list[DuplicateCandidate],
+    rule: MergeRule,
+    works: dict[UUID, Work],
+    dois: dict[UUID, set[str]],
+    pairs_per_work: dict[UUID, int],
+) -> MergePlan:
+    """Each pair against the rule's guards, then the accepted ones as merge groups."""
+    plan = MergePlan(considered=len(rows))
+    accepted: list[DuplicateCandidate] = []
+    for row in rows:
+        reason = _skip_reason(row, rule, works, dois, pairs_per_work)
+        if reason:
+            plan.skip(reason, [row])
+        else:
+            accepted.append(row)
+
+    groups = _Groups()
+    for row in accepted:
+        groups.join(row.left_work_id, row.right_work_id)
+    pairs: dict[UUID, list[DuplicateCandidate]] = defaultdict(list)
+    for row in accepted:
+        pairs[groups.find(row.left_work_id)].append(row)
+    kept: list[tuple[list[UUID], list[DuplicateCandidate]]] = []
+    for group_rows in pairs.values():
+        ids = sorted(
+            {w for row in group_rows for w in (row.left_work_id, row.right_work_id)}, key=str
+        )
+        if len(ids) > rule.max_group_size and rule.override != "group_too_large":
+            plan.skip("group_too_large", group_rows)
+            continue
+        kept.append((ids, group_rows))
+        plan.accepted_pairs += len(group_rows)
+    # Most similar first, so a partial apply takes the safest groups.
+    kept.sort(key=lambda item: (-max(r.similarity for r in item[1]), str(item[0][0])))
+    plan.groups = [ids for ids, _ in kept]
+    plan.group_pairs = [group_rows for _, group_rows in kept]
+    return plan
+
+
 def _skip_reason(
     row: DuplicateCandidate,
     rule: MergeRule,
@@ -561,27 +584,44 @@ def _skip_reason(
     dois: dict[UUID, set[str]],
     pairs_per_work: dict[UUID, int],
 ) -> str | None:
-    """The first guard of ``rule`` this pair fails, or None to merge it."""
+    """The first guard of ``rule`` this pair fails, or None to merge it.
+
+    The guard ``rule.override`` names is not checked.
+    """
+    off = rule.override
     if row.similarity < rule.min_similarity:
         return "below_threshold"
     left, right = works.get(row.left_work_id), works.get(row.right_work_id)
     if left is None or right is None or not left.is_active or not right.is_active:
         return "already_merged"
     if rule.require_same_year:
-        if row.year_gap is None:
+        if row.year_gap is None and off != "unknown_year":
             return "unknown_year"
-        if row.year_gap != 0:
+        if row.year_gap not in (None, 0) and off != "different_year":
             return "different_year"
-    if rule.skip_different_authors and row.first_author_match is False:
+    if (
+        rule.skip_different_authors
+        and row.first_author_match is False
+        and off != "different_authors"
+    ):
         return "different_authors"
-    if rule.require_known_authors and row.first_author_match is None:
+    if rule.require_known_authors and row.first_author_match is None and off != "unknown_authors":
         return "unknown_authors"
-    if not kinds_compatible(left.work_kind, right.work_kind):
+    if not kinds_compatible(left.work_kind, right.work_kind) and off != "different_kind":
         return "different_kind"
     left_dois, right_dois = dois.get(left.id), dois.get(right.id)
-    if rule.skip_different_dois and left_dois and right_dois and not left_dois & right_dois:
+    if (
+        rule.skip_different_dois
+        and left_dois
+        and right_dois
+        and not left_dois & right_dois
+        and off != "different_doi"
+    ):
         return "different_doi"
-    if max(pairs_per_work[left.id], pairs_per_work[right.id]) > rule.max_pairs_per_work:
+    if (
+        max(pairs_per_work[left.id], pairs_per_work[right.id]) > rule.max_pairs_per_work
+        and off != "generic_title"
+    ):
         return "generic_title"
     return None
 

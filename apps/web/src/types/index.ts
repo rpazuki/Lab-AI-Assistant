@@ -205,6 +205,8 @@ export interface MergeRule {
   skip_different_dois: boolean;
   max_pairs_per_work: number;
   max_group_size: number;
+  /** "Merge these anyway": only the pairs skipped for this reason, with its check off. */
+  override?: string | null;
 }
 
 export interface MergePlan {
@@ -216,6 +218,8 @@ export interface MergePlan {
     reason: string;
     description: string;
     count: number;
+    /** Whether a steward may merge these anyway. */
+    overridable: boolean;
     examples: { similarity: number; left: PaperSummary; right: PaperSummary }[];
   }[];
   sample_groups: { similarity: number; papers: PaperSummary[] }[];

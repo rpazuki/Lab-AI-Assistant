@@ -60,7 +60,13 @@ from lab_assistant.contracts.stage import StageName
 from lab_assistant.domain.chat import UsageTotals
 from lab_assistant.domain.claims import ReviewDecision
 from lab_assistant.domain.installation import InstallationCapability
-from lab_assistant.domain.review import CandidateFilter, MergeRule, PairFilter, ReviewStepKind
+from lab_assistant.domain.review import (
+    OVERRIDABLE_SKIPS,
+    CandidateFilter,
+    MergeRule,
+    PairFilter,
+    ReviewStepKind,
+)
 from lab_assistant.domain.scope import ConnectorPlanEntry, RelevancePolicy
 from lab_assistant.domain.states import IdentityState, RelevanceState
 from lab_assistant.domain.workspace import Capability, MembershipStatus, Role
@@ -1434,15 +1440,23 @@ def _pair_search(
         str | None, Query(description="words that must all appear in either paper's title")
     ] = None,
     min_similarity: Annotated[float | None, Query(ge=0, le=1)] = None,
-    same_year: Annotated[
-        bool | None, Query(description="true: same year; false: different years")
+    year: Annotated[
+        str | None,
+        Query(
+            pattern="^(same|different|unknown)$",
+            description="same year, different years, or either year unknown",
+        ),
     ] = None,
     authors: Annotated[
-        str | None, Query(pattern="^(agree|differ)$", description="first authors agree or differ")
+        str | None,
+        Query(
+            pattern="^(agree|differ|unknown)$",
+            description="first authors agree, differ, or either is unknown",
+        ),
     ] = None,
 ) -> PairFilter:
     """Which open pairs the queue shows, and the merge rule acts on."""
-    return PairFilter(words=q, min_similarity=min_similarity, same_year=same_year, authors=authors)
+    return PairFilter(words=q, min_similarity=min_similarity, year=year, authors=authors)
 
 
 @router.get("/candidates/conflicts")
@@ -1526,6 +1540,8 @@ def _plan_view(plan: MergePlan, summaries: dict[UUID, Any]) -> dict[str, Any]:
                 "reason": reason,
                 "description": SKIP_REASONS.get(reason, reason),
                 "count": count,
+                # Whether "merge these anyway" is offered for this reason.
+                "overridable": reason in OVERRIDABLE_SKIPS,
                 "examples": [
                     {
                         "similarity": row.similarity,

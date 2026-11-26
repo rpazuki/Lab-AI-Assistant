@@ -172,6 +172,63 @@ export function DuplicateReview({
     }
   }
 
+  /** Merge the pairs skipped for one reason, with that check off and every other kept. */
+  async function mergeAnyway(skip: MergePlan["skipped"][number]) {
+    const overridden: MergeRule = { ...rule, override: skip.reason };
+    setError(null);
+    setMessage(null);
+    let check: MergePlan;
+    try {
+      setBusy(`Checking the ${skip.count.toLocaleString()} skipped pairs again without that check`);
+      check = await previewMergeRule(overridden, search);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "the skipped pairs could not be checked");
+      return;
+    } finally {
+      setBusy(null);
+    }
+    const still = check.skipped.reduce((sum, other) => sum + other.count, 0);
+    const stillWhy = check.skipped.map((other) => `${other.count.toLocaleString()}: ${other.description}`).join("; ");
+    if (check.groups === 0) {
+      setMessage(`None of these can be merged: each also fails another check (${stillWhy}).`);
+      return;
+    }
+    if (
+      !window.confirm(
+        `Merge ${check.works_merged.toLocaleString()} paper${check.works_merged === 1 ? "" : "s"} into ` +
+          `${check.groups.toLocaleString()} (${check.accepted_pairs.toLocaleString()} of the ` +
+          `${skip.count.toLocaleString()} pairs skipped because ${skip.description})?` +
+          (still > 0 ? `\n\n${still.toLocaleString()} stay skipped, for another reason (${stillWhy}).` : "") +
+          "\n\nEach merge is recorded as your decision to override this check, and is not undone automatically.",
+      )
+    ) {
+      return;
+    }
+    let merged = 0;
+    try {
+      let remaining = check.groups;
+      let stepId: string | null = null;
+      for (let round = 0; remaining > 0 && round < 500; round++) {
+        setBusy(`Merging: ${merged.toLocaleString()} of ${check.works_merged.toLocaleString()} papers`);
+        const step = await applyMergeRule(overridden, stepId, search);
+        stepId = step.step_id ?? stepId;
+        merged += step.works_merged;
+        remaining = step.remaining_groups;
+        if (step.groups_merged === 0) break;
+      }
+      setMessage(`${merged.toLocaleString()} paper${merged === 1 ? "" : "s"} merged, overriding: ${skip.description}.`);
+      pager.reset();
+      live.kick();
+      onChanged?.();
+      // The report under the rule is out of date: ask again what it skips now.
+      setPlan(await previewMergeRule(rule, search));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "the merge stopped part way; press again to continue");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function find(next: PairSearch) {
     setSearch(next);
     // A preview answers the pairs it was asked about, not the ones now shown.
@@ -280,17 +337,17 @@ export function DuplicateReview({
             <select
               aria-label="Filter pairs by year"
               className="rounded-control border border-border-strong bg-surface px-2 py-1.5 text-sm text-ink"
-              value={draft.same_year === null || draft.same_year === undefined ? "" : String(draft.same_year)}
+              value={draft.year ?? ""}
               onChange={(event) => {
-                const value = event.target.value;
-                const next = { ...draft, same_year: value === "" ? null : value === "true" };
+                const next = { ...draft, year: (event.target.value || null) as PairSearch["year"] };
                 setDraft(next);
                 find(next);
               }}
             >
-              <option value="">Either</option>
-              <option value="true">Same year</option>
-              <option value="false">Different years</option>
+              <option value="">Any</option>
+              <option value="same">Same year</option>
+              <option value="different">Different years</option>
+              <option value="unknown">A year is missing</option>
             </select>
           </label>
           <label className="space-y-1 text-xs text-muted">
@@ -305,9 +362,10 @@ export function DuplicateReview({
                 find(next);
               }}
             >
-              <option value="">Either</option>
+              <option value="">Any</option>
               <option value="agree">Agree</option>
               <option value="differ">Differ</option>
+              <option value="unknown">An author is missing</option>
             </select>
           </label>
           <span className="flex gap-2">
@@ -434,6 +492,22 @@ export function DuplicateReview({
                         <span className="font-mono text-xs">{skip.count.toLocaleString()}</span> skipped:{" "}
                         {skip.description}
                       </summary>
+                      {skip.overridable ? (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy !== null}
+                            onClick={() => void mergeAnyway(skip)}
+                          >
+                            Merge {skip.count === 1 ? "this pair" : `these ${skip.count.toLocaleString()} pairs`} anyway
+                          </Button>
+                          <span className="text-xs text-muted">
+                            Checks them again without this check; every other check still applies, and you confirm
+                            first.
+                          </span>
+                        </div>
+                      ) : null}
                       <ul className="mt-2 space-y-2">
                         {skip.examples.map((example, index) => (
                           <li key={index} className="flex flex-col gap-2 sm:flex-row">

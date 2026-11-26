@@ -363,17 +363,19 @@ class CandidateFilter(BaseModel):
 class PairFilter(BaseModel):
     """Which open duplicate pairs the queue shows, and a merge rule acts on.
 
-    ``words`` must all appear in either paper's title; ``same_year`` keeps pairs
-    published the same year (or, false, different years); ``authors`` keeps pairs
-    whose first authors ``agree`` or ``differ``.
+    ``words`` must all appear in either paper's title; ``year`` keeps pairs
+    published the ``same`` year, in ``different`` years, or where either year is
+    ``unknown``; ``authors`` keeps pairs whose first authors ``agree``, ``differ``,
+    or where either is ``unknown``. A pair with no year is neither the same year
+    nor different years, so only ``unknown`` finds it; the same for authors.
     """
 
     model_config = {"frozen": True}
 
     words: tuple[str, ...] = ()
     min_similarity: float | None = Field(default=None, ge=0, le=1)
-    same_year: bool | None = None
-    authors: str | None = Field(default=None, pattern="^(agree|differ)$")
+    year: str | None = Field(default=None, pattern="^(same|different|unknown)$")
+    authors: str | None = Field(default=None, pattern="^(agree|differ|unknown)$")
 
     @field_validator("words", mode="before")
     @classmethod
@@ -387,23 +389,27 @@ class PairFilter(BaseModel):
     @property
     def narrows(self) -> bool:
         """Whether it says more than a similarity, which the database filters alone."""
-        return bool(self.words) or self.same_year is not None or self.authors is not None
+        return bool(self.words) or self.year is not None or self.authors is not None
 
     def matches(self, row: Any, summaries: dict[Any, WorkSummary]) -> bool:
         if self.min_similarity is not None and row.similarity < self.min_similarity:
             return False
-        if (
-            self.same_year is not None
-            and row.year_gap is not None
-            and self.same_year != (row.year_gap == 0)
-        ):
-            return False
-        if (
-            self.authors is not None
-            and row.first_author_match is not None
-            and (self.authors == "agree") != bool(row.first_author_match)
-        ):
-            return False
+        if self.year is not None:
+            year = (
+                "unknown" if row.year_gap is None else "same" if row.year_gap == 0 else "different"
+            )
+            if year != self.year:
+                return False
+        if self.authors is not None:
+            authors = (
+                "unknown"
+                if row.first_author_match is None
+                else "agree"
+                if row.first_author_match
+                else "differ"
+            )
+            if authors != self.authors:
+                return False
         if self.words:
             titles = [
                 (summaries.get(work_id).title_search if summaries.get(work_id) else "")
@@ -412,6 +418,22 @@ class PairFilter(BaseModel):
             if not any(all(word in title for word in self.words) for title in titles):
                 return False
         return True
+
+
+#: The skip reasons a steward may override. A pair below the similarity asked
+#: for is changed by lowering it, and a merged work cannot be merged again.
+OVERRIDABLE_SKIPS = frozenset(
+    {
+        "unknown_year",
+        "different_year",
+        "different_authors",
+        "unknown_authors",
+        "different_kind",
+        "different_doi",
+        "generic_title",
+        "group_too_large",
+    }
+)
 
 
 class MergeRule(BaseModel):
@@ -438,3 +460,14 @@ class MergeRule(BaseModel):
     max_pairs_per_work: int = Field(default=3, ge=1, le=100)
     #: Skip every pair of a group that would merge more works than this at once.
     max_group_size: int = Field(default=3, ge=2, le=20)
+    #: A steward's override: take only the pairs the rule skipped for this one
+    #: reason, and judge them again with that guard off. Every other guard still
+    #: holds, so a pair that also fails another one stays skipped.
+    override: str | None = None
+
+    @field_validator("override")
+    @classmethod
+    def _overridable(cls, value: str | None) -> str | None:
+        if value is not None and value not in OVERRIDABLE_SKIPS:
+            raise ValueError(f"cannot be overridden: {value}")
+        return value

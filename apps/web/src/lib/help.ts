@@ -577,11 +577,12 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             title: "How to merge many duplicates at once",
             needs: STEWARD,
             steps: [
-              "Under **Search**, narrow the pairs if you want (words in either title, similarity, same or different years, whether first authors agree). **Merge by rule** acts only on the pairs the search found.",
+              "Under **Search**, narrow the pairs if you want (words in either title, similarity, years, first authors). **A year is missing** and **An author is missing** find the pairs a guard cannot judge. **Merge by rule** acts only on the pairs the search found.",
               "Under **Bulk action**, set **Title similarity at least**. Start at 1.00: identical titles.",
               "Keep the guards on unless you have a reason: **Same year**, **First authors do not differ**, **Not two different DOIs** (a preprint and its article, or an article and its dataset, are related publications, not duplicates), and **Skip titles in more than 3 pairs** (titles such as Editorial or Correction pair with everything).",
               "Select **Preview**. It says how many papers the rule merges, and how many pairs each guard skips, with examples. Open the examples and adjust the rule until the skipped pairs look right to skip.",
               "Select **Merge N papers** and confirm. Each merge keeps the paper with more identifiers and is recorded with the rule.",
+              "If you judge a group of skipped pairs to be duplicates after all, open it and select **Merge these N pairs anyway**. They are checked again with only that guard off, and the confirmation says how many merge and how many stay skipped for another reason. These merges are recorded as overriding the guard.",
               "Lower the threshold a step, preview again, and repeat while the previews still look right.",
             ],
             note: "A merge is not undone automatically. Previews change nothing, so preview as often as you like.",
