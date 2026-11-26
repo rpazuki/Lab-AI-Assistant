@@ -533,6 +533,60 @@ class TestIdentityConflicts:
         assert done == {"resolved": 1, "remaining": 0}
         assert (await lab.work(right)).identity_status is IdentityState.RESOLVED
 
+    async def test_each_pair_is_merged_as_the_same_paper(self, lab) -> None:
+        """Pairs sharing a paper become one, kept as the paper with the most identifiers."""
+        from lab_assistant.application.identity_conflicts import IdentityConflictService
+        from lab_assistant.domain.identity import IdentityDecision, IdentityDecisionType
+
+        first = await lab.paper("Oleaginous yeast lipid bodies", doi="10.1/a")
+        second = await lab.paper("Oleaginous yeast lipid bodies", doi="10.1/b", pmid="111")
+        third = await lab.paper("Oleaginous yeast lipid bodies.", pmid="222")
+        apart = await lab.paper("Microbial fatty acid specificity", doi="10.1/c")
+        apart_other = await lab.paper("Microbial fatty acid specificity", doi="10.1/d")
+        context = lab.harness.context
+        async with context.uow_factory() as uow:
+            for work_id in (first, second, third, apart, apart_other):
+                work = await uow.works.get(lab.ws, work_id)
+                work.identity_status = IdentityState.CONFLICT
+                await uow.works.update(work)
+            for pair in ((first, second), (second, third), (apart, apart_other)):
+                await uow.works.add_decision(
+                    IdentityDecision(
+                        id=context.new_id(),
+                        workspace_id=lab.ws,
+                        decision_type=IdentityDecisionType.REOPEN,
+                        subject_work_ids=pair,
+                        reason_code="different_dois",
+                        decided_by_type="automatic_rule",
+                        decided_at=context.now(),
+                    )
+                )
+            await uow.commit()
+        service = IdentityConflictService(context)
+
+        # Three pairs in all; the search narrows to the yeast pairs.
+        assert (await service.page(lab.actor))["pairs"] == 3
+        assert (await service.page(lab.actor, words=("yeast",)))["pairs"] == 2
+
+        done = await service.merge_all_same_paper(lab.actor, words=("yeast",))
+        assert done == {"merged": 2, "remaining": 0}
+        # The one with two strong identifiers is kept; the other two merged into it.
+        kept = await lab.work(second)
+        assert kept.identity_status is IdentityState.RESOLVED
+        for merged in (first, third):
+            assert (await lab.work(merged)).merged_into_work_id == second
+        async with context.uow_factory() as uow:
+            identifiers = await uow.works.list_identifiers(lab.ws, second)
+        assert {i.value_normalized for i in identifiers} == {"10.1/a", "10.1/b", "111", "222"}
+
+        # The search left the other pair alone, and nothing is merged twice.
+        assert (await lab.work(apart)).identity_status is IdentityState.CONFLICT
+        assert await service.merge_all_same_paper(lab.actor, words=("yeast",)) == {
+            "merged": 0,
+            "remaining": 0,
+        }
+        assert (await service.page(lab.actor))["pairs"] == 1
+
     async def test_the_paper_holding_a_claimed_identifier_is_named(self, lab) -> None:
         """No decision names the other paper: it is found by who holds the claimed DOI.
 

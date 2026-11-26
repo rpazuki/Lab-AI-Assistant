@@ -192,6 +192,11 @@ export interface IdentityConflict extends PaperSummary {
   })[];
 }
 
+/** A page of conflicts, and how many (paper, other paper) pairs the search found in all. */
+export interface IdentityConflictPage extends Page<IdentityConflict> {
+  pairs: number;
+}
+
 export interface MergeRule {
   min_similarity: number;
   require_same_year: boolean;

@@ -601,7 +601,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Select the **Identity conflicts** tab. Each paper is shown with its identifiers, the other paper involved, and why: a source record named identifiers both hold, or a source gave it an identifier the other already holds.",
               "If the two are one paper, select **Same paper: merge**.",
               "If they are different papers, select **Keep separate**: the paper is marked resolved, its identifiers where they are now.",
-              "To settle many: **Search** by title words, check the list, then select **Keep all N separate** under **Bulk action** and confirm. Merge any that are the same paper first.",
+              "To settle many: **Search** by title words and check the list. Under **Bulk action**, select **Merge each of the N pairs as the same paper** if they are all the same paper, or **Keep all N separate** if they are all different papers, and confirm. Settle the exceptions one at a time first.",
             ],
             note: "Every decision is recorded with who made it. A conflicted paper cannot enter a release until it is settled.",
           },

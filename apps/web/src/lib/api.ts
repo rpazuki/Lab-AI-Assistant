@@ -11,7 +11,6 @@
 
 import type {
   AbstractFallback,
-  IdentityConflict,
   AcquisitionPlan,
   Allowance,
   AnswerReview,
@@ -33,6 +32,8 @@ import type {
   ExtractionRun,
   ExtractionTemplate,
   GateStatus,
+  IdentityConflict,
+  IdentityConflictPage,
   Invitation,
   InvitationPreview,
   Me,
@@ -47,9 +48,9 @@ import type {
   QueueTask,
   Release,
   ReleaseGate,
+  Reviewer,
   ReviewItem,
   ReviewStep,
-  Reviewer,
   Role,
   RunComparison,
   RunReviewSummary,
@@ -462,7 +463,7 @@ export const listConflicts = (options: PageRequest & PairSearch = {}) => {
 
 /** Papers in conflict, each with the other paper(s) involved and why. */
 export const listIdentityConflicts = (options: PageRequest & { q?: string } = {}) =>
-  request<Page<IdentityConflict>>(`/identity-conflicts${queryString({ ...options })}`);
+  request<IdentityConflictPage>(`/identity-conflicts${queryString({ ...options })}`);
 
 /** Different papers: this one is resolved, its identifiers stay where they are. */
 export const keepConflictSeparate = (workId: string) =>
@@ -475,6 +476,13 @@ export const keepConflictSeparate = (workId: string) =>
 export const keepConflictsSeparate = (q?: string) =>
   request<{ resolved: number; remaining: number }>(
     `/identity-conflicts/keep-separate${queryString({ q })}`,
+    { method: "POST" },
+  );
+
+/** Merge up to 200 groups of conflicts the search finds as the same paper; repeat until none remain. */
+export const mergeConflictsSamePaper = (q?: string) =>
+  request<{ merged: number; remaining: number }>(
+    `/identity-conflicts/merge-same-paper${queryString({ q })}`,
     { method: "POST" },
   );
 

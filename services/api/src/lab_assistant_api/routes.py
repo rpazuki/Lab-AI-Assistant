@@ -1631,6 +1631,21 @@ async def keep_conflicts_separate(
     )
 
 
+@router.post(
+    "/identity-conflicts/merge-same-paper",
+    dependencies=[requires(InstallationCapability.CURATE_CORPUS)],
+)
+async def merge_conflicts_same_paper(
+    actor: CurrentActor,
+    container: Container,
+    q: Annotated[str | None, Query(description="words that must all appear in the title")] = None,
+) -> dict[str, int]:
+    """Merge each conflict the search finds with its other paper; repeat until none remain."""
+    return await IdentityConflictService(container.context).merge_all_same_paper(
+        actor, words=tuple((q or "").split())
+    )
+
+
 # ── a scope's screening rules, and the review history ──────────────────────
 @router.post(
     "/scopes/{scope_version_id}/rules/preview",

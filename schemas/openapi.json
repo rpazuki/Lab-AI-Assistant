@@ -8868,6 +8868,91 @@
         "summary": "Keep Conflicts Separate"
       }
     },
+    "/api/v1/identity-conflicts/merge-same-paper": {
+      "post": {
+        "description": "Merge each conflict the search finds with its other paper; repeat until none remain.",
+        "operationId": "merge_conflicts_same_paper_api_v1_identity_conflicts_merge_same_paper_post",
+        "parameters": [
+          {
+            "description": "words that must all appear in the title",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in the title",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Merge Conflicts Same Paper Api V1 Identity Conflicts Merge Same Paper Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Merge Conflicts Same Paper"
+      }
+    },
     "/api/v1/identity-conflicts/{work_id}/keep-separate": {
       "post": {
         "description": "Different papers: this one is resolved, its identifiers stay where they are.",

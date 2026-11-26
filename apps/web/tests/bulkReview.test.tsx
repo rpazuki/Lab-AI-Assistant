@@ -15,7 +15,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     dismissDuplicate: vi.fn(async () => ({ id: "p1", status: "dismissed" })),
     previewMergeRule: vi.fn(),
     applyMergeRule: vi.fn(),
-    listIdentityConflicts: vi.fn(async () => ({ items: [], next_cursor: null, total: 0 })),
+    listIdentityConflicts: vi.fn(async () => ({ items: [], next_cursor: null, total: 0, pairs: 0 })),
+    mergeConflictsSamePaper: vi.fn(async () => ({ merged: 2, remaining: 0 })),
     keepConflictSeparate: vi.fn(async () => ({ work_id: "c1", identity_status: "resolved" })),
     keepConflictsSeparate: vi.fn(async () => ({ resolved: 2, remaining: 0 })),
     mergeWorks: vi.fn(async () => ({ decision_id: "d2", after: {} })),
@@ -233,6 +234,7 @@ describe("Searching and settling duplicates and conflicts", () => {
       ],
       next_cursor: null,
       total: 2,
+      pairs: 1,
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
@@ -257,8 +259,39 @@ describe("Searching and settling duplicates and conflicts", () => {
     expect(await screen.findByText("2 papers kept separate.")).toBeInTheDocument();
   });
 
+  it("merges each pair the search found as the same paper, after a confirmation", async () => {
+    vi.mocked(api.listIdentityConflicts).mockResolvedValue({
+      items: [
+        {
+          ...paper("c1", "Microbial fatty acid specificity"),
+          identifiers: [],
+          with: [{ ...paper("c2", "Microbial fatty acid specificity"), reason: "two_papers_matched_one_record", identifier: null }],
+        },
+      ],
+      next_cursor: null,
+      total: 2,
+      pairs: 2,
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<DuplicateReview live={false} />);
+    await user.click(await screen.findByRole("tab", { name: "Identity conflicts (0)" }));
+
+    const button = await screen.findByRole("button", { name: "Merge each of the 2 pairs as the same paper" });
+    await user.click(button);
+    expect(confirm).toHaveBeenCalled();
+    expect(api.mergeConflictsSamePaper).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    await user.type(screen.getByLabelText("Conflict title has all of"), "fatty");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(button);
+    expect(api.mergeConflictsSamePaper).toHaveBeenCalledWith("fatty");
+    expect(await screen.findByText("2 papers merged as the same paper.")).toBeInTheDocument();
+  });
+
   it("says the conflicts are loading, not that there are none, until they arrive", async () => {
-    let answer: (page: { items: never[]; next_cursor: null; total: number }) => void = () => {};
+    let answer: (page: { items: never[]; next_cursor: null; total: number; pairs: number }) => void = () => {};
     vi.mocked(api.listIdentityConflicts).mockReturnValue(new Promise((resolve) => (answer = resolve)));
     const user = userEvent.setup();
     render(<DuplicateReview live={false} />);
@@ -266,7 +299,7 @@ describe("Searching and settling duplicates and conflicts", () => {
 
     expect(await screen.findByText("Loading the conflicts…")).toBeInTheDocument();
     expect(screen.queryByText("No paper is in conflict.")).not.toBeInTheDocument();
-    answer({ items: [], next_cursor: null, total: 0 });
+    answer({ items: [], next_cursor: null, total: 0, pairs: 0 });
     expect(await screen.findByText("No paper is in conflict.")).toBeInTheDocument();
     expect(screen.queryByText("Loading the conflicts…")).not.toBeInTheDocument();
   });

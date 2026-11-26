@@ -12,6 +12,7 @@ import {
   dismissDuplicate,
   keepConflictSeparate,
   keepConflictsSeparate,
+  mergeConflictsSamePaper,
   listConflicts,
   listIdentityConflicts,
   mergeDuplicate,
@@ -21,7 +22,7 @@ import {
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { PAGE_SIZES, usePager } from "@/lib/usePager";
-import type { DuplicateProposal, IdentityConflict, MergePlan, MergeRule, Page, PaperSummary } from "@/types";
+import type { DuplicateProposal, IdentityConflictPage, MergePlan, MergeRule, Page, PaperSummary } from "@/types";
 
 /** The cautious rule: exact titles, same year, no contradicting authors or DOIs. */
 export const DEFAULT_RULE: MergeRule = {
@@ -516,7 +517,7 @@ const WHY: Record<string, string> = {
   identifier_held_by_another_paper: "A source gave this paper an identifier the other paper already holds",
 };
 
-const NO_CONFLICTS: Page<IdentityConflict> = { items: [], next_cursor: null, total: 0 };
+const NO_CONFLICTS: IdentityConflictPage = { items: [], next_cursor: null, total: 0, pairs: 0 };
 
 /**
  * Papers whose strong identifiers the sources disagree on. Each is shown with the
@@ -524,7 +525,7 @@ const NO_CONFLICTS: Page<IdentityConflict> = { items: [], next_cursor: null, tot
  * separate). A conflicted paper cannot enter a release until settled.
  */
 function ConflictReview({ onChanged }: { onChanged?: () => void }) {
-  const [rows, setRows] = useState<Page<IdentityConflict>>(NO_CONFLICTS);
+  const [rows, setRows] = useState<IdentityConflictPage>(NO_CONFLICTS);
   // Until the first answer, an empty list means "not known yet", not "none".
   const [loaded, setLoaded] = useState(false);
   const [draft, setDraft] = useState("");
@@ -591,6 +592,37 @@ function ConflictReview({ onChanged }: { onChanged?: () => void }) {
     }
   }
 
+  async function mergeAll() {
+    if (rows.pairs === 0) return;
+    if (
+      !window.confirm(
+        `Merge each of the ${rows.pairs.toLocaleString()} pair${rows.pairs === 1 ? "" : "s"} the search found as the ` +
+          "same paper? Each paper is merged with the other paper shown beside it; papers linked through several pairs " +
+          "become one, kept as the one with the most identifiers. Each merge is recorded as your decision and is not " +
+          "undone automatically. Keep any that are different papers separate first.",
+      )
+    ) {
+      return;
+    }
+    let merged = 0;
+    try {
+      for (let round = 0; round < 200; round++) {
+        setBusy(`Merging: ${merged.toLocaleString()} so far`);
+        const step = await mergeConflictsSamePaper(query || undefined);
+        merged += step.merged;
+        if (step.remaining === 0 || step.merged === 0) break;
+      }
+      setMessage(`${merged.toLocaleString()} paper${merged === 1 ? "" : "s"} merged as the same paper.`);
+      pager.reset();
+      onChanged?.();
+      await refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "stopped part way; press again to continue");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <>
       <PanelSection title="Search" hint="Narrows the conflicts below. The bulk action acts on exactly what it finds.">
@@ -629,12 +661,18 @@ function ConflictReview({ onChanged }: { onChanged?: () => void }) {
         </form>
       </PanelSection>
 
-      <PanelSection title="Bulk action" hint="Keep separate: for conflicts that are different papers, as they are now.">
+      <PanelSection
+        title="Bulk action"
+        hint="Merge when the pairs are the same paper; keep separate when they are different papers."
+      >
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span className="text-ink">
             {rows.total.toLocaleString()} conflict{rows.total === 1 ? "" : "s"}
             {query ? " match this search" : ""}.
           </span>
+          <Button size="sm" disabled={busy !== null || rows.pairs === 0} onClick={() => void mergeAll()}>
+            Merge each of the {rows.pairs.toLocaleString()} pair{rows.pairs === 1 ? "" : "s"} as the same paper
+          </Button>
           <Button size="sm" variant="ghost" disabled={busy !== null || rows.total === 0} onClick={() => void keepAll()}>
             Keep all {rows.total.toLocaleString()} separate
           </Button>

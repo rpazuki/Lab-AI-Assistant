@@ -13,7 +13,7 @@ A work is in conflict when the sources disagree about which strong identifiers
 A conflicted paper cannot enter a release. A person settles it by merging it
 into the other paper (the same paper, recorded twice) or by keeping the two
 separate, which marks it resolved where its identifiers already are. The list is
-searchable by title words, and keeping separate can be applied to every paper a
+searchable by title words, and either answer can be applied to every paper a
 search found, in chunks the page repeats, like every bulk action.
 """
 
@@ -30,12 +30,16 @@ from lab_assistant.domain.identity import IdentityDecisionType
 from lab_assistant.domain.review import _words
 from lab_assistant.domain.states import IdentityState
 
-__all__ = ["CHUNK", "IdentityConflictService"]
+__all__ = ["CHUNK", "SAME_PAPER", "IdentityConflictService"]
 
 #: Conflicts kept separate per call; the page repeats until none remain.
 CHUNK = 200
 
 KEPT_SEPARATE = "steward_kept_separate"
+#: The reason a steward's "same paper" merge is recorded with, one or many.
+SAME_PAPER = "steward_same_paper"
+#: Merged works are followed to the paper they became, at most this far.
+_MAX_MERGE_CHAIN = 16
 
 
 class IdentityConflictService:
@@ -51,7 +55,7 @@ class IdentityConflictService:
         after: UUID | None = None,
     ) -> dict[str, Any]:
         """One page of conflicted papers matching the words, each with why and with whom."""
-        works = await self._matching(actor, words)
+        works = works_found = await self._matching(actor, words)
         total = len(works)
         if after is not None:
             works = [w for w in works if str(w.id) > str(after)]
@@ -90,6 +94,9 @@ class IdentityConflictService:
         return {
             "items": rows,
             "total": total,
+            # Distinct (paper, other paper) pairs across every conflict the search
+            # found: what "merge each as the same paper" would merge.
+            "pairs": len(await self._pairs(actor, works_found)),
             "next_cursor": str(shown[-1].id)
             if len(shown) == limit and len(works) > limit
             else None,
@@ -109,6 +116,60 @@ class IdentityConflictService:
         for work in works[:CHUNK]:
             await self.keep_separate(actor, work.id)
         return {"resolved": min(len(works), CHUNK), "remaining": max(0, len(works) - CHUNK)}
+
+    async def merge_all_same_paper(
+        self, actor: ActorContext, *, words: tuple[str, ...] = ()
+    ) -> dict[str, int]:
+        """Merge each conflict the search found with its other paper(s), ``CHUNK`` groups a call.
+
+        Pairs that share a paper form one group (A with B, B with C), merged
+        into the one with the most strong identifiers, so no merge targets a
+        paper an earlier one in the group already merged away. Each merge is the
+        same audited, reasoned merge as the button on a single conflict.
+        """
+        identity = IdentityService(self._context)
+        groups = _groups(await self._pairs(actor, await self._matching(actor, words)))
+        merged = 0
+        for group in groups[:CHUNK]:
+            keep = await self._keeper(actor, group)
+            for other in sorted(group - {keep}, key=str):
+                await identity.merge(
+                    actor, keep_work_id=keep, merge_work_id=other, reason_code=SAME_PAPER
+                )
+                merged += 1
+        remaining = sum(len(group) - 1 for group in groups[CHUNK:])
+        return {"merged": merged, "remaining": remaining}
+
+    async def _pairs(self, actor: ActorContext, works: list[Any]) -> list[tuple[UUID, UUID]]:
+        """Each conflicted paper with each other paper, both still active, every pair once."""
+        ws = actor.workspace_id
+        pairs: set[tuple[UUID, UUID]] = set()
+        async with self._context.uow_factory() as uow:
+            refused = await uow.works.list_decisions(
+                ws, decision_type=IdentityDecisionType.REOPEN.value
+            )
+            for work in works:
+                identifiers = await uow.works.list_identifiers(ws, work.id)
+                for other, _, _ in await self._counterparts(uow, ws, work.id, identifiers, refused):
+                    active = await _active(uow, ws, other)
+                    if active is not None and active != work.id:
+                        left, right = sorted((work.id, active), key=str)
+                        pairs.add((left, right))
+        return sorted(pairs, key=lambda pair: (str(pair[0]), str(pair[1])))
+
+    async def _keeper(self, actor: ActorContext, group: set[UUID]) -> UUID:
+        """The paper the others merge into: the most strong identifiers, then the lowest id."""
+        ws = actor.workspace_id
+        async with self._context.uow_factory() as uow:
+            strong = {
+                work_id: sum(
+                    1
+                    for i in await uow.works.list_identifiers(ws, work_id)
+                    if i.scheme.is_strong and i.status == "active"
+                )
+                for work_id in group
+            }
+        return min(group, key=lambda work_id: (-strong[work_id], str(work_id)))
 
     async def _matching(self, actor: ActorContext, words: tuple[str, ...]) -> list[Any]:
         ws = actor.workspace_id
@@ -162,3 +223,36 @@ class IdentityConflictService:
                     holder.id, ("identifier_held_by_another_paper", f"{scheme.value}:{value}")
                 )
         return [(other, reason, ident) for other, (reason, ident) in found.items()]
+
+
+async def _active(uow: Any, ws: UUID, work_id: UUID) -> UUID | None:
+    """The active paper this one is, following merges; ``None`` if it is gone."""
+    for _ in range(_MAX_MERGE_CHAIN):
+        work = await uow.works.get(ws, work_id)
+        if work is None:
+            return None
+        if work.merged_into_work_id is None:
+            return work.id if work.is_active else None
+        work_id = work.merged_into_work_id
+    return None
+
+
+def _groups(pairs: list[tuple[UUID, UUID]]) -> list[set[UUID]]:
+    """Papers joined by any pair, as groups, in a stable order."""
+    parent: dict[UUID, UUID] = {}
+
+    def root(node: UUID) -> UUID:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for left, right in pairs:
+        a, b = root(left), root(right)
+        if a != b:
+            parent[max(a, b, key=str)] = min(a, b, key=str)
+    groups: dict[UUID, set[UUID]] = {}
+    for node in list(parent):
+        groups.setdefault(root(node), set()).add(node)
+    return sorted(groups.values(), key=lambda group: min(str(n) for n in group))
