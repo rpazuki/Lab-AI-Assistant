@@ -430,7 +430,10 @@ export interface Member {
   user_id: string;
   email: string;
   full_name: string | null;
+  /** What their role is called: a built-in one, or one this workspace defined. */
   role: string;
+  /** Where their capabilities come from. The same as `role` unless it is a defined one. */
+  base_role: string;
   status: "active" | "suspended" | "invited" | "expired";
   extra_capabilities: string[];
   capabilities: string[];
@@ -580,6 +583,30 @@ export interface ScopeDeletionPlan {
   deletable: boolean;
 }
 
+/** One role a rule or a member can name. `custom` ones were defined by an admin. */
+export interface RoleOption {
+  name: string;
+  label: string;
+  custom: boolean;
+}
+
+/**
+ * A role a member can be given, with what it is for and how many hold it.
+ *
+ * `id` is null for the four that ship with the product: they are names in the
+ * code, not rows, so there is nothing to change or remove.
+ */
+export interface Role {
+  id: string | null;
+  name: string;
+  display_name: string;
+  description: string;
+  base_role: string;
+  custom: boolean;
+  members: number;
+  capabilities: string[];
+}
+
 /** Who may reach a scope's papers, and the roles and people to choose from. */
 export interface ScopeAccess {
   scope_id: string;
@@ -593,7 +620,7 @@ export interface ScopeAccess {
     policy_basis: string;
   }[];
   /** Roles a rule can name. Admins are left out: they reach everything anyway. */
-  roles: string[];
+  roles: RoleOption[];
   members: { user_id: string; role: string; reaches_everything: boolean }[];
 }
 

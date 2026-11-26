@@ -208,7 +208,7 @@ class TestHandingOutAccess:
         view = await service.view(admin, mine.id)
         assert [rule["subject_role"] for rule in view["rules"]] == ["researcher"]
         # Admins are not offered: the engine lets them through without a rule.
-        assert "admin" not in view["roles"]
+        assert "admin" not in [choice["name"] for choice in view["roles"]]
 
         await service.revoke(admin, mine.id, grant_id)
         assert await _reachable(scoped, Role.RESEARCHER) == set()

@@ -11,30 +11,88 @@ import {
   Panel,
   StateChip,
 } from "@/components/ui/primitives";
+import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { Pager } from "@/components/ui/Pager";
 import { SortHeader, TableSearch } from "@/components/ui/table";
 import {
   createInvitation,
+  createRole,
   deleteInvitation,
+  deleteRole,
   getMe,
   getMemberSession,
   invitationLink,
   listInvitations,
   listMemberSessions,
   listMembers,
+  listRoles,
   revokeInvitation,
   revokeMemberSessions,
   updateMember,
+  updateRole,
 } from "@/lib/api";
 import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
-import type { ChatMessage, Invitation, Member, MemberSession, Page } from "@/types";
+import type { ChatMessage, Invitation, Member, MemberSession, Page, Role } from "@/types";
 
-/** The roles a person can hold, in order of reach. A service account is not one. */
+/**
+ * The roles that ship with the product, in order of reach. A service account is
+ * not one. They are listed here so the selects are never empty on first paint;
+ * the workspace's own list replaces them as soon as it arrives, and it includes
+ * any role an admin defined.
+ */
 export const ROLES = ["researcher", "reviewer", "data_steward", "admin"] as const;
 
+/** The built-in roles a defined one can be based on. Never admin: see below. */
+const BASE_ROLES = ["researcher", "reviewer", "data_steward"] as const;
+
 const roleLabel = (role: string) => role.replace(/_/g, " ");
+
+/** What to call a role on screen: the wording its admin gave it, else its name. */
+const labelFor = (roles: Role[], name: string) =>
+  roles.find((item) => item.name === name)?.display_name ?? roleLabel(name);
+
+/**
+ * The options for a role select: built-in ones first, then any defined here.
+ *
+ * The two are separated because the difference matters when the choice is about
+ * who reaches confidential material — a role defined here is one somebody in
+ * this workspace decided on, not one the product shipped.
+ */
+function RoleOptions({ roles }: { roles: Role[] }) {
+  const choices: { name: string; label: string; custom: boolean }[] =
+    roles.length > 0
+      ? roles.map((item) => ({
+          name: item.name,
+          label: item.display_name,
+          custom: item.custom,
+        }))
+      : ROLES.map((name) => ({ name, label: roleLabel(name), custom: false }));
+  const defined = choices.filter((item) => item.custom);
+  return (
+    <>
+      <optgroup label="Built in">
+        {choices
+          .filter((item) => !item.custom)
+          .map((item) => (
+            <option key={item.name} value={item.name}>
+              {item.label}
+            </option>
+          ))}
+      </optgroup>
+      {defined.length > 0 ? (
+        <optgroup label="Defined here">
+          {defined.map((item) => (
+            <option key={item.name} value={item.name}>
+              {item.label}
+            </option>
+          ))}
+        </optgroup>
+      ) : null}
+    </>
+  );
+}
 
 function when(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString() : "—";
@@ -57,6 +115,7 @@ const selectClass =
  */
 export function MembersClient() {
   const [members, setMembers] = useState<Member[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [selfId, setSelfId] = useState<string | null>(null);
   const [defaultLimit, setDefaultLimit] = useState<number | null>(null);
@@ -75,14 +134,16 @@ export function MembersClient() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextMembers, nextInvitations, me] = await Promise.all([
+      const [nextMembers, nextInvitations, nextRoles, me] = await Promise.all([
         listMembers(),
         listInvitations(),
+        listRoles(),
         getMe(),
       ]);
       setMembers(nextMembers.items);
       setDefaultLimit(nextMembers.token_limit_default);
       setOversight(nextMembers.chat_admin_access);
+      setRoles(nextRoles.items);
       setInvitations(nextInvitations);
       setSelfId(me.user_id);
       setError(null);
@@ -196,11 +257,7 @@ export function MembersClient() {
               value={role}
               onChange={(event) => setRole(event.target.value)}
             >
-              {ROLES.map((item) => (
-                <option key={item} value={item}>
-                  {roleLabel(item)}
-                </option>
-              ))}
+              <RoleOptions roles={roles} />
             </select>
           </Field>
           <Field label="Valid for (days)">
@@ -232,6 +289,13 @@ export function MembersClient() {
           </div>
         ) : null}
       </Panel>
+
+      <RolesPanel
+        roles={roles}
+        onChanged={async (action, done) => {
+          await act(action, done);
+        }}
+      />
 
       <UsageTiles members={members} />
 
@@ -290,15 +354,11 @@ export function MembersClient() {
                           onChange={(event) =>
                             act(
                               () => updateMember(member.user_id, { role: event.target.value }),
-                              `${member.email} is now ${roleLabel(event.target.value)}.`,
+                              `${member.email} is now ${labelFor(roles, event.target.value)}.`,
                             )
                           }
                         >
-                          {ROLES.map((item) => (
-                            <option key={item} value={item}>
-                              {roleLabel(item)}
-                            </option>
-                          ))}
+                          <RoleOptions roles={roles} />
                         </select>
                       </td>
                       <td>
@@ -542,6 +602,242 @@ function UsageCell({ member, onEdit }: { member: Member; onEdit: () => void }) {
         {member.limit_reached ? " · limit reached" : ""}
       </p>
     </div>
+  );
+}
+
+/**
+ * The roles this workspace has, and the form that adds one.
+ *
+ * A role is a *name for an audience*: the people who may reach a particular
+ * body of work. Patented and confidential material does not divide along
+ * "researcher" and "reviewer" lines, so the built-in four cannot express who
+ * may reach it — a role defined here can, and a rule on a scope then names it
+ * once and keeps meaning the same thing as people join and leave.
+ *
+ * A role carries no permissions of its own. "Based on" says what its members
+ * may *do*, taken from a built-in bundle; what they may *reach* is decided on
+ * each scope, under Access. Admin is not offered as a base: an admin is let
+ * through every rule without one, so a role based on it could never be held
+ * back by the mechanism the role exists for.
+ */
+function RolesPanel({
+  roles,
+  onChanged,
+}: {
+  roles: Role[];
+  onChanged: (action: () => Promise<unknown>, done: string) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [base, setBase] = useState<string>("researcher");
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const defined = roles.filter((role) => role.custom);
+
+  async function add(event: React.FormEvent) {
+    event.preventDefault();
+    const typed = name.trim();
+    if (!typed) return;
+    setBusy(true);
+    await onChanged(
+      () =>
+        createRole({
+          name: typed,
+          display_name: typed,
+          description: description.trim(),
+          base_role: base,
+        }),
+      `${typed} is now a role. Nobody holds it and it reaches nothing until you add it to a scope under Access.`,
+    );
+    setName("");
+    setDescription("");
+    setBusy(false);
+  }
+
+  return (
+    <CollapsiblePanel
+      title="Roles"
+      storageKey="members.roles"
+      count={`${defined.length} defined here`}
+    >
+      <p className="max-w-3xl text-sm text-muted">
+        A role names a group of people so a rule can be written about them once. Use one when a
+        body of work — patented, confidential, under embargo — should reach some people and not
+        others: define the role here, put people in it in the members table, then open the scope
+        to it under <strong>Access</strong>. Defining a role grants nothing on its own.
+      </p>
+      <form className="mt-4 grid gap-3 sm:grid-cols-[1fr_12rem_1fr_auto] sm:items-end" onSubmit={add}>
+        <Field label="Role name">
+          <Input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Patent holders"
+          />
+        </Field>
+        <Field label="Based on">
+          <select
+            className={`${selectClass} w-full py-2`}
+            value={base}
+            onChange={(event) => setBase(event.target.value)}
+          >
+            {BASE_ROLES.map((item) => (
+              <option key={item} value={item}>
+                {roleLabel(item)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="What it is for">
+          <Input
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Named on the patent filings"
+          />
+        </Field>
+        <Button type="submit" disabled={busy || !name.trim()}>
+          Add role
+        </Button>
+      </form>
+
+      {defined.length === 0 ? (
+        <Empty>
+          No roles of your own yet. Everyone holds one of the four built-in ones.
+        </Empty>
+      ) : (
+        <ul className="mt-4 divide-y divide-border">
+          {defined.map((role) => (
+            <li key={role.id} className="flex flex-wrap items-center gap-3 py-3">
+              {editing === role.id ? (
+                <RoleEditor
+                  role={role}
+                  onCancel={() => setEditing(null)}
+                  onSave={(changes) => {
+                    setEditing(null);
+                    void onChanged(
+                      () => updateRole(role.id as string, changes),
+                      `${changes.display_name} is how the role reads now. Who it reaches is unchanged.`,
+                    );
+                  }}
+                />
+              ) : (
+                <>
+                  <span className="font-medium text-ink">{role.display_name}</span>
+                  <code className="rounded bg-surface-subtle px-1.5 py-0.5 text-xs text-muted">
+                    {role.name}
+                  </code>
+                  <span className="text-sm text-muted">
+                    {role.members === 1 ? "1 person" : `${role.members} people`}
+                  </span>
+                  {role.description ? (
+                    <span className="text-sm text-muted">· {role.description}</span>
+                  ) : null}
+                  <label className="ml-auto flex items-center gap-2 text-sm text-muted">
+                    Based on
+                    <select
+                      aria-label={`Based on, for ${role.display_name}`}
+                      className={selectClass}
+                      value={role.base_role}
+                      onChange={(event) =>
+                        void onChanged(
+                          () => updateRole(role.id as string, { base_role: event.target.value }),
+                          `${role.display_name} now does what a ${roleLabel(event.target.value)} does.`,
+                        )
+                      }
+                    >
+                      {BASE_ROLES.map((item) => (
+                        <option key={item} value={item}>
+                          {roleLabel(item)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="text-sm text-link underline hover:no-underline"
+                    aria-label={`Change the wording of ${role.name}`}
+                    onClick={() => setEditing(role.id as string)}
+                  >
+                    Change wording
+                  </button>
+                  {role.members > 0 ? (
+                    // No button: the server refuses while anyone is in the role, and
+                    // a control that is only going to be refused teaches nothing.
+                    <span className="text-xs text-muted">Move everyone out of it to remove it</span>
+                  ) : (
+                    <DeleteButton
+                      what={`the ${role.display_name} role`}
+                      consequence="Any rule that named it goes with it, so whatever it opened closes."
+                      onDelete={() =>
+                        void onChanged(
+                          () => deleteRole(role.id as string),
+                          `${role.display_name} is gone, with any rule that named it.`,
+                        )
+                      }
+                    />
+                  )}
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </CollapsiblePanel>
+  );
+}
+
+/**
+ * Correcting what a role is called and what it is for.
+ *
+ * The name rules are written about — the one in the grey box — is deliberately
+ * not editable. It is stored on every rule that names the role and on every
+ * membership that holds it, so changing it here would detach both and leave
+ * rules that still look live while matching nobody. Only the reading changes,
+ * which is what a correction usually means.
+ */
+function RoleEditor({
+  role,
+  onSave,
+  onCancel,
+}: {
+  role: Role;
+  onSave: (changes: { display_name: string; description: string }) => void;
+  onCancel: () => void;
+}) {
+  const [displayName, setDisplayName] = useState(role.display_name);
+  const [description, setDescription] = useState(role.description);
+  const named = displayName.trim();
+  return (
+    <form
+      className="flex w-full flex-wrap items-center gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (named) onSave({ display_name: named, description: description.trim() });
+      }}
+    >
+      <Input
+        aria-label={`Shown as, for ${role.name}`}
+        className="w-56 py-1"
+        value={displayName}
+        onChange={(event) => setDisplayName(event.target.value)}
+      />
+      <Input
+        aria-label={`What ${role.name} is for`}
+        className="w-72 py-1"
+        value={description}
+        onChange={(event) => setDescription(event.target.value)}
+        placeholder="What it is for"
+      />
+      <Button type="submit" size="sm" disabled={!named}>
+        Save
+      </Button>
+      <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+        Cancel
+      </Button>
+      <span className="basis-full text-xs text-muted">
+        Rules are written about <code>{role.name}</code>, which stays as it is, so whoever this
+        role reaches does not change.
+      </span>
+    </form>
   );
 }
 

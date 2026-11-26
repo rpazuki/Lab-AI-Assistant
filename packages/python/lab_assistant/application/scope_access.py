@@ -127,6 +127,16 @@ class ScopeAccessService:
     def __init__(self, context: ServiceContext) -> None:
         self._context = context
 
+    @staticmethod
+    async def _role_name(uow: Any, workspace_id: UUID, role: str | Role) -> str:
+        """The name a rule may hold: a built-in role, or one defined here."""
+        text = role.value if isinstance(role, Role) else str(role).strip().lower()
+        if any(built_in.value == text for built_in in Role):
+            return text
+        if await uow.workspaces.get_role(workspace_id, text) is None:
+            raise ValidationFailure(f"{text!r} is not a role in this workspace")
+        return text
+
     async def _canopy(self, uow: Any, workspace_id: UUID, scope_version_id: UUID) -> Any:
         version = await uow.configs.get_scope_version(workspace_id, scope_version_id)
         if version is None:
@@ -143,6 +153,7 @@ class ScopeAccessService:
                 ws, resource_type=ResourceType.SCOPE.value, resource_id=version.scope_id
             )
             members = await uow.workspaces.list_memberships(ws)
+            defined = await uow.workspaces.list_roles(ws)
         by_user = {m.user_id: m for m in members}
         return {
             "scope_id": str(version.scope_id),
@@ -160,11 +171,18 @@ class ScopeAccessService:
             ],
             # Admins are left out: the engine lets them through without a rule, so
             # offering to write one for them would promise something it does not do.
-            "roles": [role.value for role in Role if role is not Role.ADMIN],
+            # The roles an admin defined here come last, because a rule about one
+            # of those is the usual way confidential material is kept apart.
+            "roles": [
+                {"name": role.value, "label": role.value.replace("_", " "), "custom": False}
+                for role in Role
+                if role is not Role.ADMIN
+            ]
+            + [{"name": role.slug, "label": role.display_name, "custom": True} for role in defined],
             "members": [
                 {
                     "user_id": str(m.user_id),
-                    "role": m.role.value,
+                    "role": m.role_key,
                     "reaches_everything": m.role is Role.ADMIN,
                 }
                 for m in sorted(by_user.values(), key=lambda m: str(m.user_id))
@@ -176,24 +194,30 @@ class ScopeAccessService:
         actor: ActorContext,
         scope_version_id: UUID,
         *,
-        role: Role | None = None,
+        role: str | Role | None = None,
         user_id: UUID | None = None,
         effect: Effect = Effect.ALLOW,
     ) -> UUID:
-        """Write one rule about this scope, for a role or for one person."""
+        """Write one rule about this scope, for a role or for one person.
+
+        The role is named, not referenced: a built-in one, or one an admin
+        defined here. An unknown name is refused rather than written, because a
+        rule nothing can match looks on screen exactly like access that works.
+        """
         actor.require(Capability.MANAGE_POLICY)
         if (role is None) == (user_id is None):
             raise ValidationFailure("name either a role or a person, not both and not neither")
         context = self._context
         ws = actor.workspace_id
         async with context.uow_factory() as uow:
+            named = await self._role_name(uow, ws, role) if role is not None else None
             version = await self._canopy(uow, ws, scope_version_id)
             grant = GrantSpec(
                 id=context.new_id(),
                 workspace_id=ws,
-                subject_type=SubjectType.ROLE if role else SubjectType.USER,
-                subject_role=role.value if role else None,
-                subject_id=None if role else user_id,
+                subject_type=SubjectType.ROLE if named else SubjectType.USER,
+                subject_role=named,
+                subject_id=None if named else user_id,
                 resource_type=ResourceType.SCOPE,
                 resource_id=version.scope_id,
                 action=PolicyAction.QUERY,
@@ -214,7 +238,7 @@ class ScopeAccessService:
                     metadata={
                         "grant_id": str(grant.id),
                         "effect": effect.value,
-                        "role": role.value if role else None,
+                        "role": named,
                         "user_id": str(user_id) if user_id else None,
                         "scope_name": version.name,
                     },

@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MembersClient } from "@/components/MembersClient";
 import { ApiError } from "@/lib/api";
-import type { Invitation, Me, Member } from "@/types";
+import type { Invitation, Me, Member, Role } from "@/types";
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -13,6 +13,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getMe: vi.fn(),
     listMembers: vi.fn(),
     listInvitations: vi.fn(),
+    listRoles: vi.fn(),
+    createRole: vi.fn(async () => ({ id: "r1", name: "patent_holders" })),
+    updateRole: vi.fn(async () => ({ id: "r1", name: "patent_holders" })),
+    deleteRole: vi.fn(async () => ({ rules_removed: 0 })),
     createInvitation: vi.fn(),
     revokeInvitation: vi.fn(async () => ({ id: "i1", state: "revoked" })),
     updateMember: vi.fn(),
@@ -71,6 +75,7 @@ function member(overrides: Partial<Member>): Member {
     email: "researcher@lab.invalid",
     full_name: null,
     role: "researcher",
+    base_role: "researcher",
     status: "active",
     extra_capabilities: [],
     capabilities: ["ask"],
@@ -98,6 +103,36 @@ function roster(items: Member[]) {
   return { items, token_limit_default: 1_000_000, chat_admin_access: true };
 }
 
+/** The four built-in roles as `/roles` returns them, plus any defined here. */
+function roleList(...defined: Partial<Role>[]) {
+  const built = ["researcher", "reviewer", "data_steward", "admin"].map((name) => ({
+    id: null,
+    name,
+    display_name: name.replace(/_/g, " "),
+    description: "",
+    base_role: name,
+    custom: false,
+    members: 0,
+    capabilities: [],
+  }));
+  return {
+    items: [
+      ...built,
+      ...defined.map((role) => ({
+        id: "r1",
+        name: "patent_holders",
+        display_name: "Patent holders",
+        description: "Named on the patent filings",
+        base_role: "researcher",
+        custom: true,
+        members: 0,
+        capabilities: ["ask"],
+        ...role,
+      })),
+    ] as Role[],
+  };
+}
+
 const OPEN: Invitation = {
   id: "i1",
   email: "new@lab.invalid",
@@ -120,6 +155,7 @@ describe("MembersClient", () => {
       ]),
     );
     vi.mocked(api.listInvitations).mockResolvedValue([OPEN]);
+    vi.mocked(api.listRoles).mockResolvedValue(roleList());
   });
 
   it("lists members and keeps an admin's own row out of reach", async () => {
@@ -259,5 +295,155 @@ describe("MembersClient", () => {
     render(<MembersClient />);
     await screen.findByRole("button", { name: "Suspend" });
     expect(screen.queryByRole("button", { name: "Read chats" })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Roles an admin defines, for audiences the built-in four do not name.
+ *
+ * Defining one grants nothing: it creates a name, which a rule on a scope can
+ * then be written about. The panel says so, because a page that let someone
+ * believe otherwise would leave confidential material open while looking shut.
+ */
+describe("Roles", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getMe).mockResolvedValue(ME);
+    vi.mocked(api.listMembers).mockResolvedValue(roster([member({})]));
+    vi.mocked(api.listInvitations).mockResolvedValue([]);
+    vi.mocked(api.listRoles).mockResolvedValue(roleList());
+  });
+
+  it("defines one from the name as it was typed", async () => {
+    render(<MembersClient />);
+
+    await userEvent.type(
+      await screen.findByRole("textbox", { name: "Role name" }),
+      "Patent holders",
+    );
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "What it is for" }),
+      "Named on the filings",
+    );
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Based on" }), "reviewer");
+    await userEvent.click(screen.getByRole("button", { name: "Add role" }));
+
+    expect(api.createRole).toHaveBeenCalledWith({
+      name: "Patent holders",
+      display_name: "Patent holders",
+      description: "Named on the filings",
+      base_role: "reviewer",
+    });
+  });
+
+  it("says a new role reaches nothing until a scope is opened to it", async () => {
+    render(<MembersClient />);
+    await userEvent.type(
+      await screen.findByRole("textbox", { name: "Role name" }),
+      "Patent holders",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Add role" }));
+
+    expect(await screen.findByText(/reaches nothing until you add it to a scope/)).toBeInTheDocument();
+  });
+
+  it("offers a defined role in the member and invitation menus", async () => {
+    vi.mocked(api.listRoles).mockResolvedValue(roleList({}));
+    render(<MembersClient />);
+
+    const menu = await screen.findByRole("combobox", { name: "Role of researcher@lab.invalid" });
+    expect(within(menu).getByRole("option", { name: "Patent holders" })).toBeInTheDocument();
+    await userEvent.selectOptions(menu, "patent_holders");
+    expect(api.updateMember).toHaveBeenCalledWith("u2", { role: "patent_holders" });
+  });
+
+  it("will not offer to remove a role somebody is still in", async () => {
+    vi.mocked(api.listRoles).mockResolvedValue(roleList({ members: 2 }));
+    render(<MembersClient />);
+
+    expect(await screen.findByText("2 people")).toBeInTheDocument();
+    expect(screen.getByText("Move everyone out of it to remove it")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Delete the Patent/ })).toBeNull();
+  });
+
+  it("removes one nobody holds", async () => {
+    vi.mocked(api.listRoles).mockResolvedValue(roleList({}));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<MembersClient />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Delete the Patent holders role" }),
+    );
+
+    expect(api.deleteRole).toHaveBeenCalledWith("r1");
+  });
+
+  it("changes what the people in a role may do", async () => {
+    vi.mocked(api.listRoles).mockResolvedValue(roleList({}));
+    render(<MembersClient />);
+
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "Based on, for Patent holders" }),
+      "data_steward",
+    );
+
+    expect(api.updateRole).toHaveBeenCalledWith("r1", { base_role: "data_steward" });
+  });
+
+  it("corrects how a role reads", async () => {
+    vi.mocked(api.listRoles).mockResolvedValue(roleList({ members: 3 }));
+    render(<MembersClient />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Change the wording of patent_holders" }),
+    );
+    const shown = screen.getByRole("textbox", { name: "Shown as, for patent_holders" });
+    await userEvent.clear(shown);
+    await userEvent.type(shown, "Patent inventors");
+    const purpose = screen.getByRole("textbox", { name: "What patent_holders is for" });
+    await userEvent.clear(purpose);
+    await userEvent.type(purpose, "Named on the EP filings");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(api.updateRole).toHaveBeenCalledWith("r1", {
+      display_name: "Patent inventors",
+      description: "Named on the EP filings",
+    });
+  });
+
+  it("keeps the name rules are written about out of the correction", async () => {
+    vi.mocked(api.listRoles).mockResolvedValue(roleList({}));
+    render(<MembersClient />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Change the wording of patent_holders" }),
+    );
+
+    // Nothing on the form edits the slug, and the form says why: every rule and
+    // every membership holds it, so a correction here must not move it.
+    expect(screen.getByText(/which stays as it is/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Shown as, for patent_holders" })).toHaveValue(
+      "Patent holders",
+    );
+  });
+
+  it("writes nothing when a correction is cancelled", async () => {
+    vi.mocked(api.listRoles).mockResolvedValue(roleList({}));
+    render(<MembersClient />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Change the wording of patent_holders" }),
+    );
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Shown as, for patent_holders" }),
+      " and friends",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(api.updateRole).not.toHaveBeenCalled();
+    // The row is back as it was, so the typing went nowhere.
+    expect(
+      await screen.findByRole("button", { name: "Change the wording of patent_holders" }),
+    ).toBeInTheDocument();
   });
 });

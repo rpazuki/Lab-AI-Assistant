@@ -939,7 +939,7 @@ class TestCollections:
         assert empty.status_code == 200, empty.text
         assert empty.json()["rules"] == []
         # Admins reach everything without a rule, so none is offered for them.
-        assert "admin" not in empty.json()["roles"]
+        assert "admin" not in [choice["name"] for choice in empty.json()["roles"]]
 
         added = await api["client"].post(
             f"/api/v1/scopes/{scope_id}/access",
@@ -967,6 +967,108 @@ class TestCollections:
         assert (
             await api["client"].get(f"/api/v1/scopes/{scope_id}/access", headers=researcher)
         ).status_code == 403
+
+    async def test_a_role_is_defined_by_an_admin_and_a_scope_opened_to_it(self, api) -> None:
+        """The whole path, as the pages walk it.
+
+        An admin names an audience the built-in roles do not — the people who may
+        reach patented material — then opens one scope to that name. A researcher
+        is refused both halves: defining a role decides what rules can say, and
+        reading them is curating.
+        """
+        token = await _login(api["client"], "steward@lab.invalid")
+        created = await api["client"].post(
+            "/api/v1/scopes",
+            headers=_auth(token),
+            json={
+                "name": "Yarrowia",
+                "scientific_objective": "Yarrowia literature",
+                "intended_uses": ["literature search"],
+                "connectors": [{"connector_id": "pubmed-fixture", "query": "lipid production"}],
+            },
+        )
+        scope_id = created.json()["id"]
+
+        defined = await api["client"].post(
+            "/api/v1/roles",
+            headers=_auth(token),
+            json={
+                "name": "Patent holders",
+                "description": "Named on the filings",
+                "base_role": "reviewer",
+            },
+        )
+        assert defined.status_code == 201, defined.text
+        assert defined.json()["name"] == "patent_holders"
+
+        listed = await api["client"].get("/api/v1/roles", headers=_auth(token))
+        by_name = {role["name"]: role for role in listed.json()["items"]}
+        assert by_name["patent_holders"]["custom"] is True
+        assert by_name["patent_holders"]["members"] == 0
+        assert by_name["researcher"]["custom"] is False
+
+        # The access panel offers it beside the built-in ones.
+        offered = await api["client"].get(f"/api/v1/scopes/{scope_id}/access", headers=_auth(token))
+        assert {
+            "name": "patent_holders",
+            "label": "Patent holders",
+            "custom": True,
+        } in offered.json()["roles"]
+
+        opened = await api["client"].post(
+            f"/api/v1/scopes/{scope_id}/access",
+            headers=_auth(token),
+            json={"role": "patent_holders"},
+        )
+        assert opened.status_code == 201, opened.text
+
+        researcher = _auth(await _login(api["client"], "researcher@lab.invalid"))
+        assert (await api["client"].get("/api/v1/roles", headers=researcher)).status_code == 403
+        refused = await api["client"].post(
+            "/api/v1/roles", headers=researcher, json={"name": "their own"}
+        )
+        assert refused.status_code == 403, refused.text
+
+        # Removing it takes the rule that named it, and nothing else.
+        removed = await api["client"].delete(
+            f"/api/v1/roles/{defined.json()['id']}", headers=_auth(token)
+        )
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["rules_removed"] == 1
+        after = await api["client"].get(f"/api/v1/scopes/{scope_id}/access", headers=_auth(token))
+        assert after.json()["rules"] == []
+
+    async def test_a_member_given_a_defined_role_is_shown_holding_it(self, api) -> None:
+        """One name in the dropdown, and the bundle it is based on beside it."""
+        token = _auth(await _login(api["client"], "steward@lab.invalid"))
+        await api["client"].post(
+            "/api/v1/roles",
+            headers=token,
+            json={"name": "patent holders", "base_role": "reviewer"},
+        )
+        members = await api["client"].get("/api/v1/members", headers=token)
+        researcher = next(
+            item for item in members.json()["items"] if item["email"] == "researcher@lab.invalid"
+        )
+
+        moved = await api["client"].patch(
+            f"/api/v1/members/{researcher['user_id']}",
+            headers=token,
+            json={"role": "patent_holders"},
+        )
+
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["role"] == "patent_holders"
+        assert moved.json()["base_role"] == "reviewer"
+        assert "review_claims" in moved.json()["capabilities"]
+
+        counted = await api["client"].get("/api/v1/roles", headers=token)
+        held = {role["name"]: role["members"] for role in counted.json()["items"]}
+        assert held["patent_holders"] == 1
+        # And the role cannot be removed while they are in it.
+        listed = next(role for role in counted.json()["items"] if role["name"] == "patent_holders")
+        refused = await api["client"].delete(f"/api/v1/roles/{listed['id']}", headers=token)
+        assert refused.status_code == 422, refused.text
 
     async def test_a_draft_is_corrected_in_place_keeping_its_version(self, api) -> None:
         token = await _login(api["client"], "steward@lab.invalid")

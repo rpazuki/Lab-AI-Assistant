@@ -536,7 +536,7 @@ export function ScopeAccessRules({ scope }: { scope: ScopeVersion }) {
     try {
       const next = await scopeAccess(scope.id);
       setView(next);
-      setRole((current) => current || next.roles[0] || "");
+      setRole((current) => current || next.roles[0]?.name || "");
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "the rules could not be read");
@@ -562,8 +562,16 @@ export function ScopeAccessRules({ scope }: { scope: ScopeVersion }) {
     }
   }
 
-  const named = (rule: ScopeAccess["rules"][number]) =>
-    rule.subject_role ? `Everyone with the ${rule.subject_role} role` : `One person`;
+  const named = (rule: ScopeAccess["rules"][number]) => {
+    if (!rule.subject_role) return "One person";
+    // The rule stores the role's name, not its wording, so a role defined here
+    // is shown by the label its admin gave it rather than by its slug.
+    const label = view?.roles.find((item) => item.name === rule.subject_role)?.label;
+    return `Everyone with the ${label ?? rule.subject_role} role`;
+  };
+
+  const builtIn = view?.roles.filter((item) => !item.custom) ?? [];
+  const defined = view?.roles.filter((item) => item.custom) ?? [];
 
   return (
     <section
@@ -628,11 +636,22 @@ export function ScopeAccessRules({ scope }: { scope: ScopeVersion }) {
                 value={role}
                 onChange={(event) => setRole(event.target.value)}
               >
-                {view.roles.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
+                <optgroup label="Built in">
+                  {builtIn.map((item) => (
+                    <option key={item.name} value={item.name}>
+                      {item.label}
+                    </option>
+                  ))}
+                </optgroup>
+                {defined.length > 0 ? (
+                  <optgroup label="Defined here">
+                    {defined.map((item) => (
+                      <option key={item.name} value={item.name}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
               </select>
             </label>
             <Button type="submit" size="sm" disabled={busy || !role}>

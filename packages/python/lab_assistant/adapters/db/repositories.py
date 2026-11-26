@@ -71,7 +71,14 @@ from lab_assistant.domain.review import (
 from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
 from lab_assistant.domain.states import ReviewState, TaskState
 from lab_assistant.domain.tasks import RateBudget, Task
-from lab_assistant.domain.workspace import Group, Invitation, Membership, User, Workspace
+from lab_assistant.domain.workspace import (
+    Group,
+    Invitation,
+    Membership,
+    User,
+    Workspace,
+    WorkspaceRole,
+)
 
 #: Where a row without a timestamp sorts in a newest-first page: last.
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -137,6 +144,7 @@ def _str_tuple(value: Any) -> tuple[str, ...]:
 USERS = Mapper(t.users, User)
 WORKSPACES = Mapper(t.workspaces, Workspace)
 MEMBERSHIPS = Mapper(t.memberships, Membership, loaders={"extra_capabilities": _capabilities})
+WORKSPACE_ROLES = Mapper(t.workspace_roles, WorkspaceRole)
 GROUPS = Mapper(t.groups, Group)
 INVITATIONS = Mapper(t.invitations, Invitation)
 SCOPES = Mapper(
@@ -382,6 +390,28 @@ class _Workspaces(_Base):
 
     async def update_membership(self, membership: Membership) -> None:
         await self._upsert(MEMBERSHIPS, membership)
+
+    async def list_roles(self, workspace_id: UUID) -> list[WorkspaceRole]:
+        roles = await self._many(WORKSPACE_ROLES, self._scope(WORKSPACE_ROLES, workspace_id))
+        return sorted(roles, key=lambda role: role.slug)
+
+    async def get_role(self, workspace_id: UUID, slug: str) -> WorkspaceRole | None:
+        return await self._one(
+            WORKSPACE_ROLES,
+            t.workspace_roles.c.workspace_id == workspace_id,
+            t.workspace_roles.c.slug == slug,
+        )
+
+    async def add_role(self, role: WorkspaceRole) -> None:
+        await self._upsert(WORKSPACE_ROLES, role)
+
+    async def delete_role(self, workspace_id: UUID, role_id: UUID) -> None:
+        await self._c.execute(
+            delete(t.workspace_roles).where(
+                t.workspace_roles.c.workspace_id == workspace_id,
+                t.workspace_roles.c.id == role_id,
+            )
+        )
 
     async def list_groups(self, workspace_id: UUID, *, user_id: UUID | None = None) -> list[Group]:
         if user_id is None:

@@ -167,6 +167,10 @@ memberships = Table(
     Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
     Column("user_id", _UUID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("role", Text, nullable=False),
+    #: The workspace role they were put in, if any. Its slug, not its id: rules
+    #: name a role, and a join to read the name before every decision would put
+    #: a query in the path of every answer.
+    Column("role_name", Text),
     Column("status", Text, nullable=False, server_default=text("'active'")),
     Column("extra_capabilities", _ARRAY_TEXT, nullable=False, server_default=text("'{}'")),
     Column("token_limit", Integer),
@@ -174,6 +178,22 @@ memberships = Table(
     Column("accepted_at", DateTime(timezone=True)),
     Column("expires_at", DateTime(timezone=True)),
     UniqueConstraint("workspace_id", "user_id", name="workspace_user"),
+)
+
+workspace_roles = Table(
+    "workspace_roles",
+    METADATA,
+    Column("id", _UUID, primary_key=True),
+    Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    #: The stable key, written into memberships and grants, so it never changes.
+    Column("slug", Text, nullable=False),
+    Column("display_name", Text, nullable=False),
+    Column("description", Text, nullable=False, server_default=text("''")),
+    #: Where its members' capabilities come from. A role carries none of its own.
+    Column("base_role", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("created_by", _UUID),
+    UniqueConstraint("workspace_id", "slug", name="workspace_role_slug"),
 )
 
 groups = Table(
@@ -203,6 +223,7 @@ invitations = Table(
     Column("workspace_id", _UUID, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
     Column("email_normalized", Text, nullable=False),
     Column("role", Text, nullable=False),
+    Column("role_name", Text),
     # The token itself is never stored; only its digest.
     Column("token_digest", Text, nullable=False, unique=True),
     Column("invited_by", _UUID, nullable=False),

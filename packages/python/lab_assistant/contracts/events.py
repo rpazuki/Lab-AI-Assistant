@@ -46,6 +46,11 @@ class AuditAction(StrEnum):
     INVITATION_ACCEPTED = "invitation_accepted"
     MEMBERSHIP_CHANGED = "membership_changed"
     GRANT_CHANGED = "grant_changed"
+    #: An admin defined or changed a role of their own. Not a grant: it creates
+    #: the name that later grants are written about.
+    ROLE_DEFINED = "role_defined"
+    #: A role was removed, with any rule that named it.
+    ROLE_DELETED = "role_deleted"
     #: An admin opened a member's conversation. Recorded on every read.
     MEMBER_CHAT_READ = "member_chat_read"
     #: A revoked or expired invitation was removed from the list.

@@ -13,6 +13,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 __all__ = [
+    "BASE_ROLES",
     "Capability",
     "Group",
     "Invitation",
@@ -22,8 +23,10 @@ __all__ = [
     "User",
     "UserExternalIdentity",
     "Workspace",
+    "WorkspaceRole",
     "WorkspaceStatus",
     "normalise_email",
+    "normalise_role_slug",
 ]
 
 
@@ -123,6 +126,80 @@ ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
 }
 
 
+#: The built-in roles a workspace role may be based on.
+#:
+#: ``admin`` is left out because an admin is let through every rule without one,
+#: so a role based on it could never be restricted by the very mechanism the role
+#: exists for. ``service_account`` is left out because it is not a person.
+BASE_ROLES: frozenset[Role] = frozenset({Role.RESEARCHER, Role.REVIEWER, Role.DATA_STEWARD})
+
+
+def normalise_role_slug(value: str) -> str:
+    """The stable key a role is known by, in rules and on memberships.
+
+    Built-in role names and workspace role slugs share one namespace: a rule
+    says ``reviewer`` or it says ``patent_holders`` and nothing downstream can
+    tell which kind it came from, which is exactly what makes a workspace role
+    usable everywhere a built-in one is. So a slug has the same shape as a
+    built-in name, and a slug that *is* a built-in name is refused where roles
+    are created.
+
+    A slug never changes once the role exists, because it is written into grants
+    and onto memberships. The display name is what an admin corrects later.
+    """
+    slug = value.strip().lower().replace(" ", "_")
+    if not slug:
+        raise ValueError("a role needs a name")
+    if len(slug) > 48:
+        raise ValueError("a role name is at most 48 characters")
+    if not all(ch.isalnum() or ch in "-_" for ch in slug):
+        raise ValueError("a role name uses letters, numbers, - and _ only")
+    return slug
+
+
+class WorkspaceRole(BaseModel):
+    """A role an admin defined, for an audience the built-in roles do not name.
+
+    Patented material and confidential data do not divide along "researcher" and
+    "reviewer" lines: who may reach them is a decision about *these people*, and
+    it outlives any one of them. A workspace role gives that decision a name, so
+    a rule can be written once — "the patent holders may reach this scope" — and
+    keep meaning what it meant as people join and leave.
+
+    It carries no capabilities of its own. ``base_role`` says what its members
+    may *do*, drawn from the bundles that already exist and are already tested,
+    so defining a role can neither invent a capability set nor mint an admin by
+    accident. What is new is the name, and the name is what rules are about.
+    """
+
+    model_config = {"validate_assignment": True}
+
+    id: UUID
+    workspace_id: UUID
+    slug: str
+    display_name: str
+    description: str = ""
+    base_role: Role = Role.RESEARCHER
+    created_at: datetime
+    created_by: UUID | None = None
+
+    @field_validator("slug")
+    @classmethod
+    def _slug_shape(cls, value: str) -> str:
+        return normalise_role_slug(value)
+
+    @field_validator("base_role")
+    @classmethod
+    def _base_is_assignable(cls, value: Role) -> Role:
+        if value not in BASE_ROLES:
+            raise ValueError(f"a role cannot be based on {value.value}")
+        return value
+
+    @property
+    def capabilities(self) -> frozenset[Capability]:
+        return self.base_role.capabilities
+
+
 class WorkspaceStatus(StrEnum):
     ACTIVE = "active"
     SUSPENDED = "suspended"
@@ -198,6 +275,10 @@ class Membership(BaseModel):
     workspace_id: UUID
     user_id: UUID
     role: Role
+    #: The workspace role this member was put in, if any: its slug. ``role``
+    #: beside it still says what they may *do*; this says which audience they
+    #: belong to, which is what resource rules are written about.
+    role_name: str | None = None
     status: MembershipStatus = MembershipStatus.ACTIVE
     #: Capabilities granted beyond the role bundle.
     extra_capabilities: frozenset[Capability] = frozenset()
@@ -207,6 +288,29 @@ class Membership(BaseModel):
     invited_by: UUID | None = None
     accepted_at: datetime | None = None
     expires_at: datetime | None = None
+
+    @property
+    def role_key(self) -> str:
+        """What to call this member's role on screen and in a record."""
+        return self.role_name or self.role.value
+
+    @property
+    def role_keys(self) -> frozenset[str]:
+        """Every role name a rule may use to reach this member.
+
+        Both names, deliberately. A workspace role *adds* an audience rather
+        than replacing one: an admin who moves a researcher into "patent
+        holders" is saying "and also the patent material", not "and nothing
+        they could read before" — and the second reading would quietly strip
+        someone of everything the moment they were put in a new role.
+
+        Taking something away is said the other way round, with a ``deny`` rule
+        naming the role, which the engine weighs before any allow.
+        """
+        names = {self.role.value}
+        if self.role_name:
+            names.add(self.role_name)
+        return frozenset(names)
 
     def capabilities(self) -> frozenset[Capability]:
         if self.status is not MembershipStatus.ACTIVE:
@@ -246,6 +350,8 @@ class Invitation(BaseModel):
     workspace_id: UUID
     email_normalized: str
     role: Role
+    #: The workspace role the invitation puts them in, if any: its slug.
+    role_name: str | None = None
     #: Digest of the invitation token. The token itself is never stored.
     token_digest: str
     invited_by: UUID

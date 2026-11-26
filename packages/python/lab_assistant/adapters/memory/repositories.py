@@ -67,7 +67,14 @@ from lab_assistant.domain.review import (
 from lab_assistant.domain.scope import ConfigVersion, ScopeVersion
 from lab_assistant.domain.states import TaskState
 from lab_assistant.domain.tasks import RateBudget, Task
-from lab_assistant.domain.workspace import Group, Invitation, Membership, User, Workspace
+from lab_assistant.domain.workspace import (
+    Group,
+    Invitation,
+    Membership,
+    User,
+    Workspace,
+    WorkspaceRole,
+)
 
 __all__ = ["MemoryDatabase", "MemoryUnitOfWork", "memory_uow_factory"]
 
@@ -132,6 +139,7 @@ class MemoryDatabase:
     users: dict[UUID, User] = field(default_factory=dict)
     workspaces: dict[UUID, Workspace] = field(default_factory=dict)
     memberships: dict[tuple[UUID, UUID], Membership] = field(default_factory=dict)
+    workspace_roles: dict[UUID, WorkspaceRole] = field(default_factory=dict)
     groups: dict[UUID, Group] = field(default_factory=dict)
     invitations: dict[UUID, Invitation] = field(default_factory=dict)
     grants: dict[UUID, GrantSpec] = field(default_factory=dict)
@@ -252,6 +260,24 @@ class _Workspaces:
 
     async def update_membership(self, membership: Membership) -> None:
         self._db.memberships[(membership.workspace_id, membership.user_id)] = membership
+
+    async def list_roles(self, workspace_id: UUID) -> list[WorkspaceRole]:
+        roles = [r for r in self._db.workspace_roles.values() if r.workspace_id == workspace_id]
+        return sorted(roles, key=lambda role: role.slug)
+
+    async def get_role(self, workspace_id: UUID, slug: str) -> WorkspaceRole | None:
+        for role in self._db.workspace_roles.values():
+            if role.workspace_id == workspace_id and role.slug == slug:
+                return role
+        return None
+
+    async def add_role(self, role: WorkspaceRole) -> None:
+        self._db.workspace_roles[role.id] = role
+
+    async def delete_role(self, workspace_id: UUID, role_id: UUID) -> None:
+        role = self._db.workspace_roles.get(role_id)
+        if role is not None and role.workspace_id == workspace_id:
+            del self._db.workspace_roles[role_id]
 
     async def list_groups(self, workspace_id: UUID, *, user_id: UUID | None = None) -> list[Group]:
         groups = [g for g in self._db.groups.values() if g.workspace_id == workspace_id]

@@ -271,7 +271,10 @@ class PolicyEngine:
             return True
         if grant.subject_type is SubjectType.ROLE:
             membership = request.membership
-            return membership is not None and membership.role.value == grant.subject_role
+            # A member answers to their built-in role and, where an admin put
+            # them in one, their workspace role: both names reach them, so a
+            # new role adds an audience instead of replacing the one they had.
+            return membership is not None and grant.subject_role in membership.role_keys
         return request.subject.matches(grant.subject_type, grant.subject_id)
 
     @staticmethod

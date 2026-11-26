@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
@@ -38,6 +39,7 @@ from lab_assistant.contracts.policy import (
     SubjectType,
 )
 from lab_assistant.domain.workspace import (
+    BASE_ROLES,
     Capability,
     Group,
     Invitation,
@@ -46,7 +48,9 @@ from lab_assistant.domain.workspace import (
     Role,
     User,
     Workspace,
+    WorkspaceRole,
     normalise_email,
+    normalise_role_slug,
 )
 
 __all__ = [
@@ -57,12 +61,52 @@ __all__ = [
     "MemberView",
     "PasswordHasher",
     "PasswordVerification",
+    "RoleChoice",
     "invitation_state",
 ]
 
 #: Roles a person may hold. A service account is provisioned, never invited or
 #: assigned to a person: its capabilities are for unattended workers.
 _PERSON_ROLES = frozenset(role for role in Role if role is not Role.SERVICE_ACCOUNT)
+
+#: What each built-in role is for, in one line, so the person choosing between
+#: them and a role of their own can see what they would be based on.
+_BUILT_IN_DESCRIPTIONS: dict[Role, str] = {
+    Role.RESEARCHER: "Asks questions, searches, and uploads papers of their own.",
+    Role.REVIEWER: "A researcher who also settles identity and reviews parses and claims.",
+    Role.DATA_STEWARD: (
+        "Runs the corpus: scopes, discovery, rights, acquisition, releases and exports."
+    ),
+    Role.ADMIN: "Everything, including members and policy, and every scope without a rule.",
+}
+
+
+def _role_text(value: str | Role) -> str:
+    return value.value if isinstance(value, Role) else str(value).strip().lower()
+
+
+@dataclass(frozen=True, slots=True)
+class RoleChoice:
+    """One role a member can be given: a built-in bundle, or one defined here.
+
+    Both kinds appear in one list because that is how the choice is made — a
+    person holds one role, and whether its capabilities ship with the product or
+    were chosen by an admin is a detail of where it came from, not a different
+    kind of thing to pick.
+    """
+
+    name: str
+    display_name: str
+    description: str
+    base_role: Role
+    capabilities: frozenset[Capability]
+    members: int = 0
+    id: UUID | None = None
+
+    @property
+    def custom(self) -> bool:
+        """Whether an admin defined it here, rather than it shipping with the product."""
+        return self.id is not None
 
 
 class InvitationState(StrEnum):
@@ -428,15 +472,17 @@ class AccountService:
         actor: ActorContext,
         *,
         user_id: UUID,
-        role: Role,
+        role: str | Role,
         extra_capabilities: frozenset[Capability] = frozenset(),
     ) -> Membership:
         actor.require(Capability.MANAGE_MEMBERS)
         context = self._context
         async with context.uow_factory() as uow:
+            base, role_name = await self._resolve_role(uow, actor.workspace_id, role)
             existing = await uow.workspaces.get_membership(actor.workspace_id, user_id)
             if existing is not None:
-                existing.role = role
+                existing.role = base
+                existing.role_name = role_name
                 existing.extra_capabilities = extra_capabilities
                 existing.status = MembershipStatus.ACTIVE
                 await uow.workspaces.update_membership(existing)
@@ -446,7 +492,8 @@ class AccountService:
                     id=context.new_id(),
                     workspace_id=actor.workspace_id,
                     user_id=user_id,
-                    role=role,
+                    role=base,
+                    role_name=role_name,
                     extra_capabilities=extra_capabilities,
                     status=MembershipStatus.ACTIVE,
                     invited_by=actor.user_id,
@@ -464,7 +511,8 @@ class AccountService:
                     previous_hash=await uow.audit.latest_hash(actor.workspace_id),
                     metadata={
                         "user_id": str(user_id),
-                        "role": role.value,
+                        "role": membership.role_key,
+                        "base_role": base.value,
                         "extra_capabilities": sorted(c.value for c in extra_capabilities),
                     },
                 )
@@ -473,7 +521,7 @@ class AccountService:
         return membership
 
     async def invite(
-        self, actor: ActorContext, *, email: str, role: Role, ttl_hours: int = 168
+        self, actor: ActorContext, *, email: str, role: str | Role, ttl_hours: int = 168
     ) -> tuple[Invitation, str]:
         """Create an invitation. The token is returned once and never stored.
 
@@ -483,7 +531,6 @@ class AccountService:
         change, not a second invitation.
         """
         actor.require(Capability.MANAGE_MEMBERS)
-        self._require_assignable(actor, role)
         if not 1 <= ttl_hours <= 24 * 30:
             raise ValidationFailure("an invitation lasts between 1 hour and 30 days")
         import secrets
@@ -492,17 +539,22 @@ class AccountService:
         normalised = normalise_email(email)
         token = secrets.token_urlsafe(32)
         now = context.now()
-        invitation = Invitation(
-            id=context.new_id(),
-            workspace_id=actor.workspace_id,
-            email_normalized=normalised,
-            role=role,
-            token_digest=sha256_text(token),
-            invited_by=actor.user_id,
-            created_at=now,
-            expires_at=now + timedelta(hours=ttl_hours),
-        )
         async with context.uow_factory() as uow:
+            # Resolving the role needs the workspace's own roles, so it happens
+            # here rather than before the transaction opens.
+            base, role_name = await self._resolve_role(uow, actor.workspace_id, role)
+            self._require_assignable(actor, base)
+            invitation = Invitation(
+                id=context.new_id(),
+                workspace_id=actor.workspace_id,
+                email_normalized=normalised,
+                role=base,
+                role_name=role_name,
+                token_digest=sha256_text(token),
+                invited_by=actor.user_id,
+                created_at=now,
+                expires_at=now + timedelta(hours=ttl_hours),
+            )
             existing_user = await uow.users.get_by_email(normalised)
             if existing_user is not None:
                 membership = await uow.workspaces.get_membership(
@@ -531,7 +583,7 @@ class AccountService:
                     previous_hash=await uow.audit.latest_hash(actor.workspace_id),
                     metadata={
                         "email_digest": sha256_text(invitation.email_normalized)[:16],
-                        "role": role.value,
+                        "role": role_name or base.value,
                         "superseded": superseded,
                     },
                 )
@@ -679,6 +731,7 @@ class AccountService:
                 membership = existing.model_copy(
                     update={
                         "role": invitation.role,
+                        "role_name": invitation.role_name,
                         "status": MembershipStatus.ACTIVE,
                         "accepted_at": context.now(),
                     }
@@ -690,6 +743,7 @@ class AccountService:
                     workspace_id=invitation.workspace_id,
                     user_id=user.id,
                     role=invitation.role,
+                    role_name=invitation.role_name,
                     status=MembershipStatus.ACTIVE,
                     invited_by=invitation.invited_by,
                     accepted_at=context.now(),
@@ -747,7 +801,7 @@ class AccountService:
         actor: ActorContext,
         *,
         user_id: UUID,
-        role: Role | None = None,
+        role: str | Role | None = None,
         status: MembershipStatus | None = None,
         token_limit: int | None = None,
         reset_token_limit: bool = False,
@@ -766,8 +820,6 @@ class AccountService:
             MembershipStatus.SUSPENDED,
         ):
             raise ValidationFailure("a membership is either active or suspended")
-        if role is not None:
-            self._require_assignable(actor, role)
         if token_limit is not None and token_limit < 0:
             raise ValidationFailure("a token limit cannot be negative")
         # An admin may set their own token limit; role and status are another
@@ -776,13 +828,20 @@ class AccountService:
             raise PolicyDenied("you cannot change your own membership; ask another admin")
         context = self._context
         async with context.uow_factory() as uow:
+            # One name in, a bundle and an audience out. Resolved before the
+            # membership is read so an unknown role is refused as a bad request
+            # rather than after a lookup that implies it was the member's fault.
+            requested: tuple[Role, str | None] | None = None
+            if role is not None:
+                requested = await self._resolve_role(uow, actor.workspace_id, role)
+                self._require_assignable(actor, requested[0])
             membership = await uow.workspaces.get_membership(actor.workspace_id, user_id)
             user = await uow.users.get(user_id)
             if membership is None or user is None:
                 raise NotFound(f"member {user_id} not found")
             if membership.role is Role.ADMIN:
                 self._require_assignable(actor, Role.ADMIN)
-            new_role = role or membership.role
+            new_role, new_name = requested or (membership.role, membership.role_name)
             new_status = status or membership.status
             new_limit = (
                 None
@@ -792,7 +851,12 @@ class AccountService:
                 else membership.token_limit
             )
             updated = membership.model_copy(
-                update={"role": new_role, "status": new_status, "token_limit": new_limit}
+                update={
+                    "role": new_role,
+                    "role_name": new_name,
+                    "status": new_status,
+                    "token_limit": new_limit,
+                }
             )
             await uow.workspaces.update_membership(updated)
             suspended = (
@@ -814,8 +878,9 @@ class AccountService:
                     previous_hash=await uow.audit.latest_hash(actor.workspace_id),
                     metadata={
                         "user_id": str(user_id),
-                        "role": new_role.value,
-                        "previous_role": membership.role.value,
+                        "role": updated.role_key,
+                        "base_role": new_role.value,
+                        "previous_role": membership.role_key,
                         "status": new_status.value,
                         "previous_status": membership.status.value,
                         "token_limit": new_limit,
@@ -835,6 +900,237 @@ class AccountService:
             actor.membership is None or actor.membership.role is not Role.ADMIN
         ):
             raise PolicyDenied("only an admin can grant or change the admin role")
+
+    # ── roles ───────────────────────────────────────────────────────────────
+    @staticmethod
+    async def _resolve_role(
+        uow: Any, workspace_id: UUID, value: str | Role
+    ) -> tuple[Role, str | None]:
+        """One role name as the pair a membership stores: a bundle and an audience.
+
+        A built-in name resolves to itself and no audience. A role an admin
+        defined resolves to the bundle it was based on, plus its own slug — the
+        name rules are written about. Callers pass one name because a person
+        holds one role; the split is storage, not a second choice.
+        """
+        text = _role_text(value)
+        for role in Role:
+            if role.value == text:
+                return role, None
+        defined = await uow.workspaces.get_role(workspace_id, text)
+        if defined is None:
+            raise ValidationFailure(f"{text!r} is not a role in this workspace")
+        return defined.base_role, defined.slug
+
+    async def list_roles(self, actor: ActorContext) -> list[RoleChoice]:
+        """Every role a member can be given, built-in ones first, with head counts.
+
+        Gated on ``manage_scope`` rather than ``manage_members``: a steward who
+        is writing a rule about a scope needs to read the names it can be
+        written about, and the names are not themselves a member's business.
+        """
+        actor.require(Capability.MANAGE_SCOPE)
+        ws = actor.workspace_id
+        async with self._context.uow_factory() as uow:
+            defined = await uow.workspaces.list_roles(ws)
+            memberships = await uow.workspaces.list_memberships(ws)
+        held: dict[str, int] = {}
+        for membership in memberships:
+            held[membership.role_key] = held.get(membership.role_key, 0) + 1
+        choices = [
+            RoleChoice(
+                name=role.value,
+                display_name=role.value.replace("_", " "),
+                description=_BUILT_IN_DESCRIPTIONS.get(role, ""),
+                base_role=role,
+                capabilities=role.capabilities,
+                members=held.get(role.value, 0),
+            )
+            for role in (Role.RESEARCHER, Role.REVIEWER, Role.DATA_STEWARD, Role.ADMIN)
+        ]
+        choices.extend(
+            RoleChoice(
+                name=role.slug,
+                display_name=role.display_name,
+                description=role.description,
+                base_role=role.base_role,
+                capabilities=role.capabilities,
+                members=held.get(role.slug, 0),
+                id=role.id,
+            )
+            for role in defined
+        )
+        return choices
+
+    async def create_role(
+        self,
+        actor: ActorContext,
+        *,
+        name: str,
+        display_name: str | None = None,
+        description: str = "",
+        base_role: Role = Role.RESEARCHER,
+    ) -> WorkspaceRole:
+        """Define a role of this workspace's own.
+
+        ``manage_policy``, which only an admin holds, rather than
+        ``manage_members``: a role is the name a rule is written about, so
+        defining one is deciding what the rules *can* say. Someone who could
+        invent a name and then be given it would be deciding their own reach.
+        """
+        actor.require(Capability.MANAGE_POLICY)
+        try:
+            slug = normalise_role_slug(name)
+        except ValueError as error:
+            raise ValidationFailure(str(error)) from error
+        if slug in {role.value for role in Role}:
+            raise ValidationFailure(f"{slug!r} is a built-in role; choose another name")
+        if base_role not in BASE_ROLES:
+            allowed = ", ".join(sorted(role.value for role in BASE_ROLES))
+            raise ValidationFailure(f"a role cannot be based on {base_role.value}; use {allowed}")
+        context = self._context
+        ws = actor.workspace_id
+        async with context.uow_factory() as uow:
+            if await uow.workspaces.get_role(ws, slug) is not None:
+                raise ValidationFailure(f"a role named {slug!r} already exists")
+            role = WorkspaceRole(
+                id=context.new_id(),
+                workspace_id=ws,
+                slug=slug,
+                display_name=(display_name or name).strip() or slug,
+                description=description.strip(),
+                base_role=base_role,
+                created_at=context.now(),
+                created_by=actor.user_id,
+            )
+            await uow.workspaces.add_role(role)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=ws,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.ROLE_DEFINED,
+                    subject_type="workspace_role",
+                    subject_id=role.id,
+                    previous_hash=await uow.audit.latest_hash(ws),
+                    reason_code="role_created",
+                    metadata={"role": role.slug, "base_role": base_role.value},
+                )
+            )
+            await uow.commit()
+        return role
+
+    async def update_role(
+        self,
+        actor: ActorContext,
+        *,
+        role_id: UUID,
+        display_name: str | None = None,
+        description: str | None = None,
+        base_role: Role | None = None,
+    ) -> WorkspaceRole:
+        """Correct a role's wording, or change what its members may do.
+
+        The slug is not among the arguments and never changes: it is written
+        into every rule that names the role and onto every membership that holds
+        it, so renaming it would silently detach both.
+        """
+        actor.require(Capability.MANAGE_POLICY)
+        if base_role is not None and base_role not in BASE_ROLES:
+            allowed = ", ".join(sorted(role.value for role in BASE_ROLES))
+            raise ValidationFailure(f"a role cannot be based on {base_role.value}; use {allowed}")
+        context = self._context
+        ws = actor.workspace_id
+        async with context.uow_factory() as uow:
+            existing = next(
+                (role for role in await uow.workspaces.list_roles(ws) if role.id == role_id), None
+            )
+            if existing is None:
+                raise NotFound(f"role {role_id} not found")
+            updated = existing.model_copy(
+                update={
+                    "display_name": (display_name or existing.display_name).strip(),
+                    "description": (
+                        existing.description if description is None else description.strip()
+                    ),
+                    "base_role": base_role or existing.base_role,
+                }
+            )
+            await uow.workspaces.add_role(updated)
+            if updated.base_role is not existing.base_role:
+                # Capabilities come from the base, and a membership stores the
+                # base beside the slug, so the people already in the role have
+                # to be moved with it or they would keep the old bundle.
+                for membership in await uow.workspaces.list_memberships(ws):
+                    if membership.role_name == existing.slug:
+                        await uow.workspaces.update_membership(
+                            membership.model_copy(update={"role": updated.base_role})
+                        )
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=ws,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.ROLE_DEFINED,
+                    subject_type="workspace_role",
+                    subject_id=updated.id,
+                    previous_hash=await uow.audit.latest_hash(ws),
+                    reason_code="role_changed",
+                    metadata={
+                        "role": updated.slug,
+                        "base_role": updated.base_role.value,
+                        "previous_base_role": existing.base_role.value,
+                    },
+                )
+            )
+            await uow.commit()
+        return updated
+
+    async def delete_role(self, actor: ActorContext, *, role_id: UUID) -> int:
+        """Remove a role nobody holds, and every rule that named it.
+
+        Refused while anyone is in it: moving them somewhere else is a decision
+        about those people, and taking the name away underneath them would make
+        it silently, with no record of where they ended up. Rules naming a role
+        nobody can hold cannot match anything, so they go with it rather than
+        lingering as access that looks live and is not. The count is returned so
+        the caller can say how many went.
+        """
+        actor.require(Capability.MANAGE_POLICY)
+        context = self._context
+        ws = actor.workspace_id
+        async with context.uow_factory() as uow:
+            existing = next(
+                (role for role in await uow.workspaces.list_roles(ws) if role.id == role_id), None
+            )
+            if existing is None:
+                raise NotFound(f"role {role_id} not found")
+            members = await uow.workspaces.list_memberships(ws)
+            held = [m for m in members if m.role_name == existing.slug]
+            if held:
+                people = "person is" if len(held) == 1 else "people are"
+                raise ValidationFailure(
+                    f"{len(held)} {people} still in {existing.display_name!r}; "
+                    "move them to another role first"
+                )
+            rules = await uow.policies.list_grants(ws, subject_ids=[], roles=[existing.slug])
+            for rule in rules:
+                await uow.policies.remove_grant(ws, rule.id)
+            await uow.workspaces.delete_role(ws, existing.id)
+            await uow.audit.append(
+                context.audit.build(
+                    workspace_id=ws,
+                    actor_type=ActorType.USER,
+                    actor_id=actor.user_id,
+                    action=AuditAction.ROLE_DELETED,
+                    subject_type="workspace_role",
+                    subject_id=existing.id,
+                    previous_hash=await uow.audit.latest_hash(ws),
+                    metadata={"role": existing.slug, "rules_removed": len(rules)},
+                )
+            )
+            await uow.commit()
+        return len(rules)
 
     # ── groups and grants ───────────────────────────────────────────────────
     async def create_group(

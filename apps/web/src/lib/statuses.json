@@ -315,6 +315,8 @@
       "invitation_accepted": "Someone accepted an invitation and joined.",
       "membership_changed": "A member's role or status changed.",
       "grant_changed": "Access to a resource was granted or removed.",
+    "role_defined": "A role of this workspace's own was created or changed.",
+    "role_deleted": "A role was removed, with any rule that named it.",
       "member_chat_read": "An admin opened a member's conversation. Recorded on every read.",
       "invitation_deleted": "A revoked or expired invitation was removed from the list.",
       "scope_approved": "A scope version was approved for discovery.",

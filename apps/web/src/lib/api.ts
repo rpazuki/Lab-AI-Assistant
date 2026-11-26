@@ -49,6 +49,7 @@ import type {
   ReviewItem,
   ReviewStep,
   Reviewer,
+  Role,
   RunComparison,
   RunReviewSummary,
   ScopeAccess,
@@ -482,6 +483,44 @@ export const applyScopeRules = (
       body: JSON.stringify({ step_id: stepId, include_filter_decisions: includeFilterDecisions }),
     },
   );
+
+/**
+ * Every role a member can be given: the four built in, then any this workspace
+ * defined, each with how many people hold it.
+ */
+export const listRoles = () => request<{ items: Role[] }>("/roles");
+
+/**
+ * Define a role of this workspace's own.
+ *
+ * `name` is the stable key rules are written about and never changes afterwards;
+ * `base_role` is where its members' capabilities come from, since a role carries
+ * none of its own.
+ */
+export const createRole = (role: {
+  name: string;
+  display_name?: string;
+  description?: string;
+  base_role?: string;
+}) =>
+  request<{ id: string; name: string }>("/roles", {
+    method: "POST",
+    body: JSON.stringify(role),
+  });
+
+/** Correct a role's wording, or change what its members may do. */
+export const updateRole = (
+  roleId: string,
+  changes: { display_name?: string; description?: string; base_role?: string },
+) =>
+  request<{ id: string; name: string }>(`/roles/${roleId}`, {
+    method: "PATCH",
+    body: JSON.stringify(changes),
+  });
+
+/** Remove a role nobody holds, with every rule that named it. */
+export const deleteRole = (roleId: string) =>
+  request<{ rules_removed: number }>(`/roles/${roleId}`, { method: "DELETE" });
 
 /**
  * Who may reach this scope's papers in Ask, in releases and in exports.

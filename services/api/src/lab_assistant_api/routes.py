@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from lab_assistant.adapters.connectors.seed_lookup import SeedLookupService, build_queries
 from lab_assistant.application.abstract_fallback import AbstractFallbackService
-from lab_assistant.application.accounts import MemberView, invitation_state
+from lab_assistant.application.accounts import MemberView, RoleChoice, invitation_state
 from lab_assistant.application.acquisition import AcquisitionService
 from lab_assistant.application.analytics import AnalyticsService
 from lab_assistant.application.bulk_review import (
@@ -119,7 +119,8 @@ class LoginResponse(BaseModel):
 
 class InvitationRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
-    role: Role = Role.RESEARCHER
+    #: A built-in role's name, or the name of one this workspace defined.
+    role: str = Field(default=Role.RESEARCHER.value, min_length=1, max_length=48)
     ttl_hours: int = Field(default=168, ge=1, le=720)
 
 
@@ -134,7 +135,8 @@ class AcceptInvitationRequest(BaseModel):
 
 
 class MemberUpdateRequest(BaseModel):
-    role: Role | None = None
+    #: A built-in role's name, or the name of one this workspace defined.
+    role: str | None = Field(default=None, min_length=1, max_length=48)
     status: MembershipStatus | None = None
     #: A number sets the member's own limit; an explicit null returns them to the
     #: installation default; leaving it out changes nothing.
@@ -298,7 +300,7 @@ async def me(actor: CurrentActor, container: Container) -> dict[str, Any]:
             "slug": workspace.slug,
             "name": workspace.display_name,
         },
-        "role": actor.membership.role.value if actor.membership else None,
+        "role": actor.membership.role_key if actor.membership else None,
         # Said to every member, so the Ask page can tell them before they type.
         "chat_visible_to_admins": container.settings.chat_admin_access,
         "capabilities": sorted(
@@ -411,7 +413,7 @@ async def list_invitations(actor: CurrentActor, container: Container) -> dict[st
             {
                 "id": str(item.id),
                 "email": item.email_normalized,
-                "role": item.role.value,
+                "role": item.role_name or item.role.value,
                 "state": invitation_state(item, now).value,
                 "created_at": item.created_at.isoformat(),
                 "expires_at": item.expires_at.isoformat(),
@@ -421,6 +423,105 @@ async def list_invitations(actor: CurrentActor, container: Container) -> dict[st
             for item in invitations
         ]
     }
+
+
+class RoleRequest(BaseModel):
+    """A role of this workspace's own."""
+
+    #: The stable name rules are written about. Lower-cased and trimmed; it
+    #: cannot be a built-in role's name, and it never changes afterwards.
+    name: str = Field(min_length=1, max_length=48)
+    display_name: str | None = Field(default=None, max_length=120)
+    description: str = Field(default="", max_length=500)
+    #: Where its members' capabilities come from. Never ``admin``: an admin is
+    #: let through every rule, so a role based on one could not be restricted.
+    base_role: Role = Role.RESEARCHER
+
+
+class RoleUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    base_role: Role | None = None
+
+
+def _role_json(choice: RoleChoice) -> dict[str, Any]:
+    return {
+        "id": str(choice.id) if choice.id else None,
+        "name": choice.name,
+        "display_name": choice.display_name,
+        "description": choice.description,
+        "base_role": choice.base_role.value,
+        "custom": choice.custom,
+        "members": choice.members,
+        "capabilities": sorted(capability.value for capability in choice.capabilities),
+    }
+
+
+@router.get("/roles")
+async def list_roles(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """Every role a member can be given, and how many people hold each."""
+    choices = await container.accounts.list_roles(actor)
+    return {"items": [_role_json(choice) for choice in choices]}
+
+
+@router.post(
+    "/roles",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def create_role(
+    actor: CurrentActor, container: Container, payload: RoleRequest = Body(...)
+) -> dict[str, Any]:
+    """Define a role, for an audience the built-in ones do not name."""
+    role = await container.accounts.create_role(
+        actor,
+        name=payload.name,
+        display_name=payload.display_name,
+        description=payload.description,
+        base_role=payload.base_role,
+    )
+    return {
+        "id": str(role.id),
+        "name": role.slug,
+        "display_name": role.display_name,
+        "base_role": role.base_role.value,
+    }
+
+
+@router.patch(
+    "/roles/{role_id}",
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def update_role(
+    role_id: UUID,
+    actor: CurrentActor,
+    container: Container,
+    payload: RoleUpdateRequest = Body(...),
+) -> dict[str, Any]:
+    """Correct a role's wording, or change what its members may do."""
+    role = await container.accounts.update_role(
+        actor,
+        role_id=role_id,
+        display_name=payload.display_name,
+        description=payload.description,
+        base_role=payload.base_role,
+    )
+    return {
+        "id": str(role.id),
+        "name": role.slug,
+        "display_name": role.display_name,
+        "base_role": role.base_role.value,
+    }
+
+
+@router.delete(
+    "/roles/{role_id}",
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def delete_role(role_id: UUID, actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """Remove a role nobody holds, with every rule that named it."""
+    removed = await container.accounts.delete_role(actor, role_id=role_id)
+    return {"rules_removed": removed}
 
 
 @router.post(
@@ -442,7 +543,7 @@ async def create_invitation(
     return {
         "id": str(invitation.id),
         "email": invitation.email_normalized,
-        "role": invitation.role.value,
+        "role": invitation.role_name or invitation.role.value,
         "expires_at": invitation.expires_at.isoformat(),
         "token": token,
     }
@@ -485,7 +586,7 @@ async def preview_invitation(
         has_account = await uow.users.get_by_email(invitation.email_normalized) is not None
     return {
         "email": invitation.email_normalized,
-        "role": invitation.role.value,
+        "role": invitation.role_name or invitation.role.value,
         "workspace": {"slug": workspace.slug, "name": workspace.display_name},
         "expires_at": invitation.expires_at.isoformat(),
         "has_account": has_account,
@@ -792,8 +893,9 @@ class ScopeDeletionRequest(BaseModel):
 
 
 class ScopeAccessRequest(BaseModel):
-    #: The role this rule speaks about, or null when it names one person.
-    role: Role | None = None
+    #: The role this rule speaks about, or null when it names one person. A
+    #: built-in role's name, or the name of one this workspace defined.
+    role: str | None = Field(default=None, min_length=1, max_length=48)
     #: The person this rule speaks about, or null when it names a role.
     user_id: UUID | None = None
     #: ``deny`` stops someone a role grant would otherwise let through.
@@ -2884,7 +2986,10 @@ def _member_json(
         "user_id": str(user.id),
         "email": user.email_display,
         "full_name": user.full_name,
-        "role": membership.role.value,
+        "role": membership.role_key,
+        #: Where their capabilities come from. The same as ``role`` unless they
+        #: are in a role this workspace defined, which is based on one.
+        "base_role": membership.role.value,
         "status": membership.status.value,
         "extra_capabilities": sorted(c.value for c in membership.extra_capabilities),
         "capabilities": sorted(c.value for c in membership.capabilities()),

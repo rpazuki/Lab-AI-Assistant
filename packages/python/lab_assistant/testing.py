@@ -226,11 +226,16 @@ def make_actor(
     user_id: UUID,
     workspace_id: UUID,
     role: Role = Role.DATA_STEWARD,
+    role_name: str | None = None,
     group_ids: tuple[UUID, ...] = (),
     grants: tuple = (),
     extra_capabilities: frozenset[Capability] = frozenset(),
 ) -> ActorContext:
-    """An actor with a synthetic membership, for tests that skip provisioning."""
+    """An actor with a synthetic membership, for tests that skip provisioning.
+
+    ``role_name`` puts them in a role the workspace defined, the way an admin
+    would: ``role`` still says what they may do, and both names reach them.
+    """
     return ActorContext(
         user_id=user_id,
         workspace_id=workspace_id,
@@ -239,6 +244,7 @@ def make_actor(
             workspace_id=workspace_id,
             user_id=user_id,
             role=role,
+            role_name=role_name,
             status=MembershipStatus.ACTIVE,
             extra_capabilities=extra_capabilities,
         ),

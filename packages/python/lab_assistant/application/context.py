@@ -200,7 +200,7 @@ async def resolve_actor(
         grants = await uow.policies.list_grants(
             workspace_id,
             subject_ids=[user_id, workspace_id, *group_ids],
-            roles=[membership.role.value] if membership is not None else [],
+            roles=sorted(membership.role_keys) if membership is not None else [],
         )
     return ActorContext(
         user_id=user_id,
