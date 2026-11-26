@@ -9,13 +9,13 @@ import { ServerSearch } from "@/components/ui/ServerSearch";
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { Alert, Button, Empty, Input, StateChip } from "@/components/ui/primitives";
 import { SortHeader } from "@/components/ui/table";
-import { listAuditEvents, retryTask, taskQueue, taskSnapshot } from "@/lib/api";
+import { listAuditEvents, retryTask, runningWork, taskQueue, taskSnapshot } from "@/lib/api";
 import { describeStatus } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
 import { utcWhen } from "@/lib/when";
-import type { AuditEvent, Page, QueueTask, TaskQueueName, TaskSnapshot } from "@/types";
+import type { AuditEvent, Page, QueueTask, RunningWork, TaskQueueName, TaskSnapshot } from "@/types";
 
 /** The task states worth a tile, in the order work moves through them. */
 const STATES = [
@@ -207,6 +207,8 @@ export function OperationsClient() {
       {/* One above the other, not side by side: each row carries a stage, a state,
           a time and an action, which wrapped badly in half a screen. Now that the
           panels fold away, full width costs nothing when they are not wanted. */}
+      <RunningNow tick={tick} />
+
       <WaitingLongest stages={snapshot?.waiting_by_stage ?? []} tick={tick} />
 
       <WaitingForPerson tick={tick} />
@@ -215,6 +217,203 @@ export function OperationsClient() {
 
       <AuditLog tick={tick} />
     </div>
+  );
+}
+
+/**
+ * What each worker is doing now, in words, and why that many run at once.
+ *
+ * A worker runs one task at a time, for one class of stages, and each stage has
+ * a limit across all workers: the smaller of the two decides. Both are shown, so
+ * a limit that cannot bind (higher than the workers of its class) is visible.
+ */
+function RunningNow({ tick }: { tick: number }) {
+  const [work, setWork] = useState<RunningWork | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let current = true;
+    runningWork()
+      .then((next) => {
+        if (!current) return;
+        setWork(next);
+        setError(null);
+      })
+      .catch((caught) => current && setError(message(caught, "the running tasks could not be loaded")));
+    return () => {
+      current = false;
+    };
+  }, [tick]);
+
+  const running = useTable(work?.running ?? [], {
+    columns: {
+      worker: (task) => task.worker ?? "",
+      doing: (task) => task.doing,
+      stage: (task) => task.stage,
+      attempt: (task) => task.attempt,
+      started: (task) => task.first_started_at,
+      heartbeat: (task) => task.heartbeat_at,
+    },
+  });
+  const stages = useTable(work?.stages ?? [], {
+    columns: {
+      stage: (row) => row.stage,
+      class: (row) => row.worker_class,
+      running: (row) => row.running,
+      limit: (row) => row.limit,
+      ready: (row) => row.ready,
+    },
+  });
+  const busy = (workerClass: string) =>
+    (work?.busy_workers ?? []).filter((worker) => worker.worker_class === workerClass).length;
+  const classStages = (workerClass: string) =>
+    (work?.stages ?? []).filter((row) => row.worker_class === workerClass).map((row) => row.stage).join(", ");
+
+  return (
+    <CollapsiblePanel
+      title="Running now"
+      storageKey="operations.running"
+      count={
+        work ? (
+          <span className="text-xs text-muted">
+            {work.running.length.toLocaleString()} task{work.running.length === 1 ? "" : "s"}
+          </span>
+        ) : undefined
+      }
+      flush
+    >
+      <QueueError error={error} />
+      {work === null ? (
+        <p className="px-5 py-3 text-sm text-muted">Loading…</p>
+      ) : work.running.length === 0 ? (
+        <div className="px-5 py-3">
+          <Empty>No worker is running a task.</Empty>
+        </div>
+      ) : (
+        <table className="data-table" aria-label="Running tasks">
+          <thead>
+            <tr>
+              <SortHeader table={running} column="worker">
+                Worker
+              </SortHeader>
+              <SortHeader table={running} column="doing">
+                Doing
+              </SortHeader>
+              <SortHeader table={running} column="stage">
+                Stage
+              </SortHeader>
+              <SortHeader table={running} column="attempt" numeric>
+                Attempt
+              </SortHeader>
+              <SortHeader table={running} column="started">
+                First started
+              </SortHeader>
+              <SortHeader table={running} column="heartbeat" numeric>
+                Last heartbeat
+              </SortHeader>
+            </tr>
+          </thead>
+          <tbody>
+            {running.rows.map((task) => (
+              <tr key={task.task_id}>
+                <td className="font-mono text-xs">{task.worker ?? "—"}</td>
+                <td className="text-sm">
+                  <span className="text-ink">{task.doing}</span>
+                  {task.paper && task.paper.dois.length > 0 ? (
+                    <span className="block text-xs text-muted">
+                      DOI{" "}
+                      <a
+                        className="font-mono text-link underline"
+                        href={`https://doi.org/${task.paper.dois[0]}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {task.paper.dois[0]}
+                      </a>
+                    </span>
+                  ) : null}
+                  {task.stalled ? (
+                    <span className="mt-1 block">
+                      <span className="rounded-control border border-warning-strong/25 bg-warning-lt px-1.5 py-0.5 text-xs font-semibold text-warning-strong">
+                        Stalled
+                      </span>{" "}
+                      <span className="text-xs text-muted">
+                        its worker stopped renewing the lease; the next free {task.worker_class} worker takes it over
+                      </span>
+                    </span>
+                  ) : null}
+                </td>
+                <td className="font-mono text-xs">{task.stage}</td>
+                <td className="numeric">
+                  {task.attempt} of {task.max_attempts}
+                </td>
+                <td className="whitespace-nowrap text-xs text-muted">{utcWhen(task.first_started_at)}</td>
+                <td className="numeric" title={task.heartbeat_at ?? undefined}>
+                  {ago(task.heartbeat_at)} ago
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {work ? (
+        <section aria-label="How many run at once" className="space-y-3 border-t border-border px-5 py-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-heading">How many run at once</h3>
+          <div className="max-w-3xl space-y-2 text-xs text-muted">
+            <p>
+              Each worker runs <strong>one task at a time</strong>, for one class of stages:{" "}
+              <strong>network</strong> ({classStages("network") || "none"}) or <strong>compute</strong> (
+              {classStages("compute") || "none"}). Each stage also has a <strong>limit</strong> across all workers,
+              and the smaller of the two decides: a limit higher than the workers of its class has no effect. A
+              worker that finds a stage at its limit takes the next stage of its class instead. Busy now:{" "}
+              {busy("network")} network and {busy("compute")} compute worker
+              {busy("network") + busy("compute") === 1 ? "" : "s"}; an idle worker holds no task, so it is not listed.
+            </p>
+            <p>
+              To change it, an administrator edits <code className="font-mono">stage_concurrency</code> in the
+              deployment&apos;s settings (<code className="font-mono">infra/environments/server.yaml</code>) or runs
+              more <code className="font-mono">worker-network</code> or{" "}
+              <code className="font-mono">worker-compute</code> containers, then restarts them. A worker renews its
+              lease while it works; one silent for {Math.round(work.lease_seconds / 60)} min is stalled, and its
+              task is taken over.
+            </p>
+          </div>
+          <table className="data-table" aria-label="Stage limits">
+            <thead>
+              <tr>
+                <SortHeader table={stages} column="stage">
+                  Stage
+                </SortHeader>
+                <SortHeader table={stages} column="class">
+                  Worker class
+                </SortHeader>
+                <SortHeader table={stages} column="running" numeric>
+                  Running
+                </SortHeader>
+                <SortHeader table={stages} column="limit" numeric>
+                  Limit
+                </SortHeader>
+                <SortHeader table={stages} column="ready" numeric>
+                  Waiting
+                </SortHeader>
+              </tr>
+            </thead>
+            <tbody>
+              {stages.rows.map((row) => (
+                <tr key={row.stage}>
+                  <td className="font-mono text-xs">{row.stage}</td>
+                  <td className="font-mono text-xs">{row.worker_class}</td>
+                  <td className="numeric">{row.running.toLocaleString()}</td>
+                  <td className="numeric">{row.limit.toLocaleString()}</td>
+                  <td className="numeric">{row.ready.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+    </CollapsiblePanel>
   );
 }
 

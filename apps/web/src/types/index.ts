@@ -508,6 +508,31 @@ export interface QueueTask {
   error: string | null;
 }
 
+/** What the workers are doing now, and what limits how many tasks run at once. */
+export interface RunningWork {
+  running: {
+    task_id: string;
+    stage: string;
+    worker_class: string;
+    /** The worker holding it, as "<host>/<class>". */
+    worker: string | null;
+    /** The task in words: "Fetching the full text of “…”". */
+    doing: string;
+    paper: { work_id: string; title: string | null; year: number | null; dois: string[] } | null;
+    attempt: number;
+    max_attempts: number;
+    first_started_at: string | null;
+    heartbeat_at: string | null;
+    lease_expires_at: string | null;
+    /** Its worker stopped renewing the lease: the next free worker takes it over. */
+    stalled: boolean;
+  }[];
+  stages: { stage: string; worker_class: string; running: number; limit: number; ready: number }[];
+  busy_workers: { worker: string; worker_class: string }[];
+  lease_seconds: number;
+  poll_seconds: number;
+}
+
 export interface TaskSnapshot {
   /** Tasks per state, over every task. */
   counts: Record<string, number>;

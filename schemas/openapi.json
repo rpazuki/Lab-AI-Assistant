@@ -10224,6 +10224,71 @@
         "summary": "Task Queue"
       }
     },
+    "/api/v1/operations/running": {
+      "get": {
+        "description": "What each worker is doing now, and each stage's running, waiting and limit.",
+        "operationId": "running_tasks_api_v1_operations_running_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Running Tasks Api V1 Operations Running Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Running Tasks"
+      }
+    },
     "/api/v1/operations/tasks": {
       "get": {
         "operationId": "task_snapshot_api_v1_operations_tasks_get",

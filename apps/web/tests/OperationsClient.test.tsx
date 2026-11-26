@@ -13,6 +13,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     taskQueue: vi.fn(),
     listAuditEvents: vi.fn(),
     retryTask: vi.fn(),
+    runningWork: vi.fn(),
   };
 });
 
@@ -67,6 +68,45 @@ beforeEach(() => {
       ? { items: [task(10), task(11)], next_cursor: null, total: 12 }
       : { items: Array.from({ length: 10 }, (_, i) => task(i)), next_cursor: "c10", total: 12 };
   });
+  vi.mocked(api.runningWork).mockResolvedValue({
+    running: [
+      {
+        task_id: "r1",
+        stage: "acquisition",
+        worker_class: "network",
+        worker: "325fe6d44add/network",
+        doing: "Fetching the full text of “Lipid bodies in Yarrowia”",
+        paper: { work_id: "w1", title: "Lipid bodies in Yarrowia", year: 2024, dois: ["10.1016/j.ymben.2024.1"] },
+        attempt: 2,
+        max_attempts: 5,
+        first_started_at: "2026-11-23T16:22:27Z",
+        heartbeat_at: new Date().toISOString(),
+        lease_expires_at: null,
+        stalled: false,
+      },
+      {
+        task_id: "r2",
+        stage: "parsing",
+        worker_class: "compute",
+        worker: "host-b/compute",
+        doing: "Reading the text out of the file of a paper",
+        paper: null,
+        attempt: 1,
+        max_attempts: 5,
+        first_started_at: "2026-11-26T10:00:00Z",
+        heartbeat_at: "2026-11-26T10:00:00Z",
+        lease_expires_at: "2026-11-26T10:10:00Z",
+        stalled: true,
+      },
+    ],
+    stages: [
+      { stage: "acquisition", worker_class: "network", running: 1, limit: 3, ready: 8332 },
+      { stage: "parsing", worker_class: "compute", running: 0, limit: 2, ready: 0 },
+    ],
+    busy_workers: [{ worker: "325fe6d44add/network", worker_class: "network" }],
+    lease_seconds: 600,
+    poll_seconds: 2,
+  });
   vi.mocked(api.listAuditEvents).mockImplementation(async (options) => ({
     // Newest first from the API; a search narrows on the server.
     items: options?.q ? [event(3, "scope_approved")] : [event(13), event(12)],
@@ -77,6 +117,34 @@ beforeEach(() => {
 });
 
 describe("the operations page", () => {
+  it("says what each worker is doing, and what limits how many run at once", async () => {
+    render(<OperationsClient />);
+    const scope = within(await screen.findByRole("table", { name: "Running tasks" }));
+    expect(scope.getByText("Fetching the full text of “Lipid bodies in Yarrowia”")).toBeInTheDocument();
+    expect(screen.getByText("2 tasks")).toBeInTheDocument();
+    expect(scope.getByRole("link", { name: "10.1016/j.ymben.2024.1" })).toHaveAttribute(
+      "href",
+      "https://doi.org/10.1016/j.ymben.2024.1",
+    );
+    expect(scope.getByText("2 of 5")).toBeInTheDocument();
+    expect(scope.getByText("Stalled")).toBeInTheDocument();
+
+    const limits = within(screen.getByRole("region", { name: "How many run at once" }));
+    expect(limits.getByText(/one task at a time/)).toBeInTheDocument();
+    expect(limits.getByText(/Busy now:/)).toHaveTextContent("1 network and 0 compute worker;");
+    expect(limits.getByText(/stalled, and its/)).toHaveTextContent("silent for 10 min");
+    const acquisition = within(limits.getByRole("table", { name: "Stage limits" })).getByRole("row", {
+      name: /acquisition/,
+    });
+    expect(within(acquisition).getAllByRole("cell").map((cell) => cell.textContent)).toEqual([
+      "acquisition",
+      "network",
+      "1",
+      "3",
+      "8,332",
+    ]);
+  });
+
   it("pages the waiting tasks and narrows them to a stage", async () => {
     const user = userEvent.setup();
     render(<OperationsClient />);
@@ -101,7 +169,10 @@ describe("the operations page", () => {
     const user = userEvent.setup();
     render(<OperationsClient />);
     await screen.findByText("1–10 of 12 waiting tasks");
-    const waiting = screen.getAllByRole("table")[0]!;
+    // The table in the panel that holds the waiting-task search.
+    const waiting = within(
+      screen.getByRole("searchbox", { name: "Search waiting tasks" }).closest("section")!,
+    ).getByRole("table");
     expect(within(waiting).getByRole("columnheader", { name: /When/ })).toBeInTheDocument();
     expect(within(waiting).getAllByText("2026-11-01 00:00 UTC").length).toBeGreaterThan(0);
 

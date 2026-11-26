@@ -53,6 +53,7 @@ import type {
   ReviewStep,
   Role,
   RunComparison,
+  RunningWork,
   RunReviewSummary,
   ScopeAccess,
   ScopeDeletionPlan,
@@ -916,6 +917,9 @@ export const sourceContribution = () =>
   ).then((b) => b.items);
 
 export const taskSnapshot = () => request<TaskSnapshot>("/operations/tasks");
+
+/** What each worker is doing now, and each stage's running, waiting and limit. */
+export const runningWork = () => request<RunningWork>("/operations/running");
 
 /** Put a dead-lettered task back in the queue. */
 export const retryTask = (taskId: string) =>

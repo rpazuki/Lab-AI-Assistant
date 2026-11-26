@@ -51,6 +51,7 @@ from lab_assistant.application.scope_access import ScopeAccessService
 from lab_assistant.application.scope_deletion import ScopeDeletionService
 from lab_assistant.application.scopes import ScopeService
 from lab_assistant.application.screening import ScreeningService
+from lab_assistant.application.task_activity import TaskActivityService
 from lab_assistant.application.tasks import TaskQueue
 from lab_assistant.application.usage import UsageService
 from lab_assistant.contracts.errors import NotFound, PolicyDenied, ValidationFailure
@@ -3038,6 +3039,13 @@ def _gate_json(gate: dict[str, Any]) -> dict[str, Any]:
 async def task_snapshot(actor: CurrentActor, container: Container) -> dict[str, Any]:
     actor.require(Capability.VIEW_OPERATIONS)
     return await container.orchestrator.queue_snapshot(workspace_id=actor.workspace_id)
+
+
+@router.get("/operations/running")
+async def running_tasks(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """What each worker is doing now, and each stage's running, waiting and limit."""
+    actor.require(Capability.VIEW_OPERATIONS)
+    return await TaskActivityService(container.context).snapshot(workspace_id=actor.workspace_id)
 
 
 @router.get("/operations/queue")

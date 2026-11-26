@@ -1226,7 +1226,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         statuses: ["task"],
         title: "The task queue",
         about: [
-          "Discovery, acquisition, parsing, extraction, indexing and evaluation all run as tasks on background workers. The tiles count tasks by state. **Waiting longest** lists the tasks ready to run or being run, the one that has waited longest first; its stage menu shows how many wait in each stage and for how long, so you can see where work is backing up. **Waiting for a person** lists tasks that need a decision. Each list has a **When** column (in UTC) and a search over every task in it: words, a task id, or a date such as 2026-11-23. Every list shows 10 tasks at a time, with **Previous** and **Next**, and counts every task, not only those on screen. The page refreshes itself and stays on the page you are reading.",
+          "Discovery, acquisition, parsing, extraction, indexing and evaluation all run as tasks on background workers. The tiles count tasks by state. **Running now** says what each worker is doing, in words (for example the paper being fetched, with its DOI), its attempt and its last heartbeat; a task whose worker went quiet is marked **Stalled** and is taken over by the next free worker. **Waiting longest** lists the tasks ready to run or being run, the one that has waited longest first; its stage menu shows how many wait in each stage and for how long, so you can see where work is backing up. **Waiting for a person** lists tasks that need a decision. Each list has a **When** column (in UTC) and a search over every task in it: words, a task id, or a date such as 2026-11-23. Every list shows 10 tasks at a time, with **Previous** and **Next**, and counts every task, not only those on screen. The page refreshes itself and stays on the page you are reading.",
           "A task that fails is retried automatically; one that keeps failing becomes a dead letter and stops, so a broken input never loops forever.",
         ],
         howTos: [
@@ -1238,6 +1238,16 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Once the cause is fixed, select **Retry**.",
             ],
             note: "Retrying without fixing the cause only fails again: check the error first.",
+          },
+          {
+            title: "How to see, and change, how many tasks run at once",
+            needs: "Admins, and someone who can restart the server's containers.",
+            steps: [
+              "Open **Running now** and read **How many run at once**. Each worker runs one task at a time, for the **network** stages or the **compute** ones, and each stage has a **Limit** across all workers. The smaller decides, so a limit above the number of workers of its class has no effect.",
+              "To run more of a stage at once, start more workers of its class (more `worker-network` or `worker-compute` containers) and, if the stage's limit is reached, raise it in `stage_concurrency` in `infra/environments/server.yaml`. Then restart the workers.",
+              "Compare **Running** with **Limit** and **Waiting** afterwards: a stage with many waiting and fewer running than its limit is short of workers.",
+            ],
+            note: "Raise parsing carefully: it is the stage that needs the most memory.",
           },
         ],
       },
