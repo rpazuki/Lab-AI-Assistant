@@ -26,6 +26,7 @@ from lab_assistant.application.ports import (
 )
 from lab_assistant.contracts.archive import StageResultEnvelope
 from lab_assistant.contracts.archive_import import ImportRecord, ImportState
+from lab_assistant.contracts.connector import DOI_SCHEMES
 from lab_assistant.contracts.errors import ConcurrencyConflict, ErrorClass, LabAssistantError
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
@@ -864,6 +865,26 @@ class _Works:
             for identifier in self._db.identifiers.values()
             if identifier.workspace_id == workspace_id and identifier.work_id == work_id
         ]
+
+    async def list_dois(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, list[str]]:
+        wanted = set(work_ids)
+        found = sorted(
+            (
+                identifier
+                for identifier in self._db.identifiers.values()
+                if identifier.workspace_id == workspace_id
+                and identifier.work_id in wanted
+                and identifier.status == "active"
+                and identifier.scheme.value in DOI_SCHEMES
+            ),
+            key=lambda identifier: (str(identifier.work_id), identifier.value_normalized),
+        )
+        out: dict[UUID, list[str]] = {}
+        for identifier in found:
+            out.setdefault(identifier.work_id, []).append(identifier.value_display)
+        return out
 
     async def list_all_identifiers(
         self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None

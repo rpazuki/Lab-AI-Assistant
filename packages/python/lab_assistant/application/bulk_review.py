@@ -654,8 +654,18 @@ def _surviving(works: dict[UUID, Work], work_id: UUID) -> UUID:
     return work_id
 
 
-def paper(work_id: UUID, summary: WorkSummary | None, work: Work | None = None) -> dict[str, Any]:
-    """What a person needs to recognise a paper in a queue or a preview."""
+def paper(
+    work_id: UUID,
+    summary: WorkSummary | None,
+    work: Work | None = None,
+    *,
+    dois: list[str] | None = None,
+) -> dict[str, Any]:
+    """What a person needs to recognise a paper in a queue or a preview.
+
+    ``dois`` is given where two papers are compared for a merge: the DOI is
+    usually what settles whether they are one paper.
+    """
     out: dict[str, Any] = {
         "work_id": str(work_id),
         "title": summary.title if summary else None,
@@ -665,6 +675,8 @@ def paper(work_id: UUID, summary: WorkSummary | None, work: Work | None = None) 
         "first_author": summary.first_author if summary else None,
         "sources": summary.sources.split() if summary else [],
     }
+    if dois is not None:
+        out["dois"] = dois
     if work is not None:
         out["relevance"] = work.relevance.value
         out["identity_status"] = work.identity_status.value

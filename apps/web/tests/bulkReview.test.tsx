@@ -54,8 +54,8 @@ const pair: DuplicateProposal = {
   similarity: 1,
   year_gap: 0,
   first_author_match: true,
-  left: paper("a", "Lipid production in Yarrowia"),
-  right: paper("b", "Lipid production in Yarrowia."),
+  left: { ...paper("a", "Lipid production in Yarrowia"), dois: ["10.1016/j.ymben.2024.01.001"] },
+  right: { ...paper("b", "Lipid production in Yarrowia."), dois: [] },
 };
 
 describe("Duplicate review", () => {
@@ -75,6 +75,12 @@ describe("Duplicate review", () => {
     render(<DuplicateReview live={false} />);
     expect(await screen.findByText("Lipid production in Yarrowia")).toBeInTheDocument();
     expect(screen.getByText("Lipid production in Yarrowia.")).toBeInTheDocument();
+    // Each paper says its DOI, or that it has none: often what decides a pair.
+    expect(screen.getByRole("link", { name: "10.1016/j.ymben.2024.01.001" })).toHaveAttribute(
+      "href",
+      "https://doi.org/10.1016/j.ymben.2024.01.001",
+    );
+    expect(screen.getByText("No DOI")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Merge" }));
     expect(api.mergeDuplicate).toHaveBeenCalledWith("p1");
     await user.click(screen.getByRole("button", { name: "Not the same" }));
@@ -287,7 +293,11 @@ describe("Searching and settling duplicates and conflicts", () => {
       items: [
         {
           ...paper("c1", "Microbial fatty acid specificity"),
-          identifiers: [{ scheme: "doi", value: "10.1007/bf02898718" }],
+          dois: ["10.1007/bf02898718"],
+          identifiers: [
+            { scheme: "doi", value: "10.1007/bf02898718" },
+            { scheme: "pmid", value: "18454330" },
+          ],
           with: [
             {
               ...paper("c2", "Microbial fatty acid specificity"),
@@ -306,7 +316,12 @@ describe("Searching and settling duplicates and conflicts", () => {
     render(<DuplicateReview live={false} />);
     await user.click(await screen.findByRole("tab", { name: "Identity conflicts (2)" }));
 
-    expect(await screen.findByText("DOI 10.1007/bf02898718")).toBeInTheDocument();
+    // The DOI is a link in the paper; the identifier line keeps the others, once each.
+    const doi = await screen.findByRole("link", { name: "10.1007/bf02898718" });
+    expect(doi).toHaveAttribute("href", "https://doi.org/10.1007/bf02898718");
+    expect(screen.getByText("PMID 18454330")).toBeInTheDocument();
+    expect(screen.queryByText("DOI 10.1007/bf02898718")).not.toBeInTheDocument();
+    expect(screen.queryAllByText("No DOI")).toHaveLength(0);
     expect(screen.getByText(/could not be merged automatically/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Same paper: merge" }));
     expect(api.mergeWorks).toHaveBeenCalledWith("c1", "c2", "steward_same_paper");

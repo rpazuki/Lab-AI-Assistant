@@ -44,6 +44,25 @@ function Paper({ paper }: { paper: PaperSummary }) {
       <p className="mt-0.5 text-xs text-muted">
         {[paper.first_author, paper.year, paper.journal, paper.resource_kind].filter(Boolean).join(" · ")}
       </p>
+      {paper.dois ? (
+        <p className="mt-0.5 text-xs text-muted">
+          {paper.dois.length === 0
+            ? "No DOI"
+            : paper.dois.map((doi, index) => (
+                <span key={doi}>
+                  {index === 0 ? "DOI " : ", "}
+                  <a
+                    className="font-mono text-link underline"
+                    href={`https://doi.org/${doi}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {doi}
+                  </a>
+                </span>
+              ))}
+        </p>
+      ) : null}
       {paper.sources.length > 0 ? (
         <p className="mt-0.5 text-xs text-muted">found by {paper.sources.join(", ")}</p>
       ) : null}
@@ -789,7 +808,10 @@ function ConflictReview({ onChanged }: { onChanged?: () => void }) {
         {rows.items.map((row) => (
           <li key={row.work_id} className="space-y-2 px-5 py-3 text-sm">
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-              {row.identifiers.map((identifier) => (
+              {/* The DOIs are in the paper below; the other identifiers stay here. */}
+              {row.identifiers
+                .filter((identifier) => !identifier.scheme.endsWith("doi"))
+                .map((identifier) => (
                 <span key={`${identifier.scheme}:${identifier.value}`} className="font-mono">
                   {identifier.scheme.toUpperCase()} {identifier.value}
                 </span>

@@ -63,6 +63,7 @@ class IdentityConflictService:
         ws = actor.workspace_id
         async with self._context.uow_factory() as uow:
             summaries = await uow.works.get_summaries(ws, [w.id for w in shown])
+            dois = await uow.works.list_dois(ws, [w.id for w in shown])
             # Read once for the page, not once per paper: a refused merge names
             # both papers.
             refused = await uow.works.list_decisions(
@@ -73,9 +74,10 @@ class IdentityConflictService:
                 identifiers = await uow.works.list_identifiers(ws, work.id)
                 others = await self._counterparts(uow, ws, work.id, identifiers, refused)
                 other_summaries = await uow.works.get_summaries(ws, [o for o, _, _ in others])
+                other_dois = await uow.works.list_dois(ws, [o for o, _, _ in others])
                 rows.append(
                     {
-                        **paper(work.id, summaries.get(work.id), work),
+                        **paper(work.id, summaries.get(work.id), work, dois=dois.get(work.id, [])),
                         "identifiers": [
                             {"scheme": i.scheme.value, "value": i.value_display}
                             for i in identifiers
@@ -83,7 +85,11 @@ class IdentityConflictService:
                         ],
                         "with": [
                             {
-                                **paper(other, other_summaries.get(other)),
+                                **paper(
+                                    other,
+                                    other_summaries.get(other),
+                                    dois=other_dois.get(other, []),
+                                ),
                                 "reason": reason,
                                 "identifier": identifier,
                             }

@@ -120,6 +120,8 @@ export interface PaperSummary {
   resource_kind: string | null;
   first_author: string | null;
   sources: string[];
+  /** Where two papers are compared for a merge: their DOIs, empty when none. */
+  dois?: string[];
   relevance?: string;
   identity_status?: string;
 }

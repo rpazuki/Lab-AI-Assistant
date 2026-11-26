@@ -15,6 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, field_validator
 
 __all__ = [
+    "DOI_SCHEMES",
     "AcquisitionRequest",
     "BodyKind",
     "CompiledQuery",
@@ -59,6 +60,14 @@ class IdentifierScheme(StrEnum):
     @property
     def is_strong(self) -> bool:
         return self is not IdentifierScheme.TITLE_NORMALISED
+
+
+#: The schemes whose value is a DOI: what a person reads as "the DOI".
+DOI_SCHEMES = (
+    IdentifierScheme.DOI.value,
+    IdentifierScheme.BIORXIV_DOI.value,
+    IdentifierScheme.DATACITE_DOI.value,
+)
 
 
 class Identifier(BaseModel):

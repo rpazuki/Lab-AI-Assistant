@@ -1480,6 +1480,9 @@ async def list_conflicts(
         after=_queue_cursor(after),
         search=search,
     )
+    dois = await _dois(
+        container, actor, {w for row in rows for w in (row.left_work_id, row.right_work_id)}
+    )
     last = rows[-1] if len(rows) == limit else None
     return {
         "conflict_total": conflict_total,
@@ -1493,12 +1496,26 @@ async def list_conflicts(
                 "similarity": row.similarity,
                 "year_gap": row.year_gap,
                 "first_author_match": row.first_author_match,
-                "left": paper(row.left_work_id, summaries.get(row.left_work_id)),
-                "right": paper(row.right_work_id, summaries.get(row.right_work_id)),
+                "left": paper(
+                    row.left_work_id,
+                    summaries.get(row.left_work_id),
+                    dois=dois.get(row.left_work_id, []),
+                ),
+                "right": paper(
+                    row.right_work_id,
+                    summaries.get(row.right_work_id),
+                    dois=dois.get(row.right_work_id, []),
+                ),
             }
             for row in rows
         ],
     }
+
+
+async def _dois(container: Any, actor: Any, work_ids: set[UUID]) -> dict[UUID, list[str]]:
+    """The DOIs of the papers a merge view shows side by side."""
+    async with container.context.uow_factory() as uow:
+        return await uow.works.list_dois(actor.workspace_id, sorted(work_ids, key=str))
 
 
 @router.post(
@@ -1529,7 +1546,9 @@ async def dismiss_duplicate(
     return {"id": str(row.id), "status": row.status.value}
 
 
-def _plan_view(plan: MergePlan, summaries: dict[UUID, Any]) -> dict[str, Any]:
+def _plan_view(
+    plan: MergePlan, summaries: dict[UUID, Any], dois: dict[UUID, list[str]]
+) -> dict[str, Any]:
     return {
         "considered": plan.considered,
         "accepted_pairs": plan.accepted_pairs,
@@ -1545,8 +1564,16 @@ def _plan_view(plan: MergePlan, summaries: dict[UUID, Any]) -> dict[str, Any]:
                 "examples": [
                     {
                         "similarity": row.similarity,
-                        "left": paper(row.left_work_id, summaries.get(row.left_work_id)),
-                        "right": paper(row.right_work_id, summaries.get(row.right_work_id)),
+                        "left": paper(
+                            row.left_work_id,
+                            summaries.get(row.left_work_id),
+                            dois=dois.get(row.left_work_id, []),
+                        ),
+                        "right": paper(
+                            row.right_work_id,
+                            summaries.get(row.right_work_id),
+                            dois=dois.get(row.right_work_id, []),
+                        ),
                     }
                     for row in plan.skipped_examples.get(reason, [])
                 ],
@@ -1556,7 +1583,10 @@ def _plan_view(plan: MergePlan, summaries: dict[UUID, Any]) -> dict[str, Any]:
         "sample_groups": [
             {
                 "similarity": max(row.similarity for row in rows),
-                "papers": [paper(work_id, summaries.get(work_id)) for work_id in group],
+                "papers": [
+                    paper(work_id, summaries.get(work_id), dois=dois.get(work_id, []))
+                    for work_id in group
+                ],
             }
             for group, rows in zip(plan.groups[:12], plan.group_pairs[:12], strict=True)
         ],
@@ -1581,7 +1611,7 @@ async def preview_merge_rule(
         ids.update(w for row in rows for w in (row.left_work_id, row.right_work_id))
     async with container.context.uow_factory() as uow:
         summaries = await uow.works.get_summaries(actor.workspace_id, list(ids))
-    return _plan_view(plan, summaries)
+    return _plan_view(plan, summaries, await _dois(container, actor, ids))
 
 
 @router.post(

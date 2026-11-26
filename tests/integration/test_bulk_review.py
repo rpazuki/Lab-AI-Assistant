@@ -739,3 +739,43 @@ class TestOverridingASkip:
         for reason in ("already_merged", "below_threshold", "anything"):
             with pytest.raises(ValueError, match="cannot be overridden"):
                 MergeRule(override=reason)
+
+
+class TestDoisInMergeViews:
+    """Two papers compared for a merge each carry their DOIs."""
+
+    async def test_active_dois_of_any_doi_scheme_in_a_stable_order(self, lab) -> None:
+        article = await lab.paper("Lipid bodies", doi="10.1016/b")
+        preprint = await lab.paper("Lipid bodies", pmid="1")
+        context = lab.harness.context
+        async with context.uow_factory() as uow:
+            for scheme, value, status in (
+                (IdentifierScheme.BIORXIV_DOI, "10.1101/a", "active"),
+                (IdentifierScheme.DOI, "10.1101/retired", "retired"),
+            ):
+                await uow.works.add_identifier(
+                    WorkIdentifier(
+                        id=context.new_id(),
+                        workspace_id=lab.ws,
+                        work_id=article,
+                        scheme=scheme,
+                        value_normalized=value,
+                        value_display=value.upper(),
+                        confidence=1.0,
+                        status=status,
+                    )
+                )
+            await uow.commit()
+            dois = await uow.works.list_dois(lab.ws, [article, preprint])
+        # Display form, sorted by value; a retired DOI and a PMID are left out.
+        assert dois == {article: ["10.1016/b", "10.1101/A"]}
+        assert preprint not in dois
+
+    async def test_both_papers_of_a_conflict_show_them(self, lab) -> None:
+        from lab_assistant.application.identity_conflicts import IdentityConflictService
+
+        left, _ = await TestIdentityConflicts().conflict(lab)
+        page = await IdentityConflictService(lab.harness.context).page(lab.actor)
+        row = next(item for item in page["items"] if item["work_id"] == str(left))
+        assert row["dois"] == ["10.1007/bf02898718"]
+        assert [other["dois"] for other in row["with"]] == [["10.1007/other"]]

@@ -30,6 +30,7 @@ from lab_assistant.application.ports import (
 )
 from lab_assistant.contracts.archive import StageResultEnvelope
 from lab_assistant.contracts.archive_import import ImportRecord, ImportState
+from lab_assistant.contracts.connector import DOI_SCHEMES
 from lab_assistant.contracts.events import AuditEventRecord, OutboxEvent
 from lab_assistant.contracts.policy import GrantSpec
 from lab_assistant.contracts.publication import PublicationRecord, PublicationState
@@ -1072,6 +1073,26 @@ class _Works(_Base):
             self._scope(IDENTIFIERS, workspace_id),
             t.work_identifiers.c.work_id == work_id,
         )
+
+    async def list_dois(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, list[str]]:
+        i = t.work_identifiers
+        out: dict[UUID, list[str]] = {}
+        for chunk in _chunks(list(work_ids)):
+            result = await self._c.execute(
+                select(i.c.work_id, i.c.value_display)
+                .where(
+                    i.c.workspace_id == workspace_id,
+                    i.c.work_id.in_(chunk),
+                    i.c.status == "active",
+                    i.c.scheme.in_(DOI_SCHEMES),
+                )
+                .order_by(i.c.work_id, i.c.value_normalized)
+            )
+            for work_id, value in result.all():
+                out.setdefault(work_id, []).append(value)
+        return out
 
     async def list_all_identifiers(
         self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
