@@ -1460,12 +1460,20 @@ class _Works(_Base):
         await self._upsert(DECISIONS, decision)
 
     async def list_decisions(
-        self, workspace_id: UUID, *, work_id: UUID | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        work_id: UUID | None = None,
+        decision_type: str | None = None,
     ) -> list[IdentityDecision]:
+        conditions = [self._scope(DECISIONS, workspace_id)]
+        # The type is filtered here; the work in Python, because the subjects are
+        # an array on PostgreSQL and JSON on SQLite. Unfiltered, a workspace's
+        # tens of thousands of relevance decisions all come back.
+        if decision_type is not None:
+            conditions.append(t.identity_decisions.c.decision_type == decision_type)
         decisions = await self._many(
-            DECISIONS,
-            self._scope(DECISIONS, workspace_id),
-            order=t.identity_decisions.c.decided_at,
+            DECISIONS, *conditions, order=t.identity_decisions.c.decided_at
         )
         if work_id is None:
             return decisions

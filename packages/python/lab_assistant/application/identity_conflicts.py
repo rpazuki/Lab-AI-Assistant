@@ -59,10 +59,15 @@ class IdentityConflictService:
         ws = actor.workspace_id
         async with self._context.uow_factory() as uow:
             summaries = await uow.works.get_summaries(ws, [w.id for w in shown])
+            # Read once for the page, not once per paper: a refused merge names
+            # both papers.
+            refused = await uow.works.list_decisions(
+                ws, decision_type=IdentityDecisionType.REOPEN.value
+            )
             rows = []
             for work in shown:
                 identifiers = await uow.works.list_identifiers(ws, work.id)
-                others = await self._counterparts(uow, ws, work.id, identifiers)
+                others = await self._counterparts(uow, ws, work.id, identifiers, refused)
                 other_summaries = await uow.works.get_summaries(ws, [o for o, _, _ in others])
                 rows.append(
                     {
@@ -129,12 +134,17 @@ class IdentityConflictService:
 
     @staticmethod
     async def _counterparts(
-        uow: Any, ws: UUID, work_id: UUID, identifiers: list[Any]
+        uow: Any, ws: UUID, work_id: UUID, identifiers: list[Any], refused: list[Any]
     ) -> list[tuple[UUID, str, str | None]]:
         """(other paper, why, the identifier in question), each other paper once."""
         found: dict[UUID, tuple[str, str | None]] = {}
-        for decision in await uow.works.list_decisions(ws, work_id=work_id):
-            if decision.decision_type is not IdentityDecisionType.REOPEN:
+        for decision in refused:
+            # A duplicate-review proposal is a reopen too, but it only says two
+            # titles look alike: it belongs in Pairs to review, not here.
+            if (
+                work_id not in decision.subject_work_ids
+                or (decision.after or {}).get("proposal") == "duplicate_review"
+            ):
                 continue
             for other in decision.subject_work_ids:
                 if other != work_id:

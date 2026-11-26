@@ -853,7 +853,7 @@ function ScopeForm({
                 <Input
                   aria-label={`${connector.label} query`}
                   disabled={!on}
-                  placeholder={on && !readOnly ? connector.example : ""}
+                  placeholder={on && !readOnly ? `e.g., ${connector.example}` : ""}
                   value={queries[connector.id] ?? ""}
                   onChange={(event) =>
                     setQueries((current) => ({ ...current, [connector.id]: event.target.value }))

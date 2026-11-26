@@ -1112,13 +1112,18 @@ class _Works:
         self._db.identity_decisions[decision.id] = decision
 
     async def list_decisions(
-        self, workspace_id: UUID, *, work_id: UUID | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        work_id: UUID | None = None,
+        decision_type: str | None = None,
     ) -> list[IdentityDecision]:
         decisions = [
             decision
             for decision in self._db.identity_decisions.values()
             if decision.workspace_id == workspace_id
             and (work_id is None or work_id in decision.subject_work_ids)
+            and (decision_type is None or decision.decision_type.value == decision_type)
         ]
         return sorted(decisions, key=lambda d: d.decided_at or datetime.min)
 

@@ -66,7 +66,7 @@ export function HelpIndex() {
           <Input
             type="search"
             value={query}
-            placeholder="for example: invite, upload pdf, publish, token limit"
+            placeholder="e.g., invite, upload pdf, publish, token limit"
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>

@@ -171,7 +171,7 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
             <span className="block">Title has all of</span>
             <Input
               aria-label="Title has all of"
-              placeholder="yarrowia, lipid"
+              placeholder="e.g., yarrowia, lipid"
               value={draft.title ?? ""}
               onChange={(event) => set("title", event.target.value)}
             />
@@ -180,7 +180,7 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
             <span className="block">Title has none of</span>
             <Input
               aria-label="Title has none of"
-              placeholder="review, erratum"
+              placeholder="e.g., review, erratum"
               value={draft.exclude ?? ""}
               onChange={(event) => set("exclude", event.target.value)}
             />
@@ -189,7 +189,7 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
             <span className="block">Subject term, any of</span>
             <Input
               aria-label="Subject term, any of"
-              placeholder="yeasts, lipid metabolism"
+              placeholder="e.g., yeasts, lipid metabolism"
               value={draft.subject ?? ""}
               onChange={(event) => set("subject", event.target.value)}
             />

@@ -199,7 +199,7 @@ export function CollectionsClient() {
               <span className="block">Title or identifier has</span>
               <Input
                 aria-label="Title or identifier has"
-                placeholder="sterol, 10.1038/…"
+                placeholder="e.g., sterol, 10.1038/…"
                 value={planDraft}
                 onChange={(event) => setPlanDraft(event.target.value)}
               />

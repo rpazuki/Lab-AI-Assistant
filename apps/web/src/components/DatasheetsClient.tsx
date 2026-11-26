@@ -583,7 +583,7 @@ function SheetPanel({ template, reloadKey }: { template: string; reloadKey: unkn
             <Input
               type="search"
               aria-label="Search working sheet rows"
-              placeholder="Words in any column: strain, value, unit"
+              placeholder="Words in any column, e.g., strain, value, unit"
               className="w-full max-w-xs"
               value={typed}
               onChange={(event) => setTyped(event.target.value)}

@@ -249,7 +249,7 @@ export function DuplicateReview({
             <span className="block">Either title has all of</span>
             <Input
               aria-label="Either title has all of"
-              placeholder="yarrowia, lipid"
+              placeholder="e.g., yarrowia, lipid"
               value={draft.q ?? ""}
               onChange={(event) => setDraft({ ...draft, q: event.target.value })}
             />
@@ -525,6 +525,8 @@ const NO_CONFLICTS: Page<IdentityConflict> = { items: [], next_cursor: null, tot
  */
 function ConflictReview({ onChanged }: { onChanged?: () => void }) {
   const [rows, setRows] = useState<Page<IdentityConflict>>(NO_CONFLICTS);
+  // Until the first answer, an empty list means "not known yet", not "none".
+  const [loaded, setLoaded] = useState(false);
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -535,6 +537,7 @@ function ConflictReview({ onChanged }: { onChanged?: () => void }) {
   const refresh = useCallback(async () => {
     try {
       setRows(await listIdentityConflicts({ after: pager.cursor, limit: pager.pageSize, q: query || undefined }));
+      setLoaded(true);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "the conflicts could not be loaded");
@@ -603,7 +606,7 @@ function ConflictReview({ onChanged }: { onChanged?: () => void }) {
             <span className="block">Title has all of</span>
             <Input
               aria-label="Conflict title has all of"
-              placeholder="fatty acid"
+              placeholder="e.g., fatty acid"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
             />
@@ -656,7 +659,12 @@ function ConflictReview({ onChanged }: { onChanged?: () => void }) {
         <h3 className="font-semibold text-heading">Identity conflicts</h3>
         <PageCount pager={pager} shown={rows.items.length} total={rows.total} label="identity conflicts" />
       </div>
-      {rows.items.length === 0 ? (
+      {!loaded && !error ? (
+        <p className="px-5 py-3 text-sm text-muted" role="status">
+          Loading the conflicts…
+        </p>
+      ) : null}
+      {loaded && rows.items.length === 0 ? (
         <div className="px-5 py-3">
           <Empty>{query ? "No conflict matches this search." : "No paper is in conflict."}</Empty>
         </div>

@@ -358,7 +358,7 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
         >
           <Input
             aria-label="Question"
-            placeholder="What lipid yield was reported for the engineered strain?"
+            placeholder="e.g., What lipid yield was reported for the engineered strain?"
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
           />

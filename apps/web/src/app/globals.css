@@ -164,3 +164,14 @@
     text-align: right;
   }
 }
+
+/*
+ * An example in an empty field goes the moment the field is focused, not at the
+ * first keystroke: grey example text under the cursor reads as text already typed.
+ * It comes back when the field loses focus while still empty. Deliberately outside
+ * every @layer, so it outranks the `placeholder:text-*` utilities on the controls.
+ */
+input:focus::placeholder,
+textarea:focus::placeholder {
+  color: transparent;
+}

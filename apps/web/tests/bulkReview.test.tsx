@@ -256,4 +256,18 @@ describe("Searching and settling duplicates and conflicts", () => {
     expect(api.keepConflictsSeparate).toHaveBeenCalledWith("fatty");
     expect(await screen.findByText("2 papers kept separate.")).toBeInTheDocument();
   });
+
+  it("says the conflicts are loading, not that there are none, until they arrive", async () => {
+    let answer: (page: { items: never[]; next_cursor: null; total: number }) => void = () => {};
+    vi.mocked(api.listIdentityConflicts).mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const user = userEvent.setup();
+    render(<DuplicateReview live={false} />);
+    await user.click(await screen.findByRole("tab", { name: "Identity conflicts (0)" }));
+
+    expect(await screen.findByText("Loading the conflicts…")).toBeInTheDocument();
+    expect(screen.queryByText("No paper is in conflict.")).not.toBeInTheDocument();
+    answer({ items: [], next_cursor: null, total: 0 });
+    expect(await screen.findByText("No paper is in conflict.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading the conflicts…")).not.toBeInTheDocument();
+  });
 });

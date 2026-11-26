@@ -764,7 +764,11 @@ class WorkRepository(Protocol):
     ) -> int: ...
     async def add_decision(self, decision: IdentityDecision) -> None: ...
     async def list_decisions(
-        self, workspace_id: UUID, *, work_id: UUID | None = None
+        self,
+        workspace_id: UUID,
+        *,
+        work_id: UUID | None = None,
+        decision_type: str | None = None,
     ) -> list[IdentityDecision]: ...
     async def list_decisions_page(
         self,

@@ -98,7 +98,7 @@ function QueueSearch({ label, query, onSearch }: { label: string; query: string;
   return (
     <ServerSearch
       label={label}
-      placeholder="Words, a task id, or a date such as 2026-11-23"
+      placeholder="Words, a task id, or a date, e.g., 2026-11-23"
       query={query}
       onSearch={onSearch}
       className="border-b border-border px-5 py-2.5"
@@ -541,7 +541,7 @@ function AuditLog({ tick }: { tick: number }) {
         <Input
           type="search"
           aria-label="Search audit events"
-          placeholder="Words in the action, subject or details, or a date such as 2026-11-23"
+          placeholder="Words in the action, subject or details, or a date, e.g., 2026-11-23"
           className="w-full max-w-xs"
           value={typed}
           onChange={(event) => setTyped(event.target.value)}

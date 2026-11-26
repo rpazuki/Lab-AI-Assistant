@@ -248,7 +248,7 @@ export function MembersClient() {
               required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              placeholder="name@imperial.ac.uk"
+              placeholder="e.g., name@imperial.ac.uk"
             />
           </Field>
           <Field label="Role">
@@ -671,7 +671,7 @@ function RolesPanel({
           <Input
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Patent holders"
+            placeholder="e.g., Patent holders"
           />
         </Field>
         <Field label="Based on">
@@ -691,7 +691,7 @@ function RolesPanel({
           <Input
             value={description}
             onChange={(event) => setDescription(event.target.value)}
-            placeholder="Named on the patent filings"
+            placeholder="e.g., Named on the patent filings"
           />
         </Field>
         <Button type="submit" disabled={busy || !name.trim()}>

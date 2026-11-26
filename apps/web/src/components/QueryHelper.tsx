@@ -148,8 +148,8 @@ export function QueryHelper({ onQueries }: { onQueries: (queries: Record<string,
     <section aria-label="Write queries from an organism and a product" className="space-y-3 rounded-control border border-border bg-surface p-4">
       <p className="text-sm font-medium text-ink">Write the queries from an organism and a product</p>
       <div className="grid gap-4 sm:grid-cols-2">
-        <NameLookup label="Organism" placeholder="Yarrowia lipolytica" search={searchOrganisms} onTerms={setOrganismTerms} />
-        <NameLookup label="Product (optional)" placeholder="oleic acid" search={searchProducts} onTerms={setProductTerms} />
+        <NameLookup label="Organism" placeholder="e.g., Yarrowia lipolytica" search={searchOrganisms} onTerms={setOrganismTerms} />
+        <NameLookup label="Product (optional)" placeholder="e.g., oleic acid" search={searchProducts} onTerms={setProductTerms} />
       </div>
       <Button
         type="button"

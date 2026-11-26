@@ -493,9 +493,27 @@ class TestIdentityConflicts:
 
     async def test_listed_with_the_other_paper_and_kept_separate(self, lab) -> None:
         from lab_assistant.application.identity_conflicts import IdentityConflictService
+        from lab_assistant.domain.identity import IdentityDecision, IdentityDecisionType
 
         left, right = await self.conflict(lab)
         await lab.paper("An unrelated paper")
+        # Only alike titles: a pair to review, not the reason for the conflict.
+        lookalike = await lab.paper("Microbial fatty acid specificity.")
+        context = lab.harness.context
+        async with context.uow_factory() as uow:
+            await uow.works.add_decision(
+                IdentityDecision(
+                    id=context.new_id(),
+                    workspace_id=lab.ws,
+                    decision_type=IdentityDecisionType.REOPEN,
+                    subject_work_ids=(left, lookalike),
+                    after={"proposal": "duplicate_review", "similarity": 0.97},
+                    reason_code="title_similarity",
+                    decided_by_type="automatic_rule",
+                    decided_at=context.now(),
+                )
+            )
+            await uow.commit()
         service = IdentityConflictService(lab.harness.context)
 
         page = await service.page(lab.actor)
@@ -514,3 +532,95 @@ class TestIdentityConflicts:
         done = await service.keep_all_separate(lab.actor, words=("fatty",))
         assert done == {"resolved": 1, "remaining": 0}
         assert (await lab.work(right)).identity_status is IdentityState.RESOLVED
+
+    async def test_the_paper_holding_a_claimed_identifier_is_named(self, lab) -> None:
+        """No decision names the other paper: it is found by who holds the claimed DOI.
+
+        A source claimed a DOI for this paper that another paper already holds,
+        so the DOI stayed where it was and only this paper is in conflict.
+        """
+        from test_scope_deletion import DeletionLab
+
+        from lab_assistant.application.identity_conflicts import IdentityConflictService
+        from lab_assistant.domain.observation import (
+            Predicate,
+            SourceAssertion,
+            SourceObservation,
+            SourceRequest,
+        )
+
+        claimant = await lab.paper("Lipid droplets in oleaginous yeast", pmid="31234567")
+        holder = await lab.paper("Lipid droplets in Yarrowia", doi="10.1016/j.ymben.2020.01.001")
+        scopes = DeletionLab(lab.harness, lab.actor)
+        run_id = (await scopes.run(await scopes.scope())).id
+        context = lab.harness.context
+        now = context.now()
+        request_id, observation_id = context.new_id(), context.new_id()
+        async with context.uow_factory() as uow:
+            work = await uow.works.get(lab.ws, claimant)
+            work.identity_status = IdentityState.CONFLICT
+            await uow.works.update(work)
+            await uow.observations.add_request(
+                SourceRequest(
+                    id=request_id,
+                    workspace_id=lab.ws,
+                    discovery_run_id=run_id,
+                    connector_id="fixture",
+                    connector_version="1.0.0",
+                    request_fingerprint=str(request_id),
+                    method="GET",
+                    canonical_url_redacted="https://example.invalid/q",
+                    requested_at=now,
+                )
+            )
+            await uow.observations.add_observation(
+                SourceObservation(
+                    id=observation_id,
+                    workspace_id=lab.ws,
+                    source_request_id=request_id,
+                    source_record_locator="pmid:31234567",
+                    parser_id="p",
+                    parser_version="1",
+                    schema_version="1",
+                    observed_at=now,
+                )
+            )
+            await uow.observations.add_assertions(
+                [
+                    SourceAssertion(
+                        id=context.new_id(),
+                        workspace_id=lab.ws,
+                        source_observation_id=observation_id,
+                        subject_hint="pmid:31234567",
+                        predicate=Predicate.IDENTIFIER,
+                        value_json={"scheme": scheme, "value": value},
+                        work_id=claimant,
+                    )
+                    for scheme, value in (
+                        ("pmid", "31234567"),  # its own: not a counterpart
+                        ("doi", "https://doi.org/10.1016/J.YMBEN.2020.01.001"),
+                    )
+                ]
+            )
+            await uow.commit()
+        service = IdentityConflictService(context)
+
+        page = await service.page(lab.actor)
+        assert page["total"] == 1
+        [row] = page["items"]
+        assert row["work_id"] == str(claimant)
+        assert row["identifiers"] == [{"scheme": "pmid", "value": "31234567"}]
+        [other] = row["with"]
+        assert other["work_id"] == str(holder)
+        assert other["title"] == "Lipid droplets in Yarrowia"
+        assert other["reason"] == "identifier_held_by_another_paper"
+        assert other["identifier"] == "doi:10.1016/j.ymben.2020.01.001"
+
+        # Settling it moves nothing: the DOI stays with the paper that held it.
+        await service.keep_separate(lab.actor, claimant)
+        assert (await lab.work(claimant)).identity_status is IdentityState.RESOLVED
+        async with context.uow_factory() as uow:
+            found = await uow.works.find_by_identifier(
+                lab.ws, scheme="doi", value_normalized="10.1016/j.ymben.2020.01.001"
+            )
+        assert found is not None and found.id == holder
