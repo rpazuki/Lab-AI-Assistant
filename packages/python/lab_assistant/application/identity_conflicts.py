@@ -95,7 +95,7 @@ class IdentityConflictService:
             "items": rows,
             "total": total,
             # Distinct (paper, other paper) pairs across every conflict the search
-            # found: what "merge each as the same paper" would merge.
+            # found: what "merge each of the pairs into one paper" would merge.
             "pairs": len(await self._pairs(actor, works_found)),
             "next_cursor": str(shown[-1].id)
             if len(shown) == limit and len(works) > limit

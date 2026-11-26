@@ -596,8 +596,10 @@ function ConflictReview({ onChanged }: { onChanged?: () => void }) {
     if (rows.pairs === 0) return;
     if (
       !window.confirm(
-        `Merge each of the ${rows.pairs.toLocaleString()} pair${rows.pairs === 1 ? "" : "s"} the search found as the ` +
-          "same paper? Each paper is merged with the other paper shown beside it; papers linked through several pairs " +
+        (rows.pairs === 1
+          ? "Merge the pair the search found into one paper?"
+          : `Merge each of the ${rows.pairs.toLocaleString()} pairs the search found into one paper?`) +
+          " Each paper is merged with the other paper shown beside it; papers linked through several pairs " +
           "become one, kept as the one with the most identifiers. Each merge is recorded as your decision and is not " +
           "undone automatically. Keep any that are different papers separate first.",
       )
@@ -671,7 +673,9 @@ function ConflictReview({ onChanged }: { onChanged?: () => void }) {
             {query ? " match this search" : ""}.
           </span>
           <Button size="sm" disabled={busy !== null || rows.pairs === 0} onClick={() => void mergeAll()}>
-            Merge each of the {rows.pairs.toLocaleString()} pair{rows.pairs === 1 ? "" : "s"} as the same paper
+            {rows.pairs === 1
+              ? "Merge the pair into one paper"
+              : `Merge each of the ${rows.pairs.toLocaleString()} pairs into one paper`}
           </Button>
           <Button size="sm" variant="ghost" disabled={busy !== null || rows.total === 0} onClick={() => void keepAll()}>
             Keep all {rows.total.toLocaleString()} separate

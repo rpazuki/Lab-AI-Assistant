@@ -277,7 +277,7 @@ describe("Searching and settling duplicates and conflicts", () => {
     render(<DuplicateReview live={false} />);
     await user.click(await screen.findByRole("tab", { name: "Identity conflicts (0)" }));
 
-    const button = await screen.findByRole("button", { name: "Merge each of the 2 pairs as the same paper" });
+    const button = await screen.findByRole("button", { name: "Merge each of the 2 pairs into one paper" });
     await user.click(button);
     expect(confirm).toHaveBeenCalled();
     expect(api.mergeConflictsSamePaper).not.toHaveBeenCalled();
