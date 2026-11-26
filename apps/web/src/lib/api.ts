@@ -47,6 +47,7 @@ import type {
   ProblemDetails,
   QueueTask,
   Release,
+  ReleaseChanges,
   ReleaseGate,
   Reviewer,
   ReviewItem,
@@ -851,6 +852,10 @@ export const draftRelease = (payload: {
     items: number;
     diff: Record<string, number | boolean>;
   }>("/corpus-releases", { method: "POST", body: JSON.stringify(payload) });
+
+/** What a release adds, changes and drops against the release it follows. */
+export const releaseChanges = (releaseId: string) =>
+  request<ReleaseChanges>(`/corpus-releases/${releaseId}/changes`);
 
 export const validateRelease = (releaseId: string) =>
   request<{ passed: boolean; gates: Record<string, boolean>; failures: string[] }>(

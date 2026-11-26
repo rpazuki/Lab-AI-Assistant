@@ -970,6 +970,16 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Select **Validate** on the draft and read its gate results.",
               "When the gates pass it shows as validated. Select **Approve and index** to approve it.",
             ],
+            note: "A release never changes. To bring in papers that became ready since, draft a new one: it takes every included paper that is ready now. Papers still waiting for a fetch, an upload or a decision stay where they are and carry on.",
+          },
+          {
+            title: "How to see what a new release changes",
+            needs: STEWARD,
+            steps: [
+              "Select **Draft from approved material**. The message says how many papers it adds, changes and removes since the release being served.",
+              "Later, open **What changed since…** under the release to list those papers, with why each removed one left.",
+            ],
+            note: "A paper drops out when it was merged into another, is no longer included, or no longer has usable text.",
           },
         ],
       },

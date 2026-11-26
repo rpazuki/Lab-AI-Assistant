@@ -2527,6 +2527,14 @@ async def list_releases(
     }
 
 
+@router.get("/corpus-releases/{release_id}/changes")
+async def release_changes(
+    release_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """What a release adds, changes and drops against the release it follows."""
+    return await ReleaseService(container.context).changes(actor, release_id=release_id)
+
+
 @router.post(
     "/corpus-releases/{release_id}/validate",
     dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],

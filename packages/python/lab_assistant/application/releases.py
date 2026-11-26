@@ -48,9 +48,12 @@ from lab_assistant.domain.release import (
 from lab_assistant.domain.states import ParseState, ReleaseState, RelevanceState, ReviewState
 from lab_assistant.domain.workspace import Capability, Role
 
-__all__ = ["DEFAULT_ALIAS", "ReleaseDraftRequest", "ReleaseService"]
+__all__ = ["CHANGES_LISTED", "DEFAULT_ALIAS", "ReleaseDraftRequest", "ReleaseService"]
 
 DEFAULT_ALIAS = "current"
+
+#: Papers listed of each kind when comparing a release with its parent.
+CHANGES_LISTED = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -659,6 +662,84 @@ class ReleaseService:
             await uow.commit()
         return release
 
+    async def changes(
+        self, actor: ActorContext, *, release_id: UUID, limit: int = CHANGES_LISTED
+    ) -> dict[str, Any]:
+        """What a release adds, changes and drops against the release it follows.
+
+        Counts cover every paper; the papers listed are at most ``limit`` of each
+        kind, and only those the caller may reach. A paper dropped since says why,
+        as far as the paper itself shows it now. A release with no parent is a
+        full build: everything in it counts as added.
+        """
+        if not (actor.has(Capability.MANAGE_RELEASE) or actor.has(Capability.APPROVE_RELEASE)):
+            actor.require(Capability.MANAGE_RELEASE)
+        context = self._context
+        ws = actor.workspace_id
+        async with context.uow_factory() as uow:
+            release = await uow.releases.get(ws, release_id)
+            if release is None:
+                raise NotFound(f"release {release_id} not found")
+            manifest = await self._load_manifest(uow, actor, release_id)
+            if manifest is None:
+                raise NotFound(f"release {release_id} has no stored manifest")
+            parent = (
+                await uow.releases.get(ws, release.parent_release_id)
+                if release.parent_release_id
+                else None
+            )
+            parent_manifest = (
+                await self._load_manifest(uow, actor, parent.id) if parent is not None else None
+            )
+            diff = compute_release_diff(manifest=manifest, parent_manifest=parent_manifest)
+            reachable = await reachable_work_ids(uow, context, actor)
+
+            def shown(ids: tuple[UUID, ...]) -> list[UUID]:
+                return [i for i in ids if reachable is None or i in reachable][:limit]
+
+            listed = {
+                "added": shown(diff.added_work_ids) if parent_manifest is not None else [],
+                "changed": shown(diff.changed_work_ids),
+                "removed": shown(diff.removed_work_ids),
+            }
+            every = [i for ids in listed.values() for i in ids]
+            summaries = await uow.works.get_summaries(ws, every)
+            dois = await uow.works.list_dois(ws, every)
+            why: dict[UUID, str] = {}
+            for work_id in listed["removed"]:
+                why[work_id] = _why_dropped(await uow.works.get(ws, work_id))
+
+        def paper(work_id: UUID) -> dict[str, Any]:
+            summary = summaries.get(work_id)
+            row: dict[str, Any] = {
+                "work_id": str(work_id),
+                "title": summary.title if summary else None,
+                "year": summary.year if summary else None,
+                "dois": dois.get(work_id, []),
+            }
+            if work_id in why:
+                row["why"] = why[work_id]
+            return row
+
+        return {
+            "release_id": str(release_id),
+            "parent": (
+                {
+                    "id": str(parent.id),
+                    "name": parent.name,
+                    "semantic_version": parent.semantic_version,
+                }
+                if parent is not None
+                else None
+            ),
+            "items": len(manifest.items),
+            "added": len(diff.added_work_ids),
+            "changed": len(diff.changed_work_ids),
+            "removed": len(diff.removed_work_ids),
+            "unchanged": len(diff.unchanged_work_ids),
+            "papers": {kind: [paper(i) for i in ids] for kind, ids in listed.items()},
+        }
+
     async def delete_draft(self, actor: ActorContext, *, release_id: UUID) -> None:
         """Delete a release that was never published and that nothing points at.
 
@@ -778,6 +859,18 @@ async def _verified_span_ids(
         if await uow.renditions.get_span(workspace_id, span_id) is not None:
             verified.add(span_id)
     return frozenset(verified)
+
+
+def _why_dropped(work: Any) -> str:
+    """Why a paper in the parent release is not in this one, from the paper now."""
+    if work is None:
+        return "deleted"
+    if not work.is_active:
+        return "merged"
+    if work.relevance is not RelevanceState.INCLUDED:
+        return "not_included"
+    # Still included: its text is no longer usable, or it is out of reach.
+    return "no_usable_text"
 
 
 def _outbox_event(context: ServiceContext, *, workspace_id: UUID, topic: str, payload: dict):

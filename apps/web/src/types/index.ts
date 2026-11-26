@@ -383,6 +383,30 @@ export interface Release {
   parent_release_id: string | null;
 }
 
+/** A paper a release adds, changes or drops against the release it follows. */
+export interface ReleaseChangePaper {
+  work_id: string;
+  title: string | null;
+  year: number | null;
+  dois: string[];
+  /** Dropped papers only: why, as the paper shows it now. */
+  why?: "merged" | "not_included" | "no_usable_text" | "deleted";
+}
+
+/** What a release adds, changes and drops against its parent release. */
+export interface ReleaseChanges {
+  release_id: string;
+  /** The release it follows; none for a first, full build. */
+  parent: { id: string; name: string; semantic_version: string } | null;
+  items: number;
+  added: number;
+  changed: number;
+  removed: number;
+  unchanged: number;
+  /** At most 100 of each, and only papers you may reach. */
+  papers: { added: ReleaseChangePaper[]; changed: ReleaseChangePaper[]; removed: ReleaseChangePaper[] };
+}
+
 export interface CorpusStats {
   release_id: string;
   release_name: string;

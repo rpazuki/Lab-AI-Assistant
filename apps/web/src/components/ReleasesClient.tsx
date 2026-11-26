@@ -16,12 +16,13 @@ import {
   listReleaseGates,
   listReleases,
   publishRelease,
+  releaseChanges,
   rollbackRelease,
   validateRelease,
 } from "@/lib/api";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { usePager } from "@/lib/usePager";
-import type { GateStatus, Page, Release } from "@/types";
+import type { GateStatus, Page, Release, ReleaseChangePaper, ReleaseChanges } from "@/types";
 
 /** A release the worker is still validating, indexing or publishing. */
 function inProgress(release: Release): boolean {
@@ -126,6 +127,41 @@ export function ReleasesClient() {
     }
   }
 
+  /**
+   * Draft from what is ready now, following the release being served, so the
+   * draft can say what it adds, changes and drops since then.
+   */
+  async function draft() {
+    const current = aliases.find((alias) => alias.alias === "current")?.release_id ?? null;
+    const parent = releases.find((release) => release.id === current);
+    const version = new Date().toISOString().slice(0, 10).replaceAll("-", ".");
+    setStatus("Drafting…");
+    try {
+      const made = await draftRelease({
+        name: "corpus",
+        semantic_version: version,
+        ...(current ? { parent_release_id: current } : {}),
+      });
+      const count = (value: unknown) => Number(value ?? 0).toLocaleString();
+      const papers = `${count(made.items)} ${made.items === 1 ? "paper" : "papers"}`;
+      setStatus(
+        current
+          ? `Drafted corpus@${version} with ${papers}. Since ${
+              parent ? `${parent.name}@${parent.semantic_version}` : "the current release"
+            }: ${count(made.diff.added)} added, ${count(made.diff.changed)} changed, ${count(
+              made.diff.removed,
+            )} removed, ${count(made.diff.unchanged)} unchanged.`
+          : `Drafted corpus@${version} with ${papers}. Nothing is published yet, so every one is new.`,
+      );
+      setError(null);
+      live.kick();
+      await live.refresh();
+    } catch (caught) {
+      setStatus(null);
+      setError(caught instanceof Error ? caught.message : "the draft failed");
+    }
+  }
+
   async function remove(release: Release) {
     setStatus("deleting…");
     try {
@@ -190,14 +226,7 @@ export function ReleasesClient() {
             <Button
             variant="ghost"
             size="sm"
-            onClick={() =>
-              run("draft", () =>
-                draftRelease({
-                  name: "corpus",
-                  semantic_version: new Date().toISOString().slice(0, 10).replaceAll("-", "."),
-                }),
-              )
-            }
+            onClick={() => void draft()}
           >
             Draft from approved material
             </Button>
@@ -297,6 +326,12 @@ export function ReleasesClient() {
                     />
                   ) : null}
                 </div>
+                {release.parent_release_id ? (
+                  <ReleaseChangesView
+                    releaseId={release.id}
+                    parent={releases.find((other) => other.id === release.parent_release_id)}
+                  />
+                ) : null}
                 {(gateStatus[release.id] ?? []).length > 0 ? (
                   <ul aria-label="Required benchmarks" className="mt-2 flex flex-wrap gap-1">
                     {(gateStatus[release.id] ?? []).map((gate) => (
@@ -342,6 +377,113 @@ export function ReleasesClient() {
           label="releases"
         />
       </Panel>
+    </div>
+  );
+}
+
+/** Why a paper in the earlier release is not in this one. */
+const DROPPED_BECAUSE: Record<NonNullable<ReleaseChangePaper["why"]>, string> = {
+  merged: "merged into another paper",
+  not_included: "no longer included",
+  no_usable_text: "still included, but has no usable text now",
+  deleted: "deleted",
+};
+
+/**
+ * What a release adds, changes and drops against the release it follows,
+ * read when opened.
+ */
+function ReleaseChangesView({ releaseId, parent }: { releaseId: string; parent?: Release }) {
+  const [changes, setChanges] = useState<ReleaseChanges | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const named = changes?.parent ?? parent;
+  async function load() {
+    if (changes) return;
+    try {
+      setChanges(await releaseChanges(releaseId));
+      setFailed(null);
+    } catch (caught) {
+      setFailed(caught instanceof Error ? caught.message : "the comparison could not be loaded");
+    }
+  }
+  return (
+    <details className="mt-2 text-xs">
+      <summary className="cursor-pointer text-muted" onClick={() => void load()}>
+        What changed since {named ? `${named.name}@${named.semantic_version}` : "the release it follows"}
+      </summary>
+      <div className="mt-2 space-y-2">
+        {failed ? (
+          <Alert tone="danger" role="alert">
+            {failed}
+          </Alert>
+        ) : changes === null ? (
+          <p className="text-muted">Comparing…</p>
+        ) : (
+          <>
+            <p className="text-ink">
+              {changes.items.toLocaleString()} {changes.items === 1 ? "paper" : "papers"}:{" "}
+              {changes.added.toLocaleString()} added, {changes.changed.toLocaleString()} changed,{" "}
+              {changes.removed.toLocaleString()} removed, {changes.unchanged.toLocaleString()} unchanged.
+            </p>
+            <ChangedPapers title="Added" count={changes.added} papers={changes.papers.added} />
+            <ChangedPapers
+              title="Changed (new text or claims)"
+              count={changes.changed}
+              papers={changes.papers.changed}
+            />
+            <ChangedPapers title="Removed" count={changes.removed} papers={changes.papers.removed} />
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function ChangedPapers({
+  title,
+  count,
+  papers,
+}: {
+  title: string;
+  count: number;
+  papers: ReleaseChangePaper[];
+}) {
+  if (count === 0) return null;
+  const unlisted = count - papers.length;
+  return (
+    <div>
+      <p className="font-semibold text-heading">
+        {title} ({count.toLocaleString()})
+      </p>
+      <ul className="mt-1 space-y-1">
+        {papers.map((paper) => (
+          <li key={paper.work_id} className="text-ink">
+            {paper.title ?? "Untitled"}
+            {paper.year ? ` (${paper.year})` : ""}
+            {paper.dois.length > 0 ? (
+              <>
+                {" · DOI "}
+                <a
+                  className="font-mono text-link underline"
+                  href={`https://doi.org/${paper.dois[0]}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {paper.dois[0]}
+                </a>
+              </>
+            ) : (
+              " · No DOI"
+            )}
+            {paper.why ? <span className="text-muted"> · {DROPPED_BECAUSE[paper.why]}</span> : null}
+          </li>
+        ))}
+      </ul>
+      {unlisted > 0 ? (
+        <p className="mt-1 text-muted">
+          and {unlisted.toLocaleString()} more not listed here.
+        </p>
+      ) : null}
     </div>
   );
 }

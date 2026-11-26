@@ -347,3 +347,80 @@ class TestIncrementalProjection:
             await releases.publish(actor, release_id=second.id)
         alias_release = await releases.active_release_id(actor.workspace_id)
         assert alias_release == built["release"].id
+
+
+class TestWhatAReleaseChanges:
+    """What a draft adds and drops against the release it follows, and why."""
+
+    async def test_a_successor_names_its_parent_and_why_papers_dropped(self, corpus) -> None:
+        harness, actor = corpus["harness"], corpus["actor"]
+        releases = ReleaseService(harness.context)
+        first, _, _ = await releases.draft(
+            actor, ReleaseDraftRequest(name="corpus", semantic_version="1.0.0")
+        )
+        excluded, merged, keeper = (corpus["renditions"][i].work_id for i in (1, 2, 3))
+        async with harness.context.uow_factory() as uow:
+            work = await uow.works.get(actor.workspace_id, excluded)
+            work.relevance = RelevanceState.EXCLUDED
+            await uow.works.update(work)
+            work = await uow.works.get(actor.workspace_id, merged)
+            work.merged_into_work_id = keeper
+            await uow.works.update(work)
+            await uow.commit()
+        second, _, _ = await releases.draft(
+            actor,
+            ReleaseDraftRequest(
+                name="corpus", semantic_version="1.1.0", parent_release_id=first.id
+            ),
+        )
+
+        changes = await releases.changes(actor, release_id=second.id)
+
+        assert changes["parent"] == {
+            "id": str(first.id),
+            "name": "corpus",
+            "semantic_version": "1.0.0",
+        }
+        assert (changes["items"], changes["added"], changes["changed"]) == (
+            CORPUS_SIZE - 2,
+            0,
+            0,
+        )
+        assert (changes["removed"], changes["unchanged"]) == (2, CORPUS_SIZE - 2)
+        why = {row["work_id"]: row["why"] for row in changes["papers"]["removed"]}
+        assert why == {str(excluded): "not_included", str(merged): "merged"}
+
+        # Included again, it comes back as added, and is listed.
+        async with harness.context.uow_factory() as uow:
+            work = await uow.works.get(actor.workspace_id, excluded)
+            work.relevance = RelevanceState.INCLUDED
+            await uow.works.update(work)
+            await uow.commit()
+        third, _, _ = await releases.draft(
+            actor,
+            ReleaseDraftRequest(
+                name="corpus", semantic_version="1.2.0", parent_release_id=second.id
+            ),
+        )
+        changes = await releases.changes(actor, release_id=third.id)
+        assert changes["added"] == 1
+        assert [row["work_id"] for row in changes["papers"]["added"]] == [str(excluded)]
+        assert "why" not in changes["papers"]["added"][0]
+
+    async def test_a_release_with_no_parent_is_all_added_and_lists_none(self, corpus) -> None:
+        harness, actor = corpus["harness"], corpus["actor"]
+        releases = ReleaseService(harness.context)
+        first, _, _ = await releases.draft(
+            actor, ReleaseDraftRequest(name="corpus", semantic_version="1.0.0")
+        )
+
+        changes = await releases.changes(actor, release_id=first.id)
+
+        assert changes["parent"] is None
+        assert (changes["items"], changes["added"], changes["removed"]) == (
+            CORPUS_SIZE,
+            CORPUS_SIZE,
+            0,
+        )
+        # A full build lists no papers: every one of them is "added".
+        assert changes["papers"] == {"added": [], "changed": [], "removed": []}

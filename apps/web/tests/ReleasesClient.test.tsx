@@ -13,6 +13,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     listReleaseGates: vi.fn(),
     publishRelease: vi.fn(),
     buildExport: vi.fn(),
+    draftRelease: vi.fn(),
+    releaseChanges: vi.fn(),
   };
 });
 
@@ -108,5 +110,79 @@ describe("ReleasesClient", () => {
       expect.stringMatching(/download\?file=data%2Fwide-form\.xlsx$/),
     );
     expect(screen.getByText("Also in the zip: README.md")).toBeInTheDocument();
+  });
+
+  it("drafts after the current release and says what changed since it", async () => {
+    const PUBLISHED = { ...APPROVED, id: "rel-2", semantic_version: "1.1.0", status: "published", published_at: "2026-11-01T10:00:00Z" };
+    vi.mocked(api.listReleases).mockResolvedValue({
+      items: [PUBLISHED],
+      aliases: [{ alias: "current", release_id: "rel-2", previous_release_id: null }],
+      next_cursor: null,
+      total: 1,
+    } as never);
+    vi.mocked(api.draftRelease).mockResolvedValue({
+      release_id: "rel-9",
+      status: "draft",
+      manifest_sha256: "f",
+      items: 1230,
+      diff: { added: 12, changed: 3, removed: 1, unchanged: 1215, full_build: false },
+    });
+    render(<ReleasesClient />);
+    await userEvent.click(await screen.findByRole("button", { name: "Draft from approved material" }));
+    expect(api.draftRelease).toHaveBeenCalledWith(expect.objectContaining({ parent_release_id: "rel-2" }));
+    expect(
+      await screen.findByText(/with 1,230 papers\. Since corpus@1\.1\.0: 12 added, 3 changed, 1 removed, 1,215 unchanged\./),
+    ).toBeInTheDocument();
+  });
+
+  it("drafts a first release with nothing to follow", async () => {
+    vi.mocked(api.draftRelease).mockResolvedValue({
+      release_id: "rel-9",
+      status: "draft",
+      manifest_sha256: "f",
+      items: 1,
+      diff: { added: 1, changed: 0, removed: 0, unchanged: 0, full_build: true },
+    });
+    render(<ReleasesClient />);
+    await userEvent.click(await screen.findByRole("button", { name: "Draft from approved material" }));
+    expect(vi.mocked(api.draftRelease).mock.calls[0][0]).not.toHaveProperty("parent_release_id");
+    expect(await screen.findByText(/with 1 paper\. Nothing is published yet/)).toBeInTheDocument();
+  });
+
+  it("shows what a release adds and drops, and why, when opened", async () => {
+    vi.mocked(api.listReleases).mockResolvedValue({
+      items: [
+        { ...APPROVED, id: "rel-9", semantic_version: "1.3.0", status: "draft", parent_release_id: "rel-3" },
+        { ...APPROVED, parent_release_id: null },
+      ],
+      aliases: [],
+      next_cursor: null,
+      total: 2,
+    } as never);
+    vi.mocked(api.releaseChanges).mockResolvedValue({
+      release_id: "rel-9",
+      parent: { id: "rel-3", name: "corpus", semantic_version: "1.2.0" },
+      items: 11,
+      added: 3,
+      changed: 0,
+      removed: 1,
+      unchanged: 8,
+      papers: {
+        added: [{ work_id: "w-1", title: "Lipid bodies in Yarrowia", year: 2024, dois: ["10.1/x"] }],
+        changed: [],
+        removed: [{ work_id: "w-2", title: "A duplicate", year: 2023, dois: [], why: "merged" }],
+      },
+    });
+    render(<ReleasesClient />);
+    // Only the release that follows another offers the comparison.
+    const summaries = await screen.findAllByText(/^What changed since/);
+    expect(summaries).toHaveLength(1);
+    expect(api.releaseChanges).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByText("What changed since corpus@1.2.0"));
+    expect(await screen.findByText(/11 papers: 3 added, 0 changed, 1 removed, 8 unchanged\./)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "10.1/x" })).toHaveAttribute("href", "https://doi.org/10.1/x");
+    expect(screen.getByText(/merged into another paper/)).toBeInTheDocument();
+    expect(screen.getByText(/and 2 more not listed here/)).toBeInTheDocument();
+    expect(screen.queryByText(/^Changed/)).toBeNull();
   });
 });

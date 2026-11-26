@@ -1,12 +1,13 @@
 Status: active
 Owner: data steward
-Last verified: 2026-08-12
+Last verified: 2026-11-26
 Source of truth: `packages/python/lab_assistant/application/scopes.py`, `releases.py`
 
 # Collections and releases
 
 A **collection** is a living scope: what to look for, where, and under what rules. A
-**release** is a frozen, immutable snapshot of what that scope produced. Questions are
+**release** is a frozen, immutable snapshot of the included papers that are ready when it
+is drafted, across every scope the person drafting it may reach. Questions are
 answered from releases, never from a live scope — otherwise the same question would
 give different answers as material arrived mid-session.
 
@@ -31,6 +32,20 @@ give different answers as material arrived mid-session.
    permitted, the item enters `awaiting_user` and a human may upload a copy they are
    entitled to. Waiting for a person is not a failure.
 6. **Parse, extract, review.** See [review workflows](review-workflows.md).
+
+## What a release takes, and what it leaves
+
+A draft takes every active, **included** paper that has usable text at that moment —
+full text read successfully, or its abstract while the abstract fallback is on — or an
+approved claim. Everything else stays where it is and carries on: candidates awaiting
+a decision, papers still being fetched or waiting for an upload, texts not yet read.
+They enter the next release once they are ready. Two papers that are still an open
+pair to review go in as two papers; an unresolved identity conflict fails validation.
+
+A release never changes, so updating one means drafting its successor. The web
+drafts each release after the one `current` serves (its `parent_release_id`), and
+`GET /corpus-releases/{id}/changes` says what it adds, changes and drops since then,
+with why each dropped paper left (merged, no longer included, no usable text).
 
 ## Publishing
 
