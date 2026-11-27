@@ -1234,10 +1234,18 @@ class _Assets:
         status: str | None,
         words: tuple[str, ...],
         outcome: str | None,
+        papers: CandidateFilter | None = None,
     ) -> list[AcquisitionPlan]:
         plans = [p for p in self._db.plans.values() if p.workspace_id == workspace_id]
         if status is not None:
             plans = [p for p in plans if p.status == status]
+        if papers is not None and papers != CandidateFilter():
+            plans = [
+                p
+                for p in plans
+                if (work := self._db.works.get(p.work_id)) is not None
+                and papers.matches(work, self._db.summaries.get(p.work_id))
+            ]
         for word in words:
             title_word = normalise_title(word)
 
@@ -1282,8 +1290,9 @@ class _Assets:
         status: str | None = None,
         words: tuple[str, ...] = (),
         outcome: str | None = None,
+        papers: CandidateFilter | None = None,
     ) -> int:
-        return len(self._plans_matching(workspace_id, status, words, outcome))
+        return len(self._plans_matching(workspace_id, status, words, outcome, papers))
 
     async def list_plans(
         self,
@@ -1294,8 +1303,9 @@ class _Assets:
         after_id: UUID | None = None,
         words: tuple[str, ...] = (),
         outcome: str | None = None,
+        papers: CandidateFilter | None = None,
     ) -> list[AcquisitionPlan]:
-        plans = self._plans_matching(workspace_id, status, words, outcome)
+        plans = self._plans_matching(workspace_id, status, words, outcome, papers)
         ordered = sorted(plans, key=lambda p: str(p.id))
         if after_id is not None:
             ordered = [p for p in ordered if str(p.id) > str(after_id)]

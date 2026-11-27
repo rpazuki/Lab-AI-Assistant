@@ -177,9 +177,8 @@ export interface DuplicateProposal {
 }
 
 /** What the candidate list shows and what a bulk decision applies to. Every condition must hold. */
-export interface CandidateFilters {
-  relevance?: string;
-  identity_status?: string;
+/** What a paper must be like: the candidate list's fields, shared by the acquisition queue. */
+export interface PaperFilters {
   /** Words that must all appear in the title, comma-separated. */
   title?: string;
   /** Words none of which may appear in the title. */
@@ -198,6 +197,20 @@ export interface CandidateFilters {
   exclude_language?: string;
   /** Match the title words in the abstract and subject terms too. */
   in_abstract?: boolean;
+}
+
+export interface CandidateFilters extends PaperFilters {
+  relevance?: string;
+  identity_status?: string;
+}
+
+/** The acquisition queue's search: the paper fields, its status and the last answer. */
+export interface PlanFilters extends PaperFilters {
+  status?: string;
+  /** The latest attempt's outcome; "none" for never tried. */
+  outcome?: string;
+  /** Words each in the paper's title or one of its identifiers, such as a DOI. */
+  q?: string;
 }
 
 export interface CandidateFacets {

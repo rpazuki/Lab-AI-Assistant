@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { filterSelectClass, PaperFilterFields } from "@/components/PaperFilterFields";
 import { LiveStatus } from "@/components/ui/LiveStatus";
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { PageCount, Pager } from "@/components/ui/Pager";
 import { PanelSection } from "@/components/ui/PanelSection";
-import { Alert, Button, Empty, Input, StateChip, row, rowList } from "@/components/ui/primitives";
+import { Alert, Button, Empty, StateChip, row, rowList } from "@/components/ui/primitives";
 import { bulkRelevance, candidateFacets, listCandidates, setRelevance } from "@/lib/api";
 import { languageName } from "@/lib/languages";
 import { statusGroup } from "@/lib/statuses";
@@ -15,9 +16,6 @@ import { PAGE_SIZES, usePager } from "@/lib/usePager";
 import type { Candidate, CandidateFacets, CandidateFilters, Page } from "@/types";
 
 const EMPTY_PAGE: Page<Candidate> = { items: [], next_cursor: null, total: 0 };
-
-const selectClass =
-  "rounded-control border border-border-strong bg-surface px-2 py-1.5 text-sm text-ink";
 
 /** The decisions a filter can apply to everything it matches, as the buttons say them. */
 const BULK: { relevance: string; label: string; verb: string }[] = [
@@ -38,19 +36,6 @@ function active(filters: CandidateFilters): boolean {
  * change. A bulk decision always previews first (how many, and a few of them) and
  * by default leaves alone any candidate someone has already decided.
  */
-/** The language menu's value for a filter: "is:es", "not:en,unknown", or "" for any. */
-function languageChoice(filters: CandidateFilters): string {
-  if (filters.language) return `is:${filters.language}`;
-  if (filters.exclude_language) return `not:${filters.exclude_language}`;
-  return "";
-}
-
-function fromLanguageChoice(choice: string): Pick<CandidateFilters, "language" | "exclude_language"> {
-  if (choice.startsWith("is:")) return { language: choice.slice(3), exclude_language: undefined };
-  if (choice.startsWith("not:")) return { language: undefined, exclude_language: choice.slice(4) };
-  return { language: undefined, exclude_language: undefined };
-}
-
 export function CandidateReview({ live: parentLive }: { live: boolean }) {
   const [page, setPage] = useState<Page<Candidate>>(EMPTY_PAGE);
   const [facets, setFacets] = useState<CandidateFacets | null>(null);
@@ -85,10 +70,6 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
   function apply(next: CandidateFilters) {
     setFilters(next);
     pager.reset();
-  }
-
-  function set<K extends keyof CandidateFilters>(key: K, value: CandidateFilters[K]) {
-    setDraft((current) => ({ ...current, [key]: value }));
   }
 
   /** A choice from a list applies at once; typed text waits for Enter or Apply. */
@@ -166,150 +147,40 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
           apply(draft);
         }}
       >
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <label className="space-y-1 text-xs text-muted">
-            <span className="block">Title has all of</span>
-            <Input
-              aria-label="Title has all of"
-              placeholder="e.g., yarrowia, lipid"
-              value={draft.title ?? ""}
-              onChange={(event) => set("title", event.target.value)}
-            />
-          </label>
-          <label className="space-y-1 text-xs text-muted">
-            <span className="block">Title has none of</span>
-            <Input
-              aria-label="Title has none of"
-              placeholder="e.g., review, erratum"
-              value={draft.exclude ?? ""}
-              onChange={(event) => set("exclude", event.target.value)}
-            />
-          </label>
-          <label className="space-y-1 text-xs text-muted">
-            <span className="block">Subject term, any of</span>
-            <Input
-              aria-label="Subject term, any of"
-              placeholder="e.g., yeasts, lipid metabolism"
-              value={draft.subject ?? ""}
-              onChange={(event) => set("subject", event.target.value)}
-            />
-          </label>
-          <label className="flex items-center gap-2 text-xs text-ink sm:col-span-2 lg:col-span-4">
-            <input
-              type="checkbox"
-              checked={Boolean(draft.in_abstract)}
-              onChange={(event) => choose("in_abstract", event.target.checked)}
-            />
-            <span>Look for the words in the abstract and subject terms too, not the title alone</span>
-          </label>
-          <label className="space-y-1 text-xs text-muted">
-            <span className="block">Journal contains</span>
-            <Input
-              aria-label="Journal contains"
-              value={draft.journal ?? ""}
-              onChange={(event) => set("journal", event.target.value)}
-            />
-          </label>
-        </div>
-        <div className="flex flex-wrap items-end gap-3 text-xs text-muted">
-          <label className="space-y-1">
-            <span className="block">Year from</span>
-            <Input
-              aria-label="Year from"
-              type="number"
-              className="w-24"
-              placeholder={facets?.year_min ? String(facets.year_min) : ""}
-              value={draft.year_from ?? ""}
-              onChange={(event) => set("year_from", event.target.value ? Number(event.target.value) : null)}
-            />
-          </label>
-          <label className="space-y-1">
-            <span className="block">to</span>
-            <Input
-              aria-label="Year to"
-              type="number"
-              className="w-24"
-              placeholder={facets?.year_max ? String(facets.year_max) : ""}
-              value={draft.year_to ?? ""}
-              onChange={(event) => set("year_to", event.target.value ? Number(event.target.value) : null)}
-            />
-          </label>
-          <label className="space-y-1">
-            <span className="block">Kind</span>
-            <select
-              aria-label="Filter by kind"
-              className={selectClass}
-              value={draft.kind ?? ""}
-              onChange={(event) => choose("kind", event.target.value)}
-            >
-              <option value="">All</option>
-              {Object.entries(facets?.kinds ?? {})
-                .filter(([kind]) => kind)
-                .map(([kind, count]) => (
-                  <option key={kind} value={kind}>
-                    {kind} ({count.toLocaleString()})
-                  </option>
-                ))}
-            </select>
-          </label>
-          <label className="space-y-1">
-            <span className="block">Found by</span>
-            <select
-              aria-label="Filter by source"
-              className={selectClass}
-              value={draft.source ?? ""}
-              onChange={(event) => choose("source", event.target.value)}
-            >
-              <option value="">Any source</option>
-              {Object.entries(facets?.sources ?? {}).map(([source, count]) => (
-                <option key={source} value={source}>
-                  {source} ({count.toLocaleString()})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="space-y-1">
-            <span className="block">Language</span>
-            <select
-              aria-label="Filter by language"
-              className={selectClass}
-              value={languageChoice(draft)}
-              onChange={(event) => {
-                const next = { ...draft, ...fromLanguageChoice(event.target.value) };
-                setDraft(next);
-                apply(next);
-              }}
-            >
-              <option value="">Any language</option>
-              <option value="not:en,unknown">Not English (language known)</option>
-              <option value="not:en">Not English, or unknown</option>
-              {Object.entries(facets?.languages ?? {}).map(([code, count]) => (
-                <option key={code} value={`is:${code}`}>
-                  {languageName(code)} ({count.toLocaleString()})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="space-y-1">
-            <span className="block">Abstract</span>
-            <select
-              aria-label="Filter by abstract"
-              className={selectClass}
-              value={draft.has_abstract === null || draft.has_abstract === undefined ? "" : String(draft.has_abstract)}
-              onChange={(event) =>
-                choose("has_abstract", event.target.value === "" ? null : event.target.value === "true")
-              }
-            >
-              <option value="">Either</option>
-              <option value="true">Has one</option>
-              <option value="false">Has none</option>
-            </select>
-          </label>
+        <PaperFilterFields
+          draft={draft}
+          facets={facets}
+          onType={(patch) => setDraft((current) => ({ ...current, ...patch }))}
+          onChoose={(patch) => {
+            const next = { ...draft, ...patch };
+            setDraft(next);
+            apply(next);
+          }}
+          actions={
+            <>
+              <Button type="submit" size="sm">
+                Apply filters
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={!active(draft) && !active(filters)}
+                onClick={() => {
+                  setDraft({});
+                  apply({});
+                }}
+              >
+                Clear
+              </Button>
+            </>
+          }
+        >
           <label className="space-y-1">
             <span className="block">Relevance</span>
             <select
               aria-label="Filter by relevance"
-              className={selectClass}
+              className={filterSelectClass}
               value={draft.relevance ?? ""}
               onChange={(event) => choose("relevance", event.target.value)}
             >
@@ -325,7 +196,7 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
             <span className="block">Identity</span>
             <select
               aria-label="Filter by identity"
-              className={selectClass}
+              className={filterSelectClass}
               value={draft.identity_status ?? ""}
               onChange={(event) => choose("identity_status", event.target.value)}
             >
@@ -337,24 +208,7 @@ export function CandidateReview({ live: parentLive }: { live: boolean }) {
               ))}
             </select>
           </label>
-          <span className="ml-auto flex gap-2">
-            <Button type="submit" size="sm">
-              Apply filters
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={!active(draft) && !active(filters)}
-              onClick={() => {
-                setDraft({});
-                apply({});
-              }}
-            >
-              Clear
-            </Button>
-          </span>
-        </div>
+        </PaperFilterFields>
       </form>
       </PanelSection>
 

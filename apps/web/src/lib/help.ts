@@ -684,7 +684,7 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
           {
             title: "How to download a list of papers to fetch by hand",
             steps: [
-              "Under **Acquisition queue** › **Search**, narrow the plans, for example **Status** assisted for those waiting for an upload. Select **Search**.",
+              "Under **Acquisition queue** › **Search**, narrow the plans. It has the **Candidates** search's paper fields (title words, subject terms, journal, years, kind, source, language, abstract), an **Identifier has** field for a DOI or PMCID, and **Status** and **Last answer** in place of relevance and identity: for example **Status** assisted for the papers waiting for an upload. Select **Search**.",
               "Under **Bulk action**, select **One CSV**, or **A zip of CSVs, 100 papers each** to share the work out or do a batch at a time.",
               "Open each row's **url** (the DOI's link, else PubMed Central's or PubMed's) and download the paper where the lab is entitled to.",
               "Upload what you found from the queue, one by one or with **Import many PDFs at once**.",

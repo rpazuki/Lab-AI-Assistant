@@ -1237,6 +1237,74 @@ class TestDeletesOverSql:
         assert signed_in.id == user.id
 
 
+class TestAcquisitionQueueSearchesPapersLikeCandidates:
+    """The queue's search takes the candidate list's paper fields, on SQL as in memory."""
+
+    async def test_paper_fields_narrow_the_plans(self, sql_stack) -> None:
+        from lab_assistant.domain.assets import AcquisitionPlan
+        from lab_assistant.domain.identity import normalise_title
+        from lab_assistant.domain.review import CandidateFilter, WorkSummary
+
+        context, accounts = sql_stack["context"], sql_stack["accounts"]
+        owner = await accounts.create_user(email="q@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="queue-lab", display_name="Queue Lab", owner_user_id=owner.id
+        )
+        ws = workspace.id
+        papers = [
+            ("Lipid yield in Yarrowia", 2021, "Metabolic Engineering", "assisted"),
+            ("Lipid droplets, a review", 2015, "Trends in Biotechnology", "assisted"),
+            ("Sterol pathways in yeast", 2022, "Metabolic Engineering", "fetched"),
+        ]
+        async with context.uow_factory() as uow:
+            for title, year, journal, status in papers:
+                work = Work(
+                    id=context.new_id(),
+                    workspace_id=ws,
+                    work_kind=WorkKind.ARTICLE,
+                    relevance=RelevanceState.INCLUDED,
+                    created_at=datetime.now(UTC),
+                )
+                await uow.works.add(work)
+                await uow.works.upsert_summaries(
+                    [
+                        WorkSummary(
+                            work_id=work.id,
+                            workspace_id=ws,
+                            title=title,
+                            title_search=normalise_title(title),
+                            year=year,
+                            journal=journal,
+                        )
+                    ]
+                )
+                await uow.assets.add_plan(
+                    AcquisitionPlan(
+                        id=context.new_id(),
+                        workspace_id=ws,
+                        work_id=work.id,
+                        status=status,
+                        created_at=datetime.now(UTC),
+                    )
+                )
+            await uow.commit()
+
+        async def found(**kwargs) -> int:
+            async with context.uow_factory() as uow:
+                listed = await uow.assets.list_plans(ws, limit=50, **kwargs)
+                counted = await uow.assets.count_plans(ws, **kwargs)
+            assert len(listed) == counted
+            return counted
+
+        assert await found(papers=CandidateFilter()) == 3  # an empty filter keeps every plan
+        assert await found(papers=CandidateFilter(title_words="lipid")) == 2
+        assert await found(papers=CandidateFilter(title_words="lipid", exclude_words="review")) == 1
+        assert await found(papers=CandidateFilter(year_from=2020)) == 2
+        assert await found(papers=CandidateFilter(journal="metabolic")) == 2
+        # Together with the queue's own fields: status and paper both hold.
+        assert await found(status="fetched", papers=CandidateFilter(journal="metabolic")) == 1
+
+
 class TestAcquisitionExportOverSql:
     """The queue's CSV: every page of a search, with each paper's links."""
 

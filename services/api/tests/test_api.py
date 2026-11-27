@@ -1915,6 +1915,71 @@ class TestCollectionsArePaged:
         assert first["conflict_total"] == 2
 
 
+class TestAcquisitionQueueSearch:
+    """The queue takes the candidate list's paper fields, and its download follows them."""
+
+    async def test_paper_fields_narrow_the_list_and_the_download(self, api) -> None:
+        from lab_assistant.domain.assets import AcquisitionPlan
+        from lab_assistant.domain.identity import Work, WorkKind, normalise_title
+        from lab_assistant.domain.review import WorkSummary
+        from lab_assistant.domain.states import RelevanceState as Relevance
+
+        context, ws = api["harness"].context, api["workspace"].id
+        async with context.uow_factory() as uow:
+            for title, year in (("Lipid yield in Yarrowia", 2021), ("Sterol pathways", 2012)):
+                work = Work(
+                    id=context.new_id(),
+                    workspace_id=ws,
+                    work_kind=WorkKind.ARTICLE,
+                    relevance=Relevance.INCLUDED,
+                    created_at=context.now(),
+                )
+                await uow.works.add(work)
+                await uow.works.upsert_summaries(
+                    [
+                        WorkSummary(
+                            work_id=work.id,
+                            workspace_id=ws,
+                            title=title,
+                            title_search=normalise_title(title),
+                            year=year,
+                        )
+                    ]
+                )
+                await uow.assets.add_plan(
+                    AcquisitionPlan(
+                        id=context.new_id(),
+                        workspace_id=ws,
+                        work_id=work.id,
+                        status="assisted",
+                        created_at=context.now(),
+                    )
+                )
+            await uow.commit()
+        client = api["client"]
+        token = await _login(client, "steward@lab.invalid")
+        listed = await client.get(
+            "/api/v1/acquisition-plans", headers=_auth(token), params={"title": "lipid"}
+        )
+        assert listed.status_code == 200
+        body = listed.json()
+        assert body["total"] == 1
+        assert body["items"][0]["paper"]["title"] == "Lipid yield in Yarrowia"
+        recent = await client.get(
+            "/api/v1/acquisition-plans",
+            headers=_auth(token),
+            params={"year_from": 2020, "status": "assisted"},
+        )
+        assert recent.json()["total"] == 1
+        exported = await client.get(
+            "/api/v1/acquisition-plans/export.csv",
+            headers=_auth(token),
+            params={"title": "sterol"},
+        )
+        assert exported.content.decode("utf-8-sig").count("Sterol pathways") == 1
+        assert "Lipid yield" not in exported.content.decode("utf-8-sig")
+
+
 class TestAcquisitionQueueDownload:
     """The queue's search as one CSV, or as a zip of CSVs of at most 100 rows."""
 

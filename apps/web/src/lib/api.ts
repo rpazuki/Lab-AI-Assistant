@@ -20,6 +20,7 @@ import type {
   BulkRelevanceResult,
   CreatedInvitation,
   InvitationEmailSetting,
+  PlanFilters,
   MirrorAccess,
   Candidate,
   CandidateFacets,
@@ -404,10 +405,13 @@ export interface PageRequest {
   limit?: number;
 }
 
-function filterQuery(filters: CandidateFilters): Record<string, string | number | null | undefined> {
+/** A filter as query parameters: the candidate list's, or the acquisition queue's. */
+function filterQuery(
+  filters: CandidateFilters | PlanFilters,
+): Record<string, string | number | null | undefined> {
   const { has_abstract, in_abstract, ...rest } = filters;
   return {
-    ...rest,
+    ...(rest as Record<string, string | number | null | undefined>),
     has_abstract: has_abstract === null || has_abstract === undefined ? null : String(has_abstract),
     in_abstract: in_abstract ? "true" : null,
   };
@@ -703,18 +707,12 @@ export const fetchSweep = (taskId: string) =>
   request<TaskWatch<FetchSweepCounts>>(`/acquisition-plans/fetch-included/${taskId}`);
 
 /** One page of acquisition plans, and how many plans are in each status. */
-export const listPlans = (
-  options: PageRequest & {
-    status?: string;
-    /** Words each in the paper's title or one of its identifiers (a DOI). */
-    q?: string;
-    /** The latest attempt's outcome; "none" for never tried. */
-    outcome?: string;
-  } = {},
-) =>
-  request<Page<AcquisitionPlan> & { status_counts: Record<string, number> }>(
-    `/acquisition-plans${queryString({ ...options })}`,
+export const listPlans = (options: PageRequest & PlanFilters = {}) => {
+  const { after, limit, ...filters } = options;
+  return request<Page<AcquisitionPlan> & { status_counts: Record<string, number> }>(
+    `/acquisition-plans${queryString({ after, limit, ...filterQuery(filters) })}`,
   );
+};
 
 /** The most papers in one file of the queue's zip download. */
 export const QUEUE_ROWS_PER_FILE = 100;
@@ -726,12 +724,11 @@ export const QUEUE_ROWS_PER_FILE = 100;
  */
 export function acquisitionQueueDownloadUrl(
   format: "csv" | "zip",
-  filters: { status?: string; q?: string; outcome?: string } = {},
+  filters: PlanFilters = {},
 ): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
-  const query = params.toString();
-  return appPath(`/api/backend/acquisition-plans/export.${format}${query ? `?${query}` : ""}`);
+  return appPath(
+    `/api/backend/acquisition-plans/export.${format}${queryString(filterQuery(filters))}`,
+  );
 }
 
 /**

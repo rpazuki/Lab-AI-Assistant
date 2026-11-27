@@ -817,11 +817,13 @@ class AssetRepository(Protocol):
         after_id: UUID | None = None,
         words: tuple[str, ...] = (),
         outcome: str | None = None,
+        papers: CandidateFilter | None = None,
     ) -> list[AcquisitionPlan]:
         """Plans, oldest first; with ``limit``, a keyset page ordered by id.
 
         ``words`` must each appear in the paper's title or one of its identifiers;
-        ``outcome`` is the latest attempt's outcome, ``none`` for never tried.
+        ``outcome`` is the latest attempt's outcome, ``none`` for never tried;
+        ``papers`` keeps the plans whose paper the candidate filter matches.
         """
         ...
 
@@ -833,6 +835,7 @@ class AssetRepository(Protocol):
         status: str | None = None,
         words: tuple[str, ...] = (),
         outcome: str | None = None,
+        papers: CandidateFilter | None = None,
     ) -> int:
         """How many plans ``list_plans`` would return for the same filter."""
         ...

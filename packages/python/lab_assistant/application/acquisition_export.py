@@ -24,6 +24,7 @@ from lab_assistant.application.context import ActorContext, ServiceContext
 from lab_assistant.application.export import escape_spreadsheet_cell
 from lab_assistant.contracts.connector import DOI_SCHEMES
 from lab_assistant.domain.assets import AcquisitionAttempt, AcquisitionPlan
+from lab_assistant.domain.review import CandidateFilter
 
 __all__ = ["COLUMNS", "ROWS_PER_FILE", "AcquisitionExportService", "rows_csv", "rows_zip"]
 
@@ -115,6 +116,7 @@ class AcquisitionExportService:
         status: str | None = None,
         words: tuple[str, ...] = (),
         outcome: str | None = None,
+        papers: CandidateFilter | None = None,
     ) -> list[dict[str, Any]]:
         """Every plan the queue's search finds, in the queue's order, one row each.
 
@@ -127,7 +129,13 @@ class AcquisitionExportService:
         async with self._context.uow_factory() as uow:
             while True:
                 plans: list[AcquisitionPlan] = await uow.assets.list_plans(
-                    ws, status=status, limit=_BATCH, after_id=after, words=words, outcome=outcome
+                    ws,
+                    status=status,
+                    limit=_BATCH,
+                    after_id=after,
+                    words=words,
+                    outcome=outcome,
+                    papers=papers,
                 )
                 if not plans:
                     break

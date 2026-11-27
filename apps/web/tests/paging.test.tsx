@@ -270,9 +270,11 @@ describe("Filtering candidates by language and by the abstract", () => {
   it("finds papers not in English, and searches the abstract when asked", async () => {
     const user = userEvent.setup();
     render(<CollectionsClient />);
-    const menu = await screen.findByLabelText("Filter by language");
+    // The acquisition queue has the same fields: this is the candidate list's form.
+    const candidates = (await screen.findByLabelText("Filter by relevance")).closest("form")!;
+    const menu = within(candidates).getByLabelText("Filter by language");
     expect(
-      await screen.findByRole("option", { name: "Spanish (6)" }, { timeout: 4000 }),
+      await within(candidates).findByRole("option", { name: "Spanish (6)" }, { timeout: 4000 }),
     ).toBeInTheDocument();
 
     await user.selectOptions(menu, "not:en,unknown");
@@ -287,7 +289,7 @@ describe("Filtering candidates by language and by the abstract", () => {
         expect.objectContaining({ language: "es", exclude_language: undefined }),
       ),
     );
-    await user.click(screen.getByLabelText(/in the abstract and subject terms too/));
+    await user.click(within(candidates).getByLabelText(/in the abstract and subject terms too/));
     await waitFor(() =>
       expect(api.listCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ in_abstract: true })),
     );
@@ -311,18 +313,47 @@ describe("The Collections page groups its settings and searches its queue", () =
     expect(within(settings).getByRole("region", { name: "Abstracts for papers without full text" })).toBeInTheDocument();
   });
 
-  it("searches the acquisition queue by title or identifier and by the last answer", async () => {
+  it("searches the acquisition queue by identifier and by the last answer", async () => {
     const user = userEvent.setup();
     render(<CollectionsClient />);
-    await user.type(await screen.findByLabelText("Title or identifier has"), "10.1038");
-    const queue = screen.getByLabelText("Title or identifier has").closest("form")!;
+    await user.type(await screen.findByLabelText("Identifier has"), "10.1038");
+    const queue = screen.getByLabelText("Identifier has").closest("form")!;
     await user.click(within(queue).getByRole("button", { name: "Search" }));
     await waitFor(() =>
       expect(api.listPlans).toHaveBeenLastCalledWith(expect.objectContaining({ q: "10.1038" })),
     );
-    await user.selectOptions(screen.getByLabelText("Filter plans by the last answer"), "none");
+    await user.selectOptions(within(queue).getByLabelText("Filter plans by the last answer"), "none");
     await waitFor(() =>
       expect(api.listPlans).toHaveBeenLastCalledWith(expect.objectContaining({ q: "10.1038", outcome: "none" })),
+    );
+  });
+
+  it("searches the queue's papers with the candidate list's fields, and status in place of relevance", async () => {
+    const user = userEvent.setup();
+    render(<CollectionsClient />);
+    const queue = (await screen.findByLabelText("Identifier has")).closest("form")!;
+    // The candidate box's own choices are not offered here.
+    expect(within(queue).queryByLabelText("Filter by relevance")).toBeNull();
+    expect(within(queue).queryByLabelText("Filter by identity")).toBeNull();
+    await user.type(within(queue).getByLabelText("Title has all of"), "lipid");
+    await user.type(within(queue).getByLabelText("Year from"), "2020");
+    await user.click(within(queue).getByRole("button", { name: "Search" }));
+    await waitFor(() =>
+      expect(api.listPlans).toHaveBeenLastCalledWith(
+        expect.objectContaining({ title: "lipid", year_from: 2020 }),
+      ),
+    );
+    await user.selectOptions(within(queue).getByLabelText("Filter by status"), "assisted");
+    await waitFor(() =>
+      expect(api.listPlans).toHaveBeenLastCalledWith(
+        expect.objectContaining({ title: "lipid", year_from: 2020, status: "assisted" }),
+      ),
+    );
+    await user.click(within(queue).getByRole("button", { name: "Clear" }));
+    await waitFor(() =>
+      expect(api.listPlans).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ title: "lipid" }),
+      ),
     );
   });
 });
@@ -351,20 +382,20 @@ describe("The acquisition queue downloads what its search finds", () => {
     expect(csv).toHaveAttribute("download");
 
     // Words still being typed are not the search yet.
-    await user.type(screen.getByLabelText("Title or identifier has"), "sterol");
+    const queue = screen.getByLabelText("Identifier has").closest("form")!;
+    await user.type(within(queue).getByLabelText("Title has all of"), "sterol");
     expect(csv).toHaveAttribute("href", "/assist/api/backend/acquisition-plans/export.csv");
-    const queue = screen.getByLabelText("Title or identifier has").closest("form")!;
     await user.click(within(queue).getByRole("button", { name: "Search" }));
-    await user.selectOptions(screen.getByLabelText("Filter by status"), "assisted");
+    await user.selectOptions(within(queue).getByLabelText("Filter by status"), "assisted");
     await waitFor(() =>
       expect(screen.getByRole("link", { name: "One CSV" })).toHaveAttribute(
         "href",
-        "/assist/api/backend/acquisition-plans/export.csv?status=assisted&q=sterol",
+        "/assist/api/backend/acquisition-plans/export.csv?title=sterol&status=assisted",
       ),
     );
     expect(screen.getByRole("link", { name: "A zip of CSVs, 100 papers each" })).toHaveAttribute(
       "href",
-      "/assist/api/backend/acquisition-plans/export.zip?status=assisted&q=sterol",
+      "/assist/api/backend/acquisition-plans/export.zip?title=sterol&status=assisted",
     );
     expect(screen.getByText("Download the 1,234 plans this search finds, on every page:")).toBeInTheDocument();
   });

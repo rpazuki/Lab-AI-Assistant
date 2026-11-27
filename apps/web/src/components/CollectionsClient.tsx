@@ -6,6 +6,7 @@ import { AbstractFallback } from "@/components/AbstractFallback";
 import { BulkImport } from "@/components/BulkImport";
 import { CandidateReview } from "@/components/CandidateReview";
 import { CollectionSetup } from "@/components/CollectionSetup";
+import { filterSelectClass, PaperFilterFields } from "@/components/PaperFilterFields";
 import { DuplicateReview } from "@/components/DuplicateReview";
 import { ParseQuality } from "@/components/ParseQuality";
 import { LiveStatus } from "@/components/ui/LiveStatus";
@@ -26,6 +27,7 @@ import {
   QUEUE_ROWS_PER_FILE,
   acquisitionQueueDownloadUrl,
   assistedUpload,
+  candidateFacets,
   fetchIncluded,
   fetchSweep,
   listPlans,
@@ -34,7 +36,14 @@ import { describeStatus, statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { watchTask } from "@/lib/watchTask";
 import { PAGE_SIZES, usePager } from "@/lib/usePager";
-import type { AcquisitionPlan, Page } from "@/types";
+import type { AcquisitionPlan, CandidateFacets, Page, PlanFilters } from "@/types";
+
+/** Whether a search narrows anything: any field set to something. */
+function searchSet(filters: PlanFilters): boolean {
+  return Object.values(filters).some(
+    (value) => value !== undefined && value !== null && value !== "" && value !== false,
+  );
+}
 
 /** A link for an identifier a person can follow. */
 function identifierLink(scheme: string, value: string): string | null {
@@ -72,41 +81,6 @@ export const watchSweep = (taskId: string) =>
 
 const EMPTY_PAGE = { items: [], next_cursor: null, total: 0 };
 
-const selectClass =
-  "rounded-control border border-border-strong bg-surface px-2 py-1 text-xs text-ink";
-
-/** A filter over one status group: "All" plus every value the glossary knows. */
-function StatusFilter({
-  label,
-  kind,
-  value,
-  onChange,
-}: {
-  label: string;
-  kind: "relevance" | "identity" | "acquisition";
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="flex items-center gap-1.5 text-xs text-muted">
-      {label}
-      <select
-        aria-label={`Filter by ${label.toLowerCase()}`}
-        className={selectClass}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        <option value="">All</option>
-        {Object.keys(statusGroup(kind).values).map((state) => (
-          <option key={state} value={state}>
-            {state}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
 /**
  * Collections: scope and discovery, duplicates, candidate decisions, and the
  * acquisition queue, in the order a collection is built.
@@ -120,11 +94,11 @@ export function CollectionsClient() {
   // the page refreshes itself while work runs.
   const [plans, setPlans] = useState<Page<AcquisitionPlan>>(EMPTY_PAGE);
   const [planCounts, setPlanCounts] = useState<Record<string, number>>({});
-  const [planStatus, setPlanStatus] = useState("");
-  // The words on screen, and those the list was asked for.
-  const [planDraft, setPlanDraft] = useState("");
-  const [planQuery, setPlanQuery] = useState("");
-  const [planOutcome, setPlanOutcome] = useState("");
+  // The search on screen, and the one the list was asked for: typed text waits
+  // for Search, a choice from a list applies at once, as in the candidate list.
+  const [planDraft, setPlanDraft] = useState<PlanFilters>({});
+  const [planFilters, setPlanFilters] = useState<PlanFilters>({});
+  const [facets, setFacets] = useState<CandidateFacets | null>(null);
   const planPager = usePager();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -136,9 +110,7 @@ export function CollectionsClient() {
       const nextPlans = await listPlans({
         after: planPager.cursor,
         limit: planPager.pageSize,
-        status: planStatus,
-        q: planQuery || undefined,
-        outcome: planOutcome || undefined,
+        ...planFilters,
       });
       setPlans(nextPlans);
       setPlanCounts(nextPlans.status_counts);
@@ -146,14 +118,29 @@ export function CollectionsClient() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "collections could not be loaded");
     }
-  }, [planPager.cursor, planPager.pageSize, planStatus, planQuery, planOutcome]);
+  }, [planPager.cursor, planPager.pageSize, planFilters]);
 
   const fetching = Object.entries(planCounts).some(
     ([status, count]) => FETCHING.has(status) && count > 0,
   );
   const live = useLiveRefresh(refresh, { active: fetching });
   // What the list was asked for, not the words still being typed.
-  const downloadFilters = { status: planStatus, q: planQuery, outcome: planOutcome };
+  const downloadFilters = planFilters;
+  const searching = searchSet(planFilters);
+
+  // The values the paper fields offer (kinds, sources, languages, years): the
+  // candidate list's, since both boxes search the same papers.
+  useEffect(() => {
+    candidateFacets()
+      .then(setFacets)
+      .catch(() => setFacets(null));
+  }, []);
+
+  function applyPlanSearch(next: PlanFilters) {
+    setPlanDraft(next);
+    setPlanFilters(next);
+    planPager.reset();
+  }
   const reload = live.refresh;
   // A new page or filter loads at once rather than at the next scheduled refresh.
   useEffect(() => {
@@ -195,72 +182,92 @@ export function CollectionsClient() {
             </Alert>
           </div>
         ) : null}
-        <PanelSection title="Search" hint="Narrows the plans below.">
+        <PanelSection
+          title="Search"
+          hint="Narrows the plans below, with the candidate list's fields. The downloads take exactly what it finds."
+        >
           <form
-            className="flex flex-wrap items-end gap-3"
+            className="space-y-3"
             onSubmit={(event) => {
               event.preventDefault();
-              setPlanQuery(planDraft.trim());
-              planPager.reset();
+              applyPlanSearch({ ...planDraft, q: planDraft.q?.trim() || undefined });
             }}
           >
-            <label className="space-y-1 text-xs text-muted">
-              <span className="block">Title or identifier has</span>
-              <Input
-                aria-label="Title or identifier has"
-                placeholder="e.g., sterol, 10.1038/…"
-                value={planDraft}
-                onChange={(event) => setPlanDraft(event.target.value)}
-              />
-            </label>
-            <StatusFilter
-              label="Status"
-              kind="acquisition"
-              value={planStatus}
-              onChange={(value) => {
-                setPlanStatus(value);
-                planPager.reset();
-              }}
-            />
-            <label className="flex items-center gap-2 text-sm text-muted">
-              Last answer
-              <select
-                aria-label="Filter plans by the last answer"
-                className="rounded-control border border-border-strong bg-surface px-2 py-1.5 text-sm text-ink"
-                value={planOutcome}
-                onChange={(event) => {
-                  setPlanOutcome(event.target.value);
-                  planPager.reset();
-                }}
-              >
-                <option value="">Any</option>
-                <option value="none">Never tried (upload only)</option>
-                {Object.keys(statusGroup("acquisition_outcome").values)
-                  .filter((outcome) => outcome !== "pending")
-                  .map((outcome) => (
-                    <option key={outcome} value={outcome}>
-                      {outcome.replace(/_/g, " ")}
+            <PaperFilterFields
+              draft={planDraft}
+              facets={facets}
+              onType={(patch) => setPlanDraft((current) => ({ ...current, ...patch }))}
+              onChoose={(patch) => applyPlanSearch({ ...planDraft, ...patch })}
+              leading={
+                <label className="space-y-1 text-xs text-muted">
+                  <span className="block">Identifier has</span>
+                  <Input
+                    aria-label="Identifier has"
+                    placeholder="e.g., 10.1038/…, PMC123"
+                    value={planDraft.q ?? ""}
+                    onChange={(event) =>
+                      setPlanDraft((current) => ({ ...current, q: event.target.value }))
+                    }
+                  />
+                </label>
+              }
+              actions={
+                <>
+                  <Button type="submit" size="sm">
+                    Search
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={!searchSet(planDraft) && !searching}
+                    onClick={() => applyPlanSearch({})}
+                  >
+                    Clear
+                  </Button>
+                </>
+              }
+            >
+              <label className="space-y-1">
+                <span className="block">Status</span>
+                <select
+                  aria-label="Filter by status"
+                  className={filterSelectClass}
+                  value={planDraft.status ?? ""}
+                  onChange={(event) =>
+                    applyPlanSearch({ ...planDraft, status: event.target.value || undefined })
+                  }
+                >
+                  <option value="">All</option>
+                  {Object.keys(statusGroup("acquisition").values).map((state) => (
+                    <option key={state} value={state}>
+                      {state}
                     </option>
                   ))}
-              </select>
-            </label>
-            <Button type="submit" size="sm">
-              Search
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setPlanDraft("");
-                setPlanQuery("");
-                setPlanStatus("");
-                setPlanOutcome("");
-                planPager.reset();
-              }}
-            >
-              Clear
-            </Button>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="block">Last answer</span>
+                <select
+                  aria-label="Filter plans by the last answer"
+                  className={filterSelectClass}
+                  value={planDraft.outcome ?? ""}
+                  onChange={(event) =>
+                    applyPlanSearch({ ...planDraft, outcome: event.target.value || undefined })
+                  }
+                >
+                  <option value="">Any</option>
+                  <option value="none">Never tried (upload only)</option>
+                  {Object.keys(statusGroup("acquisition_outcome").values)
+                    .filter((outcome) => outcome !== "pending")
+                    .map((outcome) => (
+                      <option key={outcome} value={outcome}>
+                        {outcome.replace(/_/g, " ")}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            </PaperFilterFields>
           </form>
         </PanelSection>
 
@@ -308,7 +315,7 @@ export function CollectionsClient() {
             {plans.total > 0 ? (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
                 <span className="text-ink">
-                  {planStatus || planQuery || planOutcome
+                  {searching
                     ? `Download the ${plans.total.toLocaleString()} ${plans.total === 1 ? "plan" : "plans"} this search finds, on every page:`
                     : `Download all ${plans.total.toLocaleString()} ${plans.total === 1 ? "plan" : "plans"}, on every page:`}
                 </span>
@@ -353,7 +360,7 @@ export function CollectionsClient() {
         {plans.items.length === 0 ? (
           <div className="px-5 py-3">
             <Empty>
-              {planStatus || planQuery || planOutcome ? "No plan matches this search." : "No acquisition plans yet."}
+              {searching ? "No plan matches this search." : "No acquisition plans yet."}
             </Empty>
           </div>
         ) : null}

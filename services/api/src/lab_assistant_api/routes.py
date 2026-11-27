@@ -1406,9 +1406,7 @@ async def lookup_queries(
 
 
 # ── collections: identity decisions ─────────────────────────────────────────
-def _candidate_filter(
-    relevance: Annotated[RelevanceState | None, Query()] = None,
-    identity_status: Annotated[IdentityState | None, Query()] = None,
+def _paper_filter(
     title: Annotated[
         str | None, Query(description="words that must all appear in the title, comma-separated")
     ] = None,
@@ -1435,10 +1433,9 @@ def _candidate_filter(
         bool, Query(description="match title words in the abstract and subject terms too")
     ] = False,
 ) -> CandidateFilter:
-    """The candidate filter, from query parameters; the same filter a bulk decision takes."""
+    """What a paper must be like, from query parameters: the candidate list's fields
+    without its relevance and identity, so the acquisition queue searches alike."""
     return CandidateFilter(
-        relevance=relevance,
-        identity_status=identity_status,
         title_words=title,
         exclude_words=exclude,
         subject_terms=subject,
@@ -1452,6 +1449,15 @@ def _candidate_filter(
         exclude_languages=exclude_language,
         search_abstract=in_abstract,
     )
+
+
+def _candidate_filter(
+    papers: Annotated[CandidateFilter, Depends(_paper_filter)],
+    relevance: Annotated[RelevanceState | None, Query()] = None,
+    identity_status: Annotated[IdentityState | None, Query()] = None,
+) -> CandidateFilter:
+    """The candidate filter, from query parameters; the same filter a bulk decision takes."""
+    return papers.model_copy(update={"relevance": relevance, "identity_status": identity_status})
 
 
 @router.get("/candidates")
@@ -2152,6 +2158,7 @@ async def link_versions(
 async def list_plans(
     actor: CurrentActor,
     container: Container,
+    papers: Annotated[CandidateFilter, Depends(_paper_filter)],
     status: Annotated[str | None, Query()] = None,
     q: Annotated[
         str | None,
@@ -2163,8 +2170,14 @@ async def list_plans(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     after: Annotated[UUID | None, Query(description="next_cursor from the previous page")] = None,
 ) -> dict[str, Any]:
-    """One page of the acquisition plans found, and how many plans are in each status."""
+    """One page of the acquisition plans found, and how many plans are in each status.
+
+    Besides status, words and the last answer, the candidate list's paper fields
+    (title words, subject terms, journal, years, kind, source, language, abstract)
+    narrow it the same way they narrow candidates.
+    """
     words = tuple((q or "").split())
+    filtered = papers != CandidateFilter()
     async with container.context.uow_factory() as uow:
         plans = await uow.assets.list_plans(
             actor.workspace_id,
@@ -2173,12 +2186,13 @@ async def list_plans(
             after_id=after,
             words=words,
             outcome=outcome,
+            papers=papers,
         )
         searched = (
             await uow.assets.count_plans(
-                actor.workspace_id, status=status, words=words, outcome=outcome
+                actor.workspace_id, status=status, words=words, outcome=outcome, papers=papers
             )
-            if words or outcome
+            if words or outcome or filtered
             else None
         )
         status_counts = await uow.assets.count_plans_by_status(actor.workspace_id)
@@ -2246,6 +2260,7 @@ async def export_plans(
     fmt: Literal["csv", "zip"],
     actor: CurrentActor,
     container: Container,
+    papers: Annotated[CandidateFilter, Depends(_paper_filter)],
     status: Annotated[str | None, Query()] = None,
     q: Annotated[
         str | None,
@@ -2261,7 +2276,7 @@ async def export_plans(
     with its header, numbered in the queue's order.
     """
     rows = await AcquisitionExportService(container.context).rows(
-        actor, status=status, words=tuple((q or "").split()), outcome=outcome
+        actor, status=status, words=tuple((q or "").split()), outcome=outcome, papers=papers
     )
     stem = f"acquisition-queue-{container.context.now().date().isoformat()}"
     if status:

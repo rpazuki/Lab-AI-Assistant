@@ -1295,7 +1295,8 @@ class _Works(_Base):
         )
         return int(result.scalar() or 0)
 
-    def _filter_statement(self, workspace_id: UUID, rule: CandidateFilter, columns: Any) -> Any:
+    @staticmethod
+    def _filter_statement(workspace_id: UUID, rule: CandidateFilter, columns: Any) -> Any:
         w, s = t.works, t.work_summaries
         conditions: list[Any] = [w.c.workspace_id == workspace_id]
         if rule.identity_status is None:
@@ -1586,11 +1587,17 @@ class _Assets(_Base):
         status: str | None,
         words: tuple[str, ...],
         outcome: str | None,
+        papers: CandidateFilter | None = None,
     ) -> list[Any]:
         p = t.acquisition_plans
         conditions: list[Any] = [self._scope(PLANS, workspace_id)]
         if status is not None:
             conditions.append(p.c.status == status)
+        if papers is not None and papers != CandidateFilter():
+            # The candidate list's own filter, so both boxes find papers alike.
+            conditions.append(
+                p.c.work_id.in_(_Works._filter_statement(workspace_id, papers, t.works.c.id))
+            )
         s, i = t.work_summaries, t.work_identifiers
         for word in words:
             title_word = normalise_title(word)
@@ -1653,11 +1660,12 @@ class _Assets(_Base):
         status: str | None = None,
         words: tuple[str, ...] = (),
         outcome: str | None = None,
+        papers: CandidateFilter | None = None,
     ) -> int:
         result = await self._c.execute(
             select(func.count())
             .select_from(t.acquisition_plans)
-            .where(*self._plan_conditions(workspace_id, status, words, outcome))
+            .where(*self._plan_conditions(workspace_id, status, words, outcome, papers))
         )
         return int(result.scalar() or 0)
 
@@ -1670,8 +1678,9 @@ class _Assets(_Base):
         after_id: UUID | None = None,
         words: tuple[str, ...] = (),
         outcome: str | None = None,
+        papers: CandidateFilter | None = None,
     ) -> list[AcquisitionPlan]:
-        conditions = self._plan_conditions(workspace_id, status, words, outcome)
+        conditions = self._plan_conditions(workspace_id, status, words, outcome, papers)
         if limit is None and after_id is None:
             return await self._many(PLANS, *conditions, order=t.acquisition_plans.c.created_at)
         if after_id is not None:

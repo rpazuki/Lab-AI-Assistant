@@ -1805,7 +1805,7 @@
     },
     "/api/v1/acquisition-plans": {
       "get": {
-        "description": "One page of the acquisition plans found, and how many plans are in each status.",
+        "description": "One page of the acquisition plans found, and how many plans are in each status.\n\nBesides status, words and the last answer, the candidate list's paper fields\n(title words, subject terms, journal, years, kind, source, language, abstract)\nnarrow it the same way they narrow candidates.",
         "operationId": "list_plans_api_v1_acquisition_plans_get",
         "parameters": [
           {
@@ -1889,6 +1889,214 @@
               ],
               "description": "next_cursor from the previous page",
               "title": "After"
+            }
+          },
+          {
+            "description": "words that must all appear in the title, comma-separated",
+            "in": "query",
+            "name": "title",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in the title, comma-separated",
+              "title": "Title"
+            }
+          },
+          {
+            "description": "words none of which may appear in the title",
+            "in": "query",
+            "name": "exclude",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words none of which may appear in the title",
+              "title": "Exclude"
+            }
+          },
+          {
+            "description": "subject terms, any one of which must appear",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "subject terms, any one of which must appear",
+              "title": "Subject"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 3000,
+                  "minimum": 1000,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 3000,
+                  "minimum": 1000,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year To"
+            }
+          },
+          {
+            "description": "resource kinds, comma-separated",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "resource kinds, comma-separated",
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "text the journal name contains",
+            "in": "query",
+            "name": "journal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "text the journal name contains",
+              "title": "Journal"
+            }
+          },
+          {
+            "description": "a connector that found the paper",
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "a connector that found the paper",
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "has_abstract",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Has Abstract"
+            }
+          },
+          {
+            "description": "languages, any one of which (two-letter codes, or unknown)",
+            "in": "query",
+            "name": "language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "languages, any one of which (two-letter codes, or unknown)",
+              "title": "Language"
+            }
+          },
+          {
+            "description": "languages none of which (two-letter codes, or unknown)",
+            "in": "query",
+            "name": "exclude_language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "languages none of which (two-letter codes, or unknown)",
+              "title": "Exclude Language"
+            }
+          },
+          {
+            "description": "match title words in the abstract and subject terms too",
+            "in": "query",
+            "name": "in_abstract",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "match title words in the abstract and subject terms too",
+              "title": "In Abstract",
+              "type": "boolean"
             }
           },
           {
@@ -2019,6 +2227,214 @@
               ],
               "description": "the latest attempt's outcome; none for never tried",
               "title": "Outcome"
+            }
+          },
+          {
+            "description": "words that must all appear in the title, comma-separated",
+            "in": "query",
+            "name": "title",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words that must all appear in the title, comma-separated",
+              "title": "Title"
+            }
+          },
+          {
+            "description": "words none of which may appear in the title",
+            "in": "query",
+            "name": "exclude",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words none of which may appear in the title",
+              "title": "Exclude"
+            }
+          },
+          {
+            "description": "subject terms, any one of which must appear",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "subject terms, any one of which must appear",
+              "title": "Subject"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 3000,
+                  "minimum": 1000,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 3000,
+                  "minimum": 1000,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Year To"
+            }
+          },
+          {
+            "description": "resource kinds, comma-separated",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "resource kinds, comma-separated",
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "text the journal name contains",
+            "in": "query",
+            "name": "journal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "text the journal name contains",
+              "title": "Journal"
+            }
+          },
+          {
+            "description": "a connector that found the paper",
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "a connector that found the paper",
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "has_abstract",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Has Abstract"
+            }
+          },
+          {
+            "description": "languages, any one of which (two-letter codes, or unknown)",
+            "in": "query",
+            "name": "language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "languages, any one of which (two-letter codes, or unknown)",
+              "title": "Language"
+            }
+          },
+          {
+            "description": "languages none of which (two-letter codes, or unknown)",
+            "in": "query",
+            "name": "exclude_language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "languages none of which (two-letter codes, or unknown)",
+              "title": "Exclude Language"
+            }
+          },
+          {
+            "description": "match title words in the abstract and subject terms too",
+            "in": "query",
+            "name": "in_abstract",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "match title words in the abstract and subject terms too",
+              "title": "In Abstract",
+              "type": "boolean"
             }
           },
           {
