@@ -170,6 +170,10 @@ class WorkRecord(CatalogRecord):
     title: str | None = None
     publication_year: int | None = None
     container_title: str | None = None
+    #: The scopes whose discovery runs found this work when the snapshot was
+    #: packaged. A reader has no discovery runs, so without this it cannot say
+    #: which papers a scope covers, and so cannot stop serving one.
+    scope_ids: tuple[UUID, ...] = ()
     identity_status: str | None = None
     #: A retraction is part of what a reader must show. Losing it would have a
     #: reader serving a retracted paper as current evidence.

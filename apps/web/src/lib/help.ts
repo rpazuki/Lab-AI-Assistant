@@ -12,6 +12,7 @@
 
 import type { NavIcon } from "@/lib/navigation";
 import { describeStatus, statusGroup, type StatusKind } from "@/lib/statuses";
+import type { InstallationRole } from "@/types";
 
 export interface HowTo {
   /** "How to …", one goal. */
@@ -44,6 +45,8 @@ export interface HelpTopic {
   icon: NavIcon | "help";
   /** Capabilities that open the page; empty means every signed-in member. */
   anyOf: readonly string[];
+  /** The kind of deployment the page exists on, when only one: a mirror's settings. */
+  installation?: InstallationRole;
   /** Who it is for, in words. */
   audience: string;
   summary: string;
@@ -1271,6 +1274,45 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Choose a conversation from the list to read it.",
               "Select **Close** when you are done.",
             ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "mirror",
+    title: "Mirror access",
+    href: "/mirror",
+    icon: "mirror",
+    anyOf: ["manage_policy"],
+    installation: "reader",
+    audience: "Admins of a mirror.",
+    summary: "Choose which of the publisher's scopes and releases this mirror serves.",
+    sections: [
+      {
+        id: "serving-less",
+        title: "Serving less than the publisher",
+        about: [
+          "A mirror serves the library its publisher published: scopes, papers and releases all come from the publisher, and its access rules do not, so every member here sees everything the mirror serves. Its members, their questions and answers, and their feedback stay on the mirror; no import changes them.",
+          "**Mirror access** lists every scope and published release this mirror holds, each with a **Serve** box. An unticked one is left out of Ask, Search, Analytics and exports for everyone here, admins included, and imports never change the choice. A paper is left out when every scope that found it is unticked. An unticked release is never answered from: the mirror uses the publisher's choice while it is ticked, and otherwise the newest ticked one.",
+        ],
+        howTos: [
+          {
+            title: "How to stop serving a scope or a release",
+            needs: "Admins of a mirror.",
+            steps: [
+              "Open **Mirror access**.",
+              "Untick **Serve** beside each scope or release this mirror should stop serving.",
+              "Read the notes under the lists: how many papers are left out, and which release the mirror will answer from.",
+              "Select **Save**.",
+            ],
+            note: "Until you save, nothing changes. **Undo changes** puts the boxes back as they were saved.",
+          },
+          {
+            title: "How to serve it again",
+            needs: "Admins of a mirror.",
+            steps: ["Tick its **Serve** box again.", "Select **Save**."],
+            note: "A release ticked again is served at once if it is the publisher's choice. Earlier answers that cite an unticked scope or release keep their text, but their passages do not open until it is ticked again.",
           },
         ],
       },

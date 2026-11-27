@@ -861,6 +861,31 @@
         "title": "MergeRule",
         "type": "object"
       },
+      "MirrorAccessRequest": {
+        "description": "The whole list: every scope and release named is removed, the rest served.",
+        "properties": {
+          "withheld_release_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Withheld Release Ids",
+            "type": "array"
+          },
+          "withheld_scope_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Withheld Scope Ids",
+            "type": "array"
+          }
+        },
+        "title": "MirrorAccessRequest",
+        "type": "object"
+      },
       "ParseLimitsRequest": {
         "properties": {
           "max_duplicate_paragraph_ratio": {
@@ -10712,6 +10737,144 @@
           }
         },
         "summary": "Member Session"
+      }
+    },
+    "/api/v1/mirror-access": {
+      "get": {
+        "description": "On a mirror: its scopes and releases, and which ones it does not serve.",
+        "operationId": "mirror_access_api_v1_mirror_access_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Mirror Access Api V1 Mirror Access Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mirror Access"
+      },
+      "put": {
+        "description": "Stop serving these scopes and releases on this mirror, for everyone on it.",
+        "operationId": "set_mirror_access_api_v1_mirror_access_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MirrorAccessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Mirror Access Api V1 Mirror Access Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Mirror Access"
       }
     },
     "/api/v1/operations/queue": {

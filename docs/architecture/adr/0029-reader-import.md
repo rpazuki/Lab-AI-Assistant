@@ -1,6 +1,6 @@
 Status: proposed
 Owner: technical owner
-Last verified: 2026-11-18
+Last verified: 2026-11-27
 Applies to: how a reader holds an imported library (phase 3)
 
 # ADR-0029: A reader imports additively, under the producer's ids, and activates by alias
@@ -49,6 +49,16 @@ in a `work_metadata` table.
 - Old releases stay as long as their rows do; a reader's own retention is not built.
 - Objects are stored before the row transaction, so a failed import can leave registered
   payloads with nothing pointing at them, which `lab storage scan` reports as orphans.
+
+*Amended 2026-11-27.* **A mirror can serve less than it imported.** Each work now
+carries the scopes that found it (`WorkRecord.scope_ids`, kept in
+`work_metadata.scope_ids`), and the scopes travel with their newest version. That
+lets the mirror's admin keep a list of removed scopes and releases
+(`application/mirror_access.py`, a `workspace_profile` config version). The list
+applies to everyone on the mirror and no import changes it. A removed release is
+resolved around at read time, not by moving the alias, so the import's alias rule
+above is unchanged. The publisher's scope grants still do not travel, so on a reader
+`reachable_scope_ids` reports every scope reachable.
 
 ## Alternatives considered
 

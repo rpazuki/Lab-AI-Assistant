@@ -171,6 +171,10 @@ class _Closure:
         #: The decisions themselves, not only their records: whether bytes may
         #: be replicated is asked of the decision, with its expiry.
         self.decisions: dict[UUID, Any] = {}
+        #: Which scopes found each work, worked out once from the discovery
+        #: runs, and each scope's newest version, which names it on a reader.
+        self.scopes_by_work: dict[UUID, frozenset[UUID]] = {}
+        self.scope_versions: dict[UUID, Any] = {}
 
     def add(self, record: CatalogRecord) -> bool:
         """Record a row. Returns False when it was already reached."""
@@ -238,8 +242,10 @@ class ArchiveCatalogBuilder:
             )
 
         closure = _Closure()
+        await self._scope_membership(workspace_id, closure)
         for release in releases:
             await self._walk_release(workspace_id, release, closure, problems)
+        self._add_member_scopes(closure)
 
         copied = await self._write_payloads(workspace_id, destination, closure, problems)
         (destination / CATALOG_DIRECTORY).mkdir(parents=True, exist_ok=True)
@@ -308,6 +314,46 @@ class ArchiveCatalogBuilder:
         )
 
     # ── the closure ────────────────────────────────────────────────────────
+
+    async def _scope_membership(self, workspace_id: UUID, closure: _Closure) -> None:
+        """Which scopes found each work, as `scope_access` works it out.
+
+        A reader has no discovery runs, so it cannot derive this, and without it
+        a mirror cannot stop serving a scope. It travels on each work.
+        """
+        found: dict[UUID, set[UUID]] = {}
+        async with self._context.uow_factory() as uow:
+            versions = await uow.configs.list_scope_versions(workspace_id)
+            scope_of = {version.id: version.scope_id for version in versions}
+            for version in versions:
+                newest = closure.scope_versions.get(version.scope_id)
+                if newest is None or (version.version or 0) > (newest.version or 0):
+                    closure.scope_versions[version.scope_id] = version
+            runs_by_scope: dict[UUID, list[UUID]] = {}
+            for run in await uow.observations.list_runs(workspace_id, limit=100_000):
+                scope_id = scope_of.get(run.scope_version_id)
+                if scope_id is not None:
+                    runs_by_scope.setdefault(scope_id, []).append(run.id)
+            for scope_id, run_ids in runs_by_scope.items():
+                only, shared = await uow.purge.works_found_by_runs(workspace_id, run_ids)
+                for work_id in only | shared:
+                    found.setdefault(work_id, set()).add(scope_id)
+        closure.scopes_by_work = {work_id: frozenset(ids) for work_id, ids in found.items()}
+
+    def _add_member_scopes(self, closure: _Closure) -> None:
+        """Each scope a packaged work names, by its newest version, so it has a name."""
+        named = {
+            record.scope_id
+            for record in closure.rows[RecordKind.SCOPE_VERSION].values()
+            if record.scope_id is not None
+        }
+        for record in list(closure.rows[RecordKind.WORK].values()):
+            for scope_id in record.scope_ids:
+                version = closure.scope_versions.get(scope_id)
+                if scope_id in named or version is None:
+                    continue
+                closure.add(_scope_record(self._library_id, version))
+                named.add(scope_id)
 
     async def _releases(
         self, workspace_id: UUID, release_ids: tuple[UUID, ...] | None, problems: list[str]
@@ -442,6 +488,7 @@ class ArchiveCatalogBuilder:
                 title=metadata.get("title"),
                 publication_year=year if isinstance(year, int) else None,
                 container_title=metadata.get("container_title") or metadata.get("journal"),
+                scope_ids=tuple(sorted(closure.scopes_by_work.get(work.id, ()), key=str)),
                 identity_status=_value(work.identity_status),
                 retraction_status=_value(work.retraction_status),
                 correction_status=_value(work.correction_status),

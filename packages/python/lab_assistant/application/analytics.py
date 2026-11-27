@@ -52,13 +52,12 @@ class AnalyticsService:
         self._retrieval = RetrievalService(context)
 
     async def _resolve(self, actor: ActorContext, release_id: UUID | None, alias: str) -> UUID:
-        if release_id is not None:
-            return release_id
+        from lab_assistant.application.mirror_access import served_release_id
+
         async with self._context.uow_factory() as uow:
-            search_alias = await uow.releases.get_alias(actor.workspace_id, alias)
-        if search_alias is None or search_alias.release_id is None:
-            raise NotFound(f"no release is published on alias {alias!r}")
-        return search_alias.release_id
+            return await served_release_id(
+                uow, actor.workspace_id, release_id=release_id, alias=alias
+            )
 
     async def corpus_stats(
         self, actor: ActorContext, *, release_id: UUID | None = None, alias: str = "current"

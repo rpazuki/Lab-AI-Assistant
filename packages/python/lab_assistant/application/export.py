@@ -20,6 +20,7 @@ from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.mirror_access import read_withheld, withheld_work_ids
 from lab_assistant.application.objects import register_object
 from lab_assistant.application.scope_access import reachable_work_ids
 from lab_assistant.contracts.canonical import canonical_json, sha256_bytes
@@ -129,7 +130,9 @@ class ExportService:
 
         async with context.uow_factory() as uow:
             release = await uow.releases.get(actor.workspace_id, release_id)
-            if release is None:
+            withheld = await read_withheld(uow, actor.workspace_id)
+            if release is None or release.id in withheld.release_ids:
+                # A release this mirror removed is absent here, as for Ask.
                 raise NotFound(f"release {release_id} not found")
             items = await uow.releases.list_items(actor.workspace_id, release_id)
             # A release may have been assembled by someone who reaches more scopes
@@ -137,6 +140,7 @@ class ExportService:
             # rather than trusted. Skipped ones are counted like any other
             # restricted paper, so the package says how much it is missing.
             reachable = await reachable_work_ids(uow, context, actor)
+            removed = await withheld_work_ids(uow, actor.workspace_id, withheld)
 
             works: list[dict[str, Any]] = []
             manifestations: list[dict[str, Any]] = []
@@ -155,7 +159,7 @@ class ExportService:
                 work = await uow.works.get(actor.workspace_id, record.work_id)
                 if work is None:
                     continue
-                if reachable is not None and work.id not in reachable:
+                if (reachable is not None and work.id not in reachable) or work.id in removed:
                     skipped_restricted += 1
                     continue
                 if not context.policy_engine.allows(

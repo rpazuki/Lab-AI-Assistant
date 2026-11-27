@@ -39,6 +39,7 @@ from lab_assistant.contracts.policy import (
     ResourceType,
     SubjectType,
 )
+from lab_assistant.domain.installation import InstallationCapability
 from lab_assistant.domain.workspace import Capability, Role
 
 __all__ = ["ScopeAccessService", "reachable_scope_ids", "reachable_work_ids"]
@@ -59,6 +60,11 @@ async def reachable_scope_ids(
     set would hide those from everyone but an admin, which is a loss nobody asked
     for and one nothing on screen would explain.
     """
+    if not context.installation.has(InstallationCapability.CURATE_CORPUS):
+        # A mirror holds its publisher's scopes but none of its rules, and
+        # cannot write any: who sees a scope there is the mirror's own list of
+        # removed scopes (`mirror_access`), which applies to everyone.
+        return None
     versions = await uow.configs.list_scope_versions(actor.workspace_id)
     all_scope_ids = {version.scope_id for version in versions}
     # Evaluated with the workspace defaults emptied. `query` is a default member

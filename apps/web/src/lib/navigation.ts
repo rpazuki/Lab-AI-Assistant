@@ -8,6 +8,8 @@
  * capability, so they see every section.
  */
 
+import type { InstallationRole } from "@/types";
+
 export type NavIcon =
   | "ask"
   | "analytics"
@@ -19,6 +21,7 @@ export type NavIcon =
   | "datasheets"
   | "answer-reviews"
   | "members"
+  | "mirror"
   | "operations"
   | "help";
 
@@ -28,6 +31,8 @@ export interface NavItem {
   icon: NavIcon;
   /** Capabilities that open the item; empty means every signed-in member. */
   anyOf: readonly string[];
+  /** Shown only on this kind of deployment, such as a mirror's own settings. */
+  installation?: InstallationRole;
 }
 
 /** A section of the sidebar: one accordion panel. */
@@ -95,6 +100,13 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: "Administration",
     items: [
       { href: "/members", label: "Members", icon: "members", anyOf: ["manage_members"] },
+      {
+        href: "/mirror",
+        label: "Mirror access",
+        icon: "mirror",
+        anyOf: ["manage_policy"],
+        installation: "reader",
+      },
       { href: "/operations", label: "Operations", icon: "operations", anyOf: ["view_operations"] },
     ],
   },
@@ -108,21 +120,32 @@ export const NAV_GROUPS: readonly NavGroup[] = [
 /** Every item, in sidebar order. */
 export const NAV: readonly NavItem[] = NAV_GROUPS.flatMap((group) => group.items);
 
-function holds(item: NavItem, held: ReadonlySet<string>): boolean {
+function holds(item: NavItem, held: ReadonlySet<string>, installation?: InstallationRole): boolean {
+  if (item.installation && item.installation !== installation) return false;
   return item.anyOf.length === 0 || item.anyOf.some((capability) => held.has(capability));
 }
 
-export function visibleNav(capabilities: readonly string[]): NavItem[] {
+export function visibleNav(
+  capabilities: readonly string[],
+  installation?: InstallationRole,
+): NavItem[] {
   const held = new Set(capabilities);
-  return NAV.filter((item) => holds(item, held));
+  return NAV.filter((item) => holds(item, held, installation));
 }
 
-/** The groups with at least one item this member may open, and only those items. */
-export function visibleGroups(capabilities: readonly string[]): NavGroup[] {
+/**
+ * The groups with at least one item this member may open, and only those items.
+ * `installation` is what `/auth/me` says this deployment is; an item kept for one
+ * kind, such as a mirror's settings, is hidden when it is not given.
+ */
+export function visibleGroups(
+  capabilities: readonly string[],
+  installation?: InstallationRole,
+): NavGroup[] {
   const held = new Set(capabilities);
   return NAV_GROUPS.map((group) => ({
     ...group,
-    items: group.items.filter((item) => holds(item, held)),
+    items: group.items.filter((item) => holds(item, held, installation)),
   })).filter((group) => group.items.length > 0);
 }
 

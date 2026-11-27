@@ -1660,17 +1660,26 @@ class _Imports:
         title: str | None,
         publication_year: int | None,
         container_title: str | None,
+        scope_ids: tuple[UUID, ...] = (),
     ) -> None:
         self._db.work_metadata[(workspace_id, work_id)] = {
             "library_id": library_id,
             "title": title,
             "publication_year": publication_year,
             "container_title": container_title,
+            "scope_ids": [str(scope_id) for scope_id in scope_ids],
         }
 
     async def get_work_metadata(self, workspace_id: UUID, work_id: UUID) -> dict[str, Any] | None:
         found = self._db.work_metadata.get((workspace_id, work_id))
         return dict(found) if found is not None else None
+
+    async def list_work_scopes(self, workspace_id: UUID) -> dict[UUID, tuple[UUID, ...]]:
+        return {
+            work_id: tuple(UUID(value) for value in row.get("scope_ids") or ())
+            for (ws, work_id), row in self._db.work_metadata.items()
+            if ws == workspace_id and row.get("scope_ids")
+        }
 
 
 class _StageResults:

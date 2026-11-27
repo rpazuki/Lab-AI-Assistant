@@ -8,6 +8,7 @@ import { Input, StateChip } from "@/components/ui/primitives";
 import { getMe } from "@/lib/api";
 import { HELP_TOPICS, searchHelp, type HelpTopic, type HowTo } from "@/lib/help";
 import { statusGroup, type StatusKind } from "@/lib/statuses";
+import type { InstallationRole } from "@/types";
 
 /**
  * Inline emphasis in help text: `**bold**` for the names on screen, `*italic*` for
@@ -36,20 +37,31 @@ export const guideAnchor = (title: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
 
-/** Which topics the signed-in member's role opens; `null` while asking. */
-function useCapabilities(): Set<string> | null {
-  const [held, setHeld] = useState<Set<string> | null>(null);
-  useEffect(() => {
-    getMe()
-      .then((me) => setHeld(new Set(me.capabilities)))
-      .catch(() => setHeld(new Set()));
-  }, []);
-  return held;
+interface Access {
+  held: Set<string>;
+  /** What this deployment is, for a topic about one kind only (a mirror's settings). */
+  installation?: InstallationRole;
 }
 
-function opens(topic: HelpTopic, held: Set<string> | null): boolean | null {
-  if (held === null) return null;
-  return topic.anyOf.length === 0 || topic.anyOf.some((capability) => held.has(capability));
+/** Which topics the signed-in member's role opens; `null` while asking. */
+function useCapabilities(): Access | null {
+  const [access, setAccess] = useState<Access | null>(null);
+  useEffect(() => {
+    getMe()
+      .then((me) =>
+        setAccess({ held: new Set(me.capabilities), installation: me.installation_role }),
+      )
+      .catch(() => setAccess({ held: new Set() }));
+  }, []);
+  return access;
+}
+
+function opens(topic: HelpTopic, access: Access | null): boolean | null {
+  if (access === null) return null;
+  if (topic.installation && topic.installation !== access.installation) return false;
+  return (
+    topic.anyOf.length === 0 || topic.anyOf.some((capability) => access.held.has(capability))
+  );
 }
 
 /** The index: every topic as a card, and a search over all guides. */

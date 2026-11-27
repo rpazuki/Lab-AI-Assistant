@@ -1364,11 +1364,16 @@ class ArchiveImportRepository(Protocol):
         title: str | None,
         publication_year: int | None,
         container_title: str | None,
+        scope_ids: tuple[UUID, ...] = (),
     ) -> None: ...
 
     async def get_work_metadata(
         self, workspace_id: UUID, work_id: UUID
     ) -> dict[str, Any] | None: ...
+
+    async def list_work_scopes(self, workspace_id: UUID) -> dict[UUID, tuple[UUID, ...]]:
+        """Every imported work that some scope found, with those scopes."""
+        ...
 
 
 @runtime_checkable

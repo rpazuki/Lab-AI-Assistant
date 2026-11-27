@@ -1461,4 +1461,7 @@ work_metadata = Table(
     Column("title", Text),
     Column("publication_year", Integer),
     Column("container_title", Text),
+    #: The scopes whose discovery runs found the paper on the publisher, as the
+    #: snapshot carried them: a reader has no runs to work it out from.
+    Column("scope_ids", _JSONB, nullable=False, server_default=text("'[]'")),
 )

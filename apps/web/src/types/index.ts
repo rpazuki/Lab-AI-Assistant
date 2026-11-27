@@ -16,6 +16,44 @@ export interface Me {
   capabilities: string[];
   /** Whether admins of this workspace may read members' conversations. */
   chat_visible_to_admins?: boolean;
+  /** What this deployment is: the publisher, or a mirror (`reader`) serving its corpus. */
+  installation_role?: InstallationRole;
+}
+
+export type InstallationRole = "publisher" | "reader" | "maintenance";
+
+/** A scope a mirror holds, and whether it serves it. */
+export interface MirrorScope {
+  scope_id: string;
+  name: string;
+  /** Papers some discovery run of this scope found, as the snapshot recorded. */
+  papers: number;
+  withheld: boolean;
+}
+
+/** A published release a mirror holds, and whether it serves it. */
+export interface MirrorRelease {
+  release_id: string;
+  name: string;
+  semantic_version: string;
+  status: string;
+  published_at: string | null;
+  withheld: boolean;
+  /** The release the publisher serves, as of the last import. */
+  publisher_choice: boolean;
+  /** The release this mirror answers from now. */
+  serving: boolean;
+}
+
+/** What a mirror does not serve (`GET /mirror-access`). */
+export interface MirrorAccess {
+  scopes: MirrorScope[];
+  releases: MirrorRelease[];
+  serving_release_id: string | null;
+  /** Papers left out because every scope that found them is removed. */
+  withheld_papers: number;
+  set_at: string | null;
+  set_by: string | null;
 }
 
 /** A member's own token allowance. */

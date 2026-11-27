@@ -472,6 +472,7 @@ class SnapshotImporter:
                     title=record.title,
                     publication_year=record.publication_year,
                     container_title=record.container_title,
+                    scope_ids=tuple(record.scope_ids),
                 )
             for record in rows[RecordKind.MANIFESTATION].values():
                 if await uow.assets.get_manifestation(ws, record.record_id) is None:

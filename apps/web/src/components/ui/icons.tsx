@@ -85,6 +85,13 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   operations: <path d="M3 12h4l3 8 4-16 3 8h4" />,
+  // Two screens, the second a copy of the first: a mirror of the library.
+  mirror: (
+    <>
+      <rect x="3" y="4" width="11" height="13" rx="1.5" />
+      <path d="M17 8h2.5A1.5 1.5 0 0 1 21 9.5v9a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 10 18.5V20" />
+    </>
+  ),
   progress: (
     <>
       <path d="M4 5h16" />

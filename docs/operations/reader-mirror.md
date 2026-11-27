@@ -206,6 +206,42 @@ To try a run now, use `sudo systemctl start lab-archive-publish.service`, or
 removes the timers.
 
 Each run writes a new directory under `/srv/lab-archive` and keeps the newest three
-(`--keep`). When a run fails, the [archive fetch runbook](runbooks/archive-fetch.md)
+(`--keep`).
+
+## 5. What a mirror keeps, and serving less
+
+**From the publisher:** everything from scopes to published releases. Papers, texts,
+claims, reviews, scopes and releases arrive in the snapshot, and an import only adds
+to them. A snapshot also records which scopes found each paper, so a mirror knows
+what each scope covers without the publisher's discovery runs.
+
+**The mirror's own:** members, chat sessions, questions and answers, feedback and
+logins. No snapshot carries them and no import touches them, so each mirror's Ask
+history is separate from the publisher's and from every other mirror's. The
+publisher's scope access rules do not travel either. On a mirror, every member sees
+everything the mirror serves.
+
+**Serving less.** A mirror's admin can stop serving some scopes or releases, for
+everyone on that mirror, admins included. The list belongs to the mirror and imports
+never change it.
+
+- **A removed scope:** a paper is withheld when every scope that found it is
+  removed. It is left out of Ask, Search, Analytics and exports. Citations to it in
+  earlier answers no longer open.
+- **A removed release:** it is never served. The mirror follows the publisher's
+  current release while that release is not removed, and otherwise serves the newest
+  published release that is. If the mirror removes the publisher's choice, a release
+  the publisher publishes later is still served, because it is not on the list.
+  Putting a release back restores the publisher's choice at once.
+
+An admin does this on **Administration › Mirror access**, which appears only on a
+mirror. Each scope and release has a **Serve** box, and **Save** records the whole
+choice, with who made it and when. Behind the page is
+`GET`/`PUT /api/v1/mirror-access`, with
+`{"withheld_scope_ids": [...], "withheld_release_ids": [...]}`. On the publisher the
+page says to use scope access rules and the Releases page instead.
+
+Papers imported before this version carry no scopes until the next import, which
+needs a publish from a publisher running this version or later. When a run fails, the [archive fetch runbook](runbooks/archive-fetch.md)
 and the [policy checkpoint runbook](runbooks/policy-checkpoints.md) say what each
 message means.

@@ -73,3 +73,22 @@ describe("visibleGroups", () => {
     expect(new Set(NAV.map((item) => item.href)).size).toBe(NAV.length);
   });
 });
+
+describe("an item kept for one kind of installation", () => {
+  const admin = ["manage_policy", "manage_members"];
+  const labels = (groups: ReturnType<typeof visibleGroups>) =>
+    groups.flatMap((group) => group.items.map((item) => item.label));
+
+  it("shows Mirror access to a mirror's admin", () => {
+    expect(labels(visibleGroups(admin, "reader"))).toContain("Mirror access");
+  });
+
+  it("hides it on the publisher, and while the installation is not known", () => {
+    expect(labels(visibleGroups(admin, "publisher"))).not.toContain("Mirror access");
+    expect(labels(visibleGroups(admin))).not.toContain("Mirror access");
+  });
+
+  it("hides it from a mirror's member who is not an admin", () => {
+    expect(labels(visibleGroups(["ask"], "reader"))).not.toContain("Mirror access");
+  });
+});

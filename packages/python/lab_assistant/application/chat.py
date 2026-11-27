@@ -645,6 +645,26 @@ class ChatService:
             citation = next((c for c in message.citations if c.handle == handle), None)
             if citation is None:
                 raise NotFound(f"citation {handle} is not on this message")
+            # An answer given before this mirror removed a release or a scope
+            # keeps its text, but its passages are no longer opened here.
+            from lab_assistant.application.mirror_access import (
+                read_withheld,
+                withheld_work_ids,
+            )
+
+            withheld = await read_withheld(uow, actor.workspace_id)
+            if (
+                citation.release_id is not None and citation.release_id in withheld.release_ids
+            ) or (
+                citation.work_id is not None
+                and citation.work_id in await withheld_work_ids(uow, actor.workspace_id, withheld)
+            ):
+                return {
+                    "handle": handle,
+                    "status": citation.status.value,
+                    "resolved": False,
+                    "reason": "this passage was removed from this mirror",
+                }
             if citation.evidence_span_id is None:
                 # No claim-level span: resolve to the rendition node the chunk came
                 # from, verifying the quote at read time. The rendition is immutable,

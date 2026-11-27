@@ -300,6 +300,8 @@ class TestAuth:
         assert body["role"] == "researcher"
         assert "ask" in body["capabilities"]
         assert "manage_policy" not in body["capabilities"]
+        # The web app shows a mirror's own pages only on a mirror.
+        assert body["installation_role"] == "publisher"
 
     async def test_logout_revokes_every_issued_token(self, api) -> None:
         token = await _login(api["client"], "researcher@lab.invalid")

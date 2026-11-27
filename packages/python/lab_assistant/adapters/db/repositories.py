@@ -3204,12 +3204,14 @@ class _SqlImports:
         title: str | None,
         publication_year: int | None,
         container_title: str | None,
+        scope_ids: tuple[UUID, ...] = (),
     ) -> None:
         values = {
             "library_id": library_id,
             "title": title,
             "publication_year": publication_year,
             "container_title": container_title,
+            "scope_ids": [str(scope_id) for scope_id in scope_ids],
         }
         where = and_(
             t.work_metadata.c.workspace_id == workspace_id, t.work_metadata.c.work_id == work_id
@@ -3231,6 +3233,18 @@ class _SqlImports:
         )
         row = result.mappings().first()
         return dict(row) if row is not None else None
+
+    async def list_work_scopes(self, workspace_id: UUID) -> dict[UUID, tuple[UUID, ...]]:
+        result = await self._c.execute(
+            select(t.work_metadata.c.work_id, t.work_metadata.c.scope_ids).where(
+                t.work_metadata.c.workspace_id == workspace_id
+            )
+        )
+        return {
+            row.work_id: tuple(UUID(str(value)) for value in row.scope_ids)
+            for row in result
+            if row.scope_ids
+        }
 
 
 class _SqlStageResults:

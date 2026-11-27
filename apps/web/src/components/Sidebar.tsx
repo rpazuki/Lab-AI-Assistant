@@ -137,7 +137,7 @@ export function Sidebar() {
     return () => window.removeEventListener(RESET_EVENT, reset);
   }, []);
 
-  const groups = session ? visibleGroups(session.capabilities) : [];
+  const groups = session ? visibleGroups(session.capabilities, session.installation_role) : [];
   const activeGroup =
     groups.find((group) => group.items.some((item) => isActive(pathname, item.href)))?.id ?? null;
 

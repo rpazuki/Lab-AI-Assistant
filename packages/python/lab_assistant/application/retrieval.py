@@ -21,10 +21,14 @@ from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.mirror_access import (
+    read_withheld,
+    served_release_id,
+    withheld_work_ids,
+)
 from lab_assistant.application.pagination import iter_pages
 from lab_assistant.application.scope_access import reachable_work_ids
 from lab_assistant.contracts.canonical import sha256_text
-from lab_assistant.contracts.errors import NotFound
 from lab_assistant.contracts.models import EvidenceBlock
 from lab_assistant.contracts.policy import PolicyAction, ResourceRef, ResourceType
 from lab_assistant.domain.assets import is_abstract
@@ -147,6 +151,11 @@ class RetrievalService:
             # Which scopes this caller may reach, resolved once. `None` means
             # every one of them, and then no paper is filtered on this account.
             reachable = await reachable_work_ids(uow, context, actor)
+            # Papers this mirror stopped serving, for everyone on it. Empty on
+            # a publisher, which keeps no such list.
+            removed = await withheld_work_ids(
+                uow, actor.workspace_id, await read_withheld(uow, actor.workspace_id)
+            )
 
             async def page(after: UUID | None, size: int):
                 return await uow.works.list_work_visibility(
@@ -164,6 +173,10 @@ class RetrievalService:
                     continue
                 if reachable is not None and row.work_id not in reachable:
                     # Found only by scopes this caller has no grant for.
+                    denied += 1
+                    continue
+                if row.work_id in removed:
+                    # Found only by scopes this mirror removed.
                     denied += 1
                     continue
                 resource = ResourceRef(
@@ -191,13 +204,10 @@ class RetrievalService:
         index = context.require_search_index()
         settings = context.settings
 
-        resolved_release = release_id
-        if resolved_release is None:
-            async with context.uow_factory() as uow:
-                search_alias = await uow.releases.get_alias(actor.workspace_id, alias)
-            if search_alias is None or search_alias.release_id is None:
-                raise NotFound(f"no release is published on alias {alias!r}")
-            resolved_release = search_alias.release_id
+        async with context.uow_factory() as uow:
+            resolved_release = await served_release_id(
+                uow, actor.workspace_id, release_id=release_id, alias=alias
+            )
 
         classification, use_lexical, use_vector, use_claims = self.classify(query)
         plan = RetrievalPlan(

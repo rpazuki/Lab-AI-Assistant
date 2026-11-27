@@ -20,6 +20,7 @@ import type {
   BulkRelevanceResult,
   CreatedInvitation,
   InvitationEmailSetting,
+  MirrorAccess,
   Candidate,
   CandidateFacets,
   CandidateFilters,
@@ -1024,6 +1025,16 @@ export const saveInvitationEmail = (templates: InvitationEmailSetting["templates
     method: "PUT",
     body: JSON.stringify(templates),
   });
+
+/** On a mirror: its scopes and releases, and which ones it does not serve. */
+export const getMirrorAccess = () => request<MirrorAccess>("/mirror-access");
+
+/** Save the whole list: every scope and release named stops being served on this mirror. */
+export const saveMirrorAccess = (withheld: {
+  withheld_scope_ids: string[];
+  withheld_release_ids: string[];
+}) =>
+  request<MirrorAccess>("/mirror-access", { method: "PUT", body: JSON.stringify(withheld) });
 
 /** A new temporary password for the same person and role; the earlier one stops working. */
 export const regenerateTemporaryPassword = (invitationId: string) =>

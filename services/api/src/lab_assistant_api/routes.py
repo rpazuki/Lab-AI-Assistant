@@ -46,6 +46,7 @@ from lab_assistant.application.export import ExportService
 from lab_assistant.application.fetching import FetchQueue
 from lab_assistant.application.identity_conflicts import IdentityConflictService
 from lab_assistant.application.invitation_email import InvitationEmailService
+from lab_assistant.application.mirror_access import MirrorAccessService
 from lab_assistant.application.parse_quality import ParseQualityLimits, ParseQualityService
 from lab_assistant.application.reconciliation import IdentityService
 from lab_assistant.application.refresh import RefreshService
@@ -334,6 +335,9 @@ async def me(actor: CurrentActor, container: Container) -> dict[str, Any]:
         "role": actor.membership.role_key if actor.membership else None,
         # Said to every member, so the Ask page can tell them before they type.
         "chat_visible_to_admins": container.settings.chat_admin_access,
+        # What this deployment is: a mirror shows its own pages and not the
+        # publisher's. Presentation only; every route still checks.
+        "installation_role": container.context.installation.role.value,
         "capabilities": sorted(
             c.value for c in (actor.membership.capabilities() if actor.membership else set())
         ),
@@ -628,6 +632,35 @@ async def set_invitation_email(
                 payload.temporary_password.model_dump() if payload.temporary_password else None
             ),
         },
+    )
+
+
+class MirrorAccessRequest(BaseModel):
+    """The whole list: every scope and release named is removed, the rest served."""
+
+    withheld_scope_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+    withheld_release_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+
+
+@router.get("/mirror-access")
+async def mirror_access(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """On a mirror: its scopes and releases, and which ones it does not serve."""
+    return await MirrorAccessService(container.context).view(actor)
+
+
+@router.put(
+    "/mirror-access",
+    # A mirror's own setting: it decides what of the corpus it imported it serves.
+    dependencies=[requires(InstallationCapability.IMPORT_LIBRARY)],
+)
+async def set_mirror_access(
+    payload: MirrorAccessRequest, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Stop serving these scopes and releases on this mirror, for everyone on it."""
+    return await MirrorAccessService(container.context).save(
+        actor,
+        withheld_scope_ids=payload.withheld_scope_ids,
+        withheld_release_ids=payload.withheld_release_ids,
     )
 
 
