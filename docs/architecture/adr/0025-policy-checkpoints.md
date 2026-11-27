@@ -1,6 +1,6 @@
 Status: proposed
 Owner: technical owner + data steward
-Last verified: 2026-11-18
+Last verified: 2026-11-27
 Applies to: the shared archive's policy stream (phase 2)
 
 # ADR-0025: Policy travels as signed checkpoints that narrow and never widen
@@ -101,9 +101,11 @@ names, so no signature over one can verify as the other.
   an unchanged closure is cheap — vectors are reused — but somebody has to do it
   before the old review date passes, or readers withhold the material.
 - **The publisher must re-issue on a timer.** A checkpoint that is not renewed
-  expires, and readers then stop serving restricted material. Nothing schedules
-  `lab archive policy publish --apply` yet; `lab archive policy status` exits
-  non-zero when the current checkpoint is not fresh, so a monitor can alert.
+  expires, and readers then stop serving restricted material. `lab archive
+  policy status` exits non-zero when the current checkpoint is not fresh, so a
+  monitor can alert. *Amended 2026-11-27:* `scripts/archive.sh schedule` installs
+  systemd timers that renew it every 6 hours and publish daily, so a 24-hour
+  window survives three failed renewals. A daily publish alone left no margin.
 - Readers enforce none of this until phase 3. The rules they will call are the
   ones the validator already applies (`lab archive verify --policy`), so the
   producer and the reader cannot disagree about what a checkpoint means.

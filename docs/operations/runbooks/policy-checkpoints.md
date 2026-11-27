@@ -1,6 +1,6 @@
 Status: active
 Owner: steward + operator
-Last verified: 2026-11-18
+Last verified: 2026-11-27
 Source of truth: `packages/python/lab_assistant/application/archive_policy.py`
 
 # Runbook: policy checkpoints
@@ -33,7 +33,9 @@ lab archive policy publish --workspace <slug> --apply    # issue and move the po
 
 After a revocation, issue at once: that is how readers hear of it without a new
 snapshot. Otherwise issue on a timer well inside `LAB_ARCHIVE_POLICY_VALIDITY_HOURS`
-(24 by default). Re-issuing unchanged policy is normal — the report says
+(24 by default). `sudo bash scripts/archive.sh schedule` installs one that renews
+every 6 hours. If `status` fails, check the timer with
+`journalctl -u lab-archive-policy -n 50`. Re-issuing unchanged policy is normal — the report says
 `"changed": false` — and it is what keeps readers serving restricted material.
 
 `lab archive package` records the current policy head in the snapshot it writes, so

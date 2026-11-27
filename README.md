@@ -282,6 +282,53 @@ something. Every flag is listed in [`scripts/README.md`](scripts/README.md), and
 situation an operator might face has a page under
 [runbooks](docs/operations/runbooks/README.md).
 
+### Sharing the library with a mirror
+
+The deployed server can publish its published releases to a Google Cloud Storage
+bucket, from which a second installation elsewhere (a reader mirror) imports them.
+Setting up the bucket, the keys and the reader is in
+[the reader mirror guide](docs/operations/reader-mirror.md). Two things matter on the
+publisher.
+
+**Which papers' text may leave this server.** A paper's text, chunks and vectors are
+copied to the bucket only when its rights decision allows `replicate_content`. To
+allow it for open-licence papers (Creative Commons, public domain), the data steward
+sets this in `.env`:
+
+```text
+LAB_RIGHTS_REPLICATE_OPEN_CONTENT=true
+```
+
+It is off by default, because storing a paper here is not permission to store it
+elsewhere. It applies to rights decisions made after it is set; earlier decisions keep
+what they allowed, so those papers travel as records and reviewed claims without their
+text.
+
+**Keeping the policy checkpoint fresh.** Every publication carries a signed policy
+checkpoint that is valid for `LAB_ARCHIVE_POLICY_VALIDITY_HOURS` (24 by default). Once
+it lapses, a mirror stops serving restricted material. Publishing once a day is
+therefore not enough on its own: one late or failed run and the checkpoint lapses. Install
+the timers instead of a crontab line:
+
+```bash
+sudo bash scripts/archive.sh schedule
+```
+
+On the publisher this publishes daily at 02:15 UTC and renews the checkpoint at 08:15,
+14:15 and 20:15 UTC, so three runs in a row can fail before it lapses. On a reader it
+syncs daily at 03:15 UTC. A run missed while the server was off happens when it starts
+again. Check and debug them with:
+
+```bash
+systemctl list-timers 'lab-archive-*'
+```
+
+```bash
+journalctl -u lab-archive-publish -n 50
+```
+
+`sudo bash scripts/archive.sh unschedule` removes them.
+
 ## Project status
 
 Under active development, replacing an earlier version of the same idea. The first

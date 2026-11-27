@@ -336,6 +336,7 @@ main() {
         note 'First installation of a reader: create the administrator, import the library, then put TLS in front of the web port:'
         printf '  sudo docker compose -p %s -f docker-compose.yml -f infra/compose/docker-compose.prod.yml -f infra/compose/docker-compose.reader.yml exec api lab db create-admin --email YOU@example.org --workspace rlalab\n' "$project"
         printf '  sudo bash scripts/archive.sh sync\n'
+        printf '  sudo bash scripts/archive.sh schedule\n'
         printf '  see docs/operations/reader-mirror.md\n'
     elif [[ $first_install == true ]]; then
         note 'First installation: create the administrator, then configure nginx, SELinux and the firewall for 8445:'

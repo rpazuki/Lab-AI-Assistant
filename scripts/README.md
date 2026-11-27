@@ -16,7 +16,7 @@ one is safe to run twice.
 | `status.sh` | deployed commit, container states, health, queue depth, disk |
 | `logs.sh` | live unified log view, redacted |
 | `collect-logs.sh` | redacted support bundle, with a verification pass |
-| `archive.sh` | `publish` the library to the shared archive, or `sync` a reader from it ([reader mirror](../docs/operations/reader-mirror.md)) |
+| `archive.sh` | `publish` the library to the shared archive, renew its `policy` checkpoint, or `sync` a reader from it; `schedule` installs the systemd timers that run these ([reader mirror](../docs/operations/reader-mirror.md)) |
 
 Every script reads the installation role from `.env`, `.env.server` and `.env.site`
 (last wins, as Compose reads them). On a reader they add
@@ -34,7 +34,10 @@ sudo bash scripts/deploy/update.sh --cpu-percent 70 # all containers together: a
 ./scripts/restart.sh worker-compute --recreate
 ./scripts/collect-logs.sh --since 2h --out ~/reports
 sudo bash scripts/archive.sh publish                # publisher: policy, package, publish
+sudo bash scripts/archive.sh policy                 # publisher: renew the policy checkpoint only
 sudo bash scripts/archive.sh sync                   # reader: fetch and import
+sudo bash scripts/archive.sh schedule               # either: install this role's timers
+systemctl list-timers 'lab-archive-*'               # when they run next
 ```
 
 ## Why the updater never rolls back

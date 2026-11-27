@@ -1,6 +1,6 @@
 Status: active
 Owner: operator
-Last verified: 2026-11-21
+Last verified: 2026-11-27
 Source of truth: `scripts/archive.sh`, `infra/compose/docker-compose.reader.yml`, `.env.site.example`
 
 # A reader mirror on another host
@@ -35,8 +35,8 @@ publisher (Imperial)                      bucket                    reader (mirr
   no command re-decides them yet. Until then, the mirror gets those papers' records and
   reviewed claims, but not their text.
 - **The policy checkpoint expires.** It is valid for `LAB_ARCHIVE_POLICY_VALIDITY_HOURS`
-  (24 by default). After that, a reader stops serving restricted material. Both timers
-  below therefore run at least daily.
+  (24 by default). After that, a reader stops serving restricted material. The
+  publisher therefore renews it every 6 hours ([§4](#4-timers)).
 
 ## 1. The bucket and its two identities
 
@@ -172,15 +172,38 @@ is a starting point.
 
 ## 4. Timers
 
-Publish on the publisher and sync on the reader, at least daily and in that order. For
-example, with root's crontab:
+Run this on each machine, the publisher and the reader. It installs systemd timers for
+the machine's role:
 
+```bash
+sudo bash scripts/archive.sh schedule
 ```
-# publisher
-15 2 * * *  cd /opt/lab-assistant && bash scripts/archive.sh publish >> /var/log/lab-archive.log 2>&1
-# reader
-45 2 * * *  cd /opt/lab-assistant && bash scripts/archive.sh sync >> /var/log/lab-archive.log 2>&1
+
+| Role | Runs (UTC) |
+|---|---|
+| publisher | `publish` daily at 02:15; `policy`, which renews the checkpoint only, at 08:15, 14:15 and 20:15 |
+| reader | `sync` daily at 03:15 |
+
+A daily publish alone is not enough. The checkpoint lasts 24 hours, so one late or failed
+run lets it lapse. Renewing it every 6 hours leaves three failed runs before that
+happens. Runs wait for each other, because a renewal and a publish both move the policy
+head. A timer missed while the machine was off runs when it starts again.
+
+Options given to `schedule`, such as `--workspace` or `--keep`, are used by every run. To
+change them, run `schedule` again. Use a timer instead of a crontab line. `schedule`
+warns if root's crontab still runs `archive.sh`.
+
+```bash
+systemctl list-timers 'lab-archive-*'
 ```
+
+```bash
+journalctl -u lab-archive-publish -n 50
+```
+
+To try a run now, use `sudo systemctl start lab-archive-publish.service`, or
+`lab-archive-sync.service` on the reader. `sudo bash scripts/archive.sh unschedule`
+removes the timers.
 
 Each run writes a new directory under `/srv/lab-archive` and keeps the newest three
 (`--keep`). When a run fails, the [archive fetch runbook](runbooks/archive-fetch.md)

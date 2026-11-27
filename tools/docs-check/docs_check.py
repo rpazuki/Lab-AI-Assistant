@@ -170,6 +170,9 @@ def check_readme_commands(problems: list[str]) -> None:
         "source",
         "psql",
         "make",
+        # The deployed server's own tools, for the operations section.
+        "systemctl",
+        "journalctl",
     }
     for block in re.findall(r"```bash\n(.*?)```", readme.read_text(encoding="utf-8"), re.DOTALL):
         for line in block.splitlines():
@@ -179,8 +182,16 @@ def check_readme_commands(problems: list[str]) -> None:
             if command.startswith("$"):
                 problems.append(f"README.md: drop the '$' prompt from '{command}'")
                 continue
-            head = command.split()[0]
-            if head.startswith("./"):
+            words = command.split()
+            # `sudo` changes who runs a command, not which: judge what it runs.
+            if words[0] == "sudo":
+                words = words[1:] or ["sudo"]
+            head = words[0]
+            if head == "bash" and len(words) > 1 and not words[1].startswith("-"):
+                # `bash scripts/x.sh` runs a repository script: it must be there.
+                if not (ROOT / words[1]).is_file():
+                    problems.append(f"README.md: '{words[1]}' does not exist")
+            elif head.startswith("./"):
                 # A repository-relative script must actually be there.
                 if not (ROOT / head[2:]).exists():
                     problems.append(f"README.md: '{head}' does not exist")
