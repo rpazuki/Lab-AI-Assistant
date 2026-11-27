@@ -869,6 +869,13 @@ export const approveRelease = (releaseId: string) =>
     { method: "POST", body: JSON.stringify({ evaluation_run_id: null }) },
   );
 
+/** Build an approved release's index again after its chunk-count check failed. */
+export const reindexRelease = (releaseId: string) =>
+  request<{ release_id: string; status: string; indexing_tasks: string[] }>(
+    `/corpus-releases/${releaseId}/reindex`,
+    { method: "POST" },
+  );
+
 /** Publish. `overrideReason` lets an admin publish past a required benchmark. */
 export const publishRelease = (releaseId: string, alias = "current", overrideReason?: string) =>
   request<{ alias: string; release_id: string; previous_release_id: string | null }>(

@@ -16,6 +16,7 @@ import {
   listReleaseGates,
   listReleases,
   publishRelease,
+  reindexRelease,
   releaseChanges,
   rollbackRelease,
   validateRelease,
@@ -111,6 +112,24 @@ export function ReleasesClient() {
       } else {
         setError(caught instanceof Error ? caught.message : "publish failed");
       }
+    }
+  }
+
+  /** Index an approved release again after its chunk-count check failed. */
+  async function rebuild(release: Release) {
+    setStatus("Queueing the index rebuild…");
+    try {
+      await reindexRelease(release.id);
+      setStatus(
+        `Rebuilding the index of ${release.name}@${release.semantic_version}. ` +
+          "Publish is offered once it passes its check.",
+      );
+      setError(null);
+      live.kick();
+      await live.refresh();
+    } catch (caught) {
+      setStatus(null);
+      setError(caught instanceof Error ? caught.message : "the rebuild could not be queued");
     }
   }
 
@@ -261,6 +280,14 @@ export function ReleasesClient() {
                     ))}
                   </ul>
                 ) : null}
+                {release.status === "approved" &&
+                release.gate_results.projection_membership === false ? (
+                  <p className="mt-2 text-xs text-muted">
+                    Its index was built, but the number of chunks counted did not match the
+                    number stored, so it can’t be published yet. Rebuild index keeps what is
+                    stored, adds anything missing and checks again.
+                  </p>
+                ) : null}
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button
                     variant="ghost"
@@ -282,6 +309,16 @@ export function ReleasesClient() {
                   >
                     Approve and index
                   </Button>
+                  {release.status === "approved" &&
+                  release.gate_results.projection_membership === false ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void rebuild(release)}
+                    >
+                      Rebuild index
+                    </Button>
+                  ) : null}
                   <Button
                     size="sm"
                     disabled={

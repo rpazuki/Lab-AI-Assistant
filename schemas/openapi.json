@@ -5196,6 +5196,81 @@
         "summary": "Publish Release"
       }
     },
+    "/api/v1/corpus-releases/{release_id}/reindex": {
+      "post": {
+        "description": "Build an approved release's index again after its chunk-count check failed.",
+        "operationId": "reindex_release_api_v1_corpus_releases__release_id__reindex_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "release_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Release Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reindex Release Api V1 Corpus Releases  Release Id  Reindex Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reindex Release"
+      }
+    },
     "/api/v1/corpus-releases/{release_id}/validate": {
       "post": {
         "operationId": "validate_release_api_v1_corpus_releases__release_id__validate_post",

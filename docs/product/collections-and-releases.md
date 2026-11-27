@@ -1,6 +1,6 @@
 Status: active
 Owner: data steward
-Last verified: 2026-11-26
+Last verified: 2026-11-27
 Source of truth: `packages/python/lab_assistant/application/scopes.py`, `releases.py`
 
 # Collections and releases
@@ -63,6 +63,14 @@ game.
 
 Approval and publication are separate. Approval is a scientific judgement; publication
 is an operational act with a schedule.
+
+Approval queues the index build. Publish is offered once the build has marked the
+release's embedding profiles ready and every gate passes, including the build's own
+`projection_membership` check: the chunks it stored must match the chunks it wrote.
+A build that fails outright goes to dead letters and is retried from Operations. One
+that finishes but fails that check is rebuilt with `POST /corpus-releases/{id}/reindex`
+(**Rebuild index** on the release): the rerun keeps what is stored, writes what is
+missing and checks again.
 
 ## Aliases and rollback
 

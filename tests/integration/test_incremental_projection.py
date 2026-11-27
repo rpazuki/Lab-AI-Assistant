@@ -424,3 +424,79 @@ class TestWhatAReleaseChanges:
         )
         # A full build lists no papers: every one of them is "added".
         assert changes["papers"] == {"added": [], "changed": [], "removed": []}
+
+
+class TestRebuildingAFailedIndex:
+    """An index whose chunk count failed its check is built again, not abandoned.
+
+    On the deployment one paper repeated a passage, the chunker emitted the same
+    chunk twice, and the build counted one more chunk than it stored. The release
+    was approved and indexed but could never be published.
+    """
+
+    async def test_a_repeated_passage_is_one_chunk(self) -> None:
+        from lab_assistant.domain.chunking import chunk_rendition
+
+        # Longer than half a window and repeated: each window is the same text.
+        sentence = "Lipid accumulation in Yarrowia lipolytica rose under nitrogen limit " * 30
+        text = " ".join([sentence.strip() + "."] * 4)
+        document = RenditionDocument(
+            format="pdf",
+            nodes=(RenditionNode(node_id="p-1", kind=NodeKind.PARAGRAPH, text=text),),
+        )
+
+        chunks = chunk_rendition(document, release_item_digest="item", rendition_digest="r")
+
+        assert len(chunks) == 1
+        assert len({chunk.chunk_key for chunk in chunks}) == len(chunks)
+
+    async def test_a_failed_check_is_rebuilt_and_then_publishes(self, corpus) -> None:
+        from lab_assistant.contracts.errors import StateTransitionError
+
+        harness, actor = corpus["harness"], corpus["actor"]
+        releases = ReleaseService(harness.context)
+        built = await _build(
+            harness,
+            actor,
+            ReleaseDraftRequest(
+                name="corpus",
+                semantic_version="1.0.0",
+                embedding_profile_ids=("hashing-v1",),
+                include_claims=False,
+            ),
+        )
+        release_id = built["release"].id
+        # A healthy index has nothing to rebuild.
+        with pytest.raises(StateTransitionError):
+            await releases.reindex(actor, release_id=release_id)
+
+        async with harness.context.uow_factory() as uow:
+            stored = await uow.releases.get(actor.workspace_id, release_id)
+            assert stored is not None
+            stored.gate_results = {**stored.gate_results, "projection_membership": False}
+            stored.version += 1
+            await uow.releases.update(stored)
+            await uow.commit()
+
+        release, tasks = await releases.reindex(actor, release_id=release_id)
+
+        # It reads as being indexed again, and publishing waits for the rebuild.
+        assert release.projection_ready_profiles == ()
+        assert "projection_membership" not in release.gate_results
+        assert [task.stage for task in tasks] == [StageName.INDEXING]
+        assert tasks[0].idempotency_key is not None
+        with pytest.raises(StateTransitionError):
+            await releases.reindex(actor, release_id=release_id)
+
+        result = await harness.handlers.get(StageName.INDEXING).execute(
+            StageCommand(
+                stage=StageName.INDEXING,
+                workspace_id=actor.workspace_id,
+                actor_id=actor.user_id,
+                inputs=dict(tasks[0].inputs),
+            )
+        )
+
+        assert result.quality_gates["projection_membership"] is True
+        await releases.publish(actor, release_id=release_id)
+        assert await releases.active_release_id(actor.workspace_id) == release_id

@@ -15,6 +15,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     buildExport: vi.fn(),
     draftRelease: vi.fn(),
     releaseChanges: vi.fn(),
+    reindexRelease: vi.fn(),
   };
 });
 
@@ -184,5 +185,31 @@ describe("ReleasesClient", () => {
     expect(screen.getByText(/merged into another paper/)).toBeInTheDocument();
     expect(screen.getByText(/and 2 more not listed here/)).toBeInTheDocument();
     expect(screen.queryByText(/^Changed/)).toBeNull();
+  });
+
+  it("offers a rebuild only when an index failed its chunk-count check", async () => {
+    vi.mocked(api.listReleases).mockResolvedValue({
+      items: [
+        { ...APPROVED, gate_results: { claims_reviewed: true, projection_membership: false } },
+        { ...APPROVED, id: "rel-4", semantic_version: "1.3.0" },
+      ],
+      aliases: [],
+      next_cursor: null,
+      total: 2,
+    } as never);
+    vi.mocked(api.reindexRelease).mockResolvedValue({
+      release_id: "rel-3",
+      status: "approved",
+      indexing_tasks: ["task-1"],
+    });
+    render(<ReleasesClient />);
+    const rebuild = await screen.findAllByRole("button", { name: "Rebuild index" });
+    expect(rebuild).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Publish" })[0]).toBeDisabled();
+    await userEvent.click(rebuild[0]!);
+    expect(api.reindexRelease).toHaveBeenCalledWith("rel-3");
+    expect(
+      await screen.findByText(/Rebuilding the index of corpus@1\.2\.0\. Publish is offered once it passes its check\./),
+    ).toBeInTheDocument();
   });
 });

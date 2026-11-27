@@ -2575,6 +2575,26 @@ async def approve_release(
     }
 
 
+@router.post(
+    "/corpus-releases/{release_id}/reindex",
+    status_code=202,
+    dependencies=[requires(InstallationCapability.PUBLISH_RELEASES)],
+)
+async def reindex_release(
+    release_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Build an approved release's index again after its chunk-count check failed."""
+    release, tasks = await ReleaseService(container.context).reindex(actor, release_id=release_id)
+    submitted = await container.orchestrator.submit_requests(
+        tasks, workspace_id=actor.workspace_id, actor_id=actor.user_id
+    )
+    return {
+        "release_id": str(release.id),
+        "status": release.status.value,
+        "indexing_tasks": [str(task.id) for task in submitted],
+    }
+
+
 @router.delete(
     "/corpus-releases/{release_id}",
     status_code=204,

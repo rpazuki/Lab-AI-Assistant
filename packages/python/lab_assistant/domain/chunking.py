@@ -267,4 +267,22 @@ def chunk_rendition(
 
     for top in rendition.nodes:
         visit(top, [])
-    return tuple(chunks)
+    return _distinct(chunks)
+
+
+def _distinct(chunks: Sequence[Chunk]) -> tuple[Chunk, ...]:
+    """Each chunk once, in order.
+
+    A passage repeated within one node (text a PDF prints twice, a sentence
+    repeated until it fills a window) packs into identical windows, and identical
+    windows of one node have one key. The index stores a key once, so a second
+    copy would only be counted: one such pair failed a release's membership check
+    on the deployment, 236,729 chunks written against 236,728 stored.
+    """
+    seen: set[str] = set()
+    unique: list[Chunk] = []
+    for chunk in chunks:
+        if chunk.chunk_key not in seen:
+            seen.add(chunk.chunk_key)
+            unique.append(chunk)
+    return tuple(unique)

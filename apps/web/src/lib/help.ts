@@ -981,6 +981,16 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             ],
             note: "A paper drops out when it was merged into another, is no longer included, or no longer has usable text.",
           },
+          {
+            title: "How to finish a release whose index failed its check",
+            needs: STEWARD,
+            steps: [
+              "If the release shows **projection_membership=fail**, select **Rebuild index**.",
+              "Wait while it indexes again. This takes about as long as the first indexing; what is already stored is kept.",
+              "When the check passes, select **Publish**.",
+            ],
+            note: "If indexing failed outright, the release shows no such check: retry its task under **Dead letters** on Operations instead.",
+          },
         ],
       },
       {

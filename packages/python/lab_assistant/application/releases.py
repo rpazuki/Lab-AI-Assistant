@@ -466,6 +466,52 @@ class ReleaseService:
             TaskRequest(stage=StageName.INDEXING, inputs={"release_id": str(release_id)}),
         )
 
+    async def reindex(
+        self, actor: ActorContext, *, release_id: UUID
+    ) -> tuple[CorpusRelease, tuple[TaskRequest, ...]]:
+        """Build an approved release's index again, after a build that failed its check.
+
+        The build finished but counted a different number of chunks than it
+        stored (``projection_membership`` failed), so publishing is refused. The
+        rerun keeps every chunk and vector already stored, writes what is missing
+        and checks the count again. Until it finishes the release reads as being
+        indexed, as it did after approval. A build that failed outright is in
+        dead letters and is retried there instead.
+        """
+        self._context.require_installation(InstallationCapability.PUBLISH_RELEASES)
+        actor.require(Capability.APPROVE_RELEASE)
+        context = self._context
+        async with context.uow_factory() as uow:
+            release = await uow.releases.get(actor.workspace_id, release_id)
+            if release is None:
+                raise NotFound(f"release {release_id} not found")
+            if release.status is not ReleaseState.APPROVED:
+                raise StateTransitionError(
+                    f"only an approved release is indexed again (state {release.status.value})"
+                )
+            if release.gate_results.get("projection_membership") is not False:
+                raise StateTransitionError(
+                    "its index passed its check or is being built now; there is nothing to rebuild"
+                )
+            # One rebuild per state of the release: asking twice queues one task.
+            key = f"reindex:{release.id}:{release.version}"
+            release.projection_ready_profiles = ()
+            release.gate_results = {
+                name: ok
+                for name, ok in release.gate_results.items()
+                if name not in ("projection_membership", "projection_built")
+            }
+            release.version += 1
+            await uow.releases.update(release)
+            await uow.commit()
+        return release, (
+            TaskRequest(
+                stage=StageName.INDEXING,
+                inputs={"release_id": str(release_id)},
+                idempotency_key=key,
+            ),
+        )
+
     async def publish(
         self,
         actor: ActorContext,
