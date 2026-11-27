@@ -391,6 +391,28 @@
         "title": "Effect",
         "type": "string"
       },
+      "EmailWording": {
+        "properties": {
+          "body": {
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "subject": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "body"
+        ],
+        "title": "EmailWording",
+        "type": "object"
+      },
       "EvaluationRunRequest": {
         "properties": {
           "benchmark_id": {
@@ -546,6 +568,33 @@
         ],
         "title": "IdentityState",
         "type": "string"
+      },
+      "InvitationEmailRequest": {
+        "description": "The workspace's wording of each invitation email; null keeps the product's.",
+        "properties": {
+          "link": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmailWording"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "temporary_password": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmailWording"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "InvitationEmailRequest",
+        "type": "object"
       },
       "InvitationRequest": {
         "properties": {
@@ -9276,6 +9325,144 @@
           }
         },
         "summary": "Keep Conflict Separate"
+      }
+    },
+    "/api/v1/invitation-email": {
+      "get": {
+        "description": "The workspace's invitation email wording; null for a kind using the product's.",
+        "operationId": "invitation_email_api_v1_invitation_email_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Invitation Email Api V1 Invitation Email Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Invitation Email"
+      },
+      "put": {
+        "description": "Save the wording of both kinds. Each must still contain {link} or {password}.",
+        "operationId": "set_invitation_email_api_v1_invitation_email_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Invitation Email Api V1 Invitation Email Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Invitation Email"
       }
     },
     "/api/v1/invitations": {

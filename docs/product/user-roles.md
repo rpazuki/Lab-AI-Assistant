@@ -65,7 +65,15 @@ the password. An address that already has an account is refused one: a password 
 admin knows never stands in for one the person chose.
 
 Either way the page drafts the email to send it in, from the admin's own address,
-for them to change before sending (`apps/web/src/lib/invitationEmail.ts`).
+for them to change before sending. The draft starts from the workspace's wording,
+which an admin edits under **Invitation email** at the bottom of the Members page:
+one template per kind, with placeholders (`{email}`, `{role}`, `{workspace}`,
+`{inviter}`, `{expires}`, and `{link}`, or `{password}` and `{sign_in_url}`). It is
+saved as a `workspace_profile` config version, `invitation-email`
+(`GET`/`PUT /invitation-email`), so each save keeps who made it and when. A kind
+saved as `null` uses the product's wording in `apps/web/src/lib/invitationEmail.ts`.
+The API refuses a link template without `{link}` and a temporary password template
+without `{password}`: an email that delivers nothing is never the one drafted.
 
 Suspending a member bumps their `auth_epoch`, which invalidates every issued session
 immediately — a revocation that waits for a token to expire is not a revocation — and

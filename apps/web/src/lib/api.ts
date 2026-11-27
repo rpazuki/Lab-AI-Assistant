@@ -19,6 +19,7 @@ import type {
   Benchmark,
   BulkRelevanceResult,
   CreatedInvitation,
+  InvitationEmailSetting,
   Candidate,
   CandidateFacets,
   CandidateFilters,
@@ -995,6 +996,16 @@ export const createInvitation = (payload: {
   temporary_password?: boolean;
 }) =>
   request<CreatedInvitation>("/invitations", { method: "POST", body: JSON.stringify(payload) });
+
+/** The workspace's wording of the invitation emails; null for a kind using the product's. */
+export const getInvitationEmail = () => request<InvitationEmailSetting>("/invitation-email");
+
+/** Save the wording of both kinds; null for a kind restores the product's. */
+export const saveInvitationEmail = (templates: InvitationEmailSetting["templates"]) =>
+  request<InvitationEmailSetting>("/invitation-email", {
+    method: "PUT",
+    body: JSON.stringify(templates),
+  });
 
 /** A new temporary password for the same person and role; the earlier one stops working. */
 export const regenerateTemporaryPassword = (invitationId: string) =>

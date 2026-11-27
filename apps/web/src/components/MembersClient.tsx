@@ -20,6 +20,7 @@ import {
   createRole,
   deleteInvitation,
   deleteRole,
+  getInvitationEmail,
   getMe,
   getMemberSession,
   invitationLink,
@@ -30,17 +31,30 @@ import {
   regenerateTemporaryPassword,
   revokeInvitation,
   revokeMemberSessions,
+  saveInvitationEmail,
   updateMember,
   updateRole,
 } from "@/lib/api";
 import { appPath } from "@/lib/config";
-import { invitationEmail, mailtoLink } from "@/lib/invitationEmail";
+import {
+  DEFAULT_TEMPLATES,
+  type EmailTemplate,
+  PLACEHOLDERS,
+  REQUIRED_PLACEHOLDER,
+  blocksSaving,
+  fillTemplate,
+  invitationEmail,
+  mailtoLink,
+  templateProblems,
+} from "@/lib/invitationEmail";
 import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
 import type {
   ChatMessage,
   CreatedInvitation,
   Invitation,
+  InvitationEmailSetting,
+  InvitationKind,
   Me,
   Member,
   MemberSession,
@@ -145,6 +159,11 @@ export function MembersClient() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [me, setMe] = useState<Me | null>(null);
+  /** Undefined until loaded; null when it could not be, and drafts use the product's wording. */
+  const [emailSetting, setEmailSetting] = useState<InvitationEmailSetting | null | undefined>(
+    undefined,
+  );
+  const [emailKind, setEmailKind] = useState<InvitationKind>("link");
   const [defaultLimit, setDefaultLimit] = useState<number | null>(null);
   const [oversight, setOversight] = useState(false);
   const [reading, setReading] = useState<Member | null>(null);
@@ -165,11 +184,13 @@ export function MembersClient() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextMembers, nextInvitations, nextRoles, nextMe] = await Promise.all([
+      const [nextMembers, nextInvitations, nextRoles, nextMe, nextEmail] = await Promise.all([
         listMembers(),
         listInvitations(),
         listRoles(),
         getMe(),
+        // The page works without it: drafts then start from the product's wording.
+        getInvitationEmail().catch(() => null),
       ]);
       setMembers(nextMembers.items);
       setDefaultLimit(nextMembers.token_limit_default);
@@ -177,6 +198,7 @@ export function MembersClient() {
       setRoles(nextRoles.items);
       setInvitations(nextInvitations);
       setMe(nextMe);
+      setEmailSetting(nextEmail);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "members could not be loaded");
@@ -275,6 +297,7 @@ export function MembersClient() {
         role={labelFor(roles, made.invitation.role)}
         workspace={me?.workspace.name ?? "the workspace"}
         inviter={me?.full_name ?? me?.email ?? ""}
+        templates={emailSetting?.templates ?? null}
         onDone={() => setMade(null)}
       />
     ) : null;
@@ -644,6 +667,27 @@ export function MembersClient() {
         </form>
         {made?.from === "invite" ? <div className="mt-4">{draft("invite")}</div> : null}
       </CollapsiblePanel>
+
+      {emailSetting === undefined ? null : (
+        <InvitationEmailPanel
+          // A new editor whenever the saved wording changes, and only then: the page
+          // reloads after every change made on it, and a reload must not throw away
+          // wording being written. Copying it in with an effect instead raced the
+          // first keystroke.
+          key={JSON.stringify([emailSetting?.templates ?? null, emailSetting?.set_at ?? null])}
+          setting={emailSetting}
+          kind={emailKind}
+          onKind={setEmailKind}
+          members={members}
+          me={me}
+          onSave={async (templates) => {
+            await act(
+              async () => setEmailSetting(await saveInvitationEmail(templates)),
+              "The invitation email is saved. New invitations are drafted in this wording.",
+            );
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -657,12 +701,15 @@ function InvitationDraft({
   role,
   workspace,
   inviter,
+  templates,
   onDone,
 }: {
   invitation: CreatedInvitation;
   role: string;
   workspace: string;
   inviter: string;
+  /** The workspace's saved wording; the product's where none is saved. */
+  templates: InvitationEmailSetting["templates"] | null;
   onDone: () => void;
 }) {
   const temporary = invitation.kind === "temporary_password";
@@ -673,16 +720,19 @@ function InvitationDraft({
 
   // Filled in once, on the client: the links need this page's address.
   useEffect(() => {
-    const drafted = invitationEmail({
-      kind: invitation.kind,
-      email: invitation.email,
-      role,
-      workspace,
-      inviter,
-      secret,
-      signInUrl: `${window.location.origin}${appPath("/login")}`,
-      expiresAt: invitation.expires_at,
-    });
+    const drafted = invitationEmail(
+      {
+        kind: invitation.kind,
+        email: invitation.email,
+        role,
+        workspace,
+        inviter,
+        secret,
+        signInUrl: `${window.location.origin}${appPath("/login")}`,
+        expiresAt: invitation.expires_at,
+      },
+      templates,
+    );
     setSubject(drafted.subject);
     setBody(drafted.body);
     // Drafted once: later edits are the admin's, and a reload must not undo them.
@@ -753,6 +803,205 @@ function InvitationDraft({
         </div>
       </div>
     </div>
+  );
+}
+
+const KIND_LABEL: Record<InvitationKind, string> = {
+  link: "Link",
+  temporary_password: "Temporary password",
+};
+
+const same = (left: EmailTemplate, right: EmailTemplate) =>
+  left.subject === right.subject && left.body === right.body;
+
+/**
+ * The workspace's wording of the email an invitation is sent in.
+ *
+ * One version for invitations by link and one for invitations by temporary
+ * password. Each starts as the product's wording; saving changes it for every
+ * invitation drafted from then on, and **Restore the product's wording** goes
+ * back. A version identical to the product's is saved as "the product's", so it
+ * follows any later improvement to it.
+ */
+function InvitationEmailPanel({
+  setting,
+  kind,
+  onKind: setKind,
+  members,
+  me,
+  onSave,
+}: {
+  setting: InvitationEmailSetting | null;
+  kind: InvitationKind;
+  onKind: (kind: InvitationKind) => void;
+  members: Member[];
+  me: Me | null;
+  onSave: (templates: InvitationEmailSetting["templates"]) => Promise<void>;
+}) {
+  const saved = (which: InvitationKind): EmailTemplate =>
+    setting?.templates[which] ?? DEFAULT_TEMPLATES[which];
+  const [drafts, setDrafts] = useState<Record<InvitationKind, EmailTemplate>>(() => ({
+    link: saved("link"),
+    temporary_password: saved("temporary_password"),
+  }));
+  const [busy, setBusy] = useState(false);
+
+
+  const draft = drafts[kind];
+  const changed = (which: InvitationKind) => !same(drafts[which], saved(which));
+  const anyChanged = changed("link") || changed("temporary_password");
+  const custom = (which: InvitationKind) => setting?.templates[which] != null;
+  const problems = templateProblems(kind, draft);
+  const blocked = blocksSaving("link", drafts.link) || blocksSaving("temporary_password", drafts.temporary_password);
+  const setDraft = (update: Partial<EmailTemplate>) =>
+    setDrafts((current) => ({ ...current, [kind]: { ...current[kind], ...update } }));
+
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const preview = fillTemplate(draft, {
+    kind,
+    email: "new.person@imperial.ac.uk",
+    role: "researcher",
+    workspace: me?.workspace.name ?? "your workspace",
+    inviter: me?.full_name ?? me?.email ?? "",
+    secret: kind === "link" ? `${origin}${appPath("/invite")}#token=…` : "h7kq-3mzt-x9pe-4wbn",
+    signInUrl: `${origin}${appPath("/login")}`,
+    expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
+  });
+
+  const savedBy = setting?.set_by
+    ? (members.find((member) => member.user_id === setting.set_by)?.full_name ??
+      members.find((member) => member.user_id === setting.set_by)?.email ??
+      "an admin")
+    : null;
+
+  async function save() {
+    setBusy(true);
+    await onSave({
+      link: same(drafts.link, DEFAULT_TEMPLATES.link) ? null : drafts.link,
+      temporary_password: same(drafts.temporary_password, DEFAULT_TEMPLATES.temporary_password)
+        ? null
+        : drafts.temporary_password,
+    });
+    setBusy(false);
+  }
+
+  return (
+    <CollapsiblePanel
+      title="Invitation email"
+      storageKey="members.email"
+      count={
+        <span className="text-sm text-muted">
+          {custom("link") || custom("temporary_password")
+            ? "this workspace's wording"
+            : "the product's wording"}
+        </span>
+      }
+    >
+      <p className="max-w-3xl text-sm text-muted">
+        The email drafted when you create an invitation or a new temporary password. Words in
+        braces, such as <code>{"{link}"}</code>, are filled in for each person. You can still
+        change each draft before sending it; what you save here is where every draft starts.
+      </p>
+
+      <div role="group" aria-label="Which email" className="mt-4 flex flex-wrap gap-2">
+        {(["link", "temporary_password"] as const).map((which) => (
+          <Button
+            key={which}
+            type="button"
+            size="sm"
+            variant={kind === which ? "primary" : "ghost"}
+            aria-pressed={kind === which}
+            onClick={() => setKind(which)}
+          >
+            {KIND_LABEL[which]}
+            {changed(which) ? " (unsaved)" : custom(which) ? "" : " (product's wording)"}
+          </Button>
+        ))}
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_18rem]">
+        <div className="space-y-3">
+          <Field label="Subject template">
+            <Input value={draft.subject} onChange={(event) => setDraft({ subject: event.target.value })} />
+          </Field>
+          <Field label="Message template">
+            <textarea
+              rows={18}
+              value={draft.body}
+              onChange={(event) => setDraft({ body: event.target.value })}
+              className="w-full rounded-control border border-border-strong bg-surface px-3 py-2 font-mono text-xs text-ink shadow-control"
+            />
+          </Field>
+          {problems.length > 0 ? (
+            <Alert tone={blocksSaving(kind, draft) ? "danger" : "warning"} role="alert">
+              <ul className="list-disc pl-4">
+                {problems.map((problem) => (
+                  <li key={problem}>{problem}</li>
+                ))}
+              </ul>
+            </Alert>
+          ) : null}
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-heading">Placeholders</p>
+          <dl className="mt-2 space-y-1.5 text-xs">
+            {PLACEHOLDERS.filter((item) => !item.only || item.only === kind).map((item) => (
+              <div key={item.name}>
+                <dt className="inline font-mono text-ink">{item.name}</dt>{" "}
+                <dd className="inline text-muted">
+                  {item.meaning}
+                  {item.name === REQUIRED_PLACEHOLDER[kind] ? " (required)" : ""}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      </div>
+
+      <details className="mt-4 rounded-control border border-border">
+        <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-heading">
+          Preview, with example values
+        </summary>
+        <div className="border-t border-border px-3 py-2">
+          <p className="text-sm">
+            <span className="text-muted">Subject: </span>
+            <span data-testid="email-preview-subject">{preview.subject}</span>
+          </p>
+          <pre data-testid="email-preview-body" className="mt-2 whitespace-pre-wrap font-mono text-xs text-ink">
+            {preview.body}
+          </pre>
+        </div>
+      </details>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <Button type="button" disabled={busy || !anyChanged || blocked} onClick={() => void save()}>
+          Save wording
+        </Button>
+        {changed(kind) ? (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setDrafts((current) => ({ ...current, [kind]: saved(kind) }))}
+          >
+            Discard changes
+          </Button>
+        ) : null}
+        {!same(draft, DEFAULT_TEMPLATES[kind]) ? (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setDrafts((current) => ({ ...current, [kind]: DEFAULT_TEMPLATES[kind] }))}
+          >
+            Restore the product&apos;s wording
+          </Button>
+        ) : null}
+        <span className="ml-auto text-xs text-muted">
+          {setting?.set_at
+            ? `Last saved ${when(setting.set_at)}${savedBy ? ` by ${savedBy}` : ""}.`
+            : "Never changed here."}
+        </span>
+      </div>
+    </CollapsiblePanel>
   );
 }
 

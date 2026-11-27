@@ -2058,3 +2058,53 @@ class TestTemporaryPasswords:
             f"/api/v1/invitations/{link['id']}/regenerate", headers=_auth(admin)
         )
         assert refused.status_code == 409
+
+
+class TestInvitationEmail:
+    """The workspace's wording of the email an invitation is sent in."""
+
+    async def test_it_starts_as_the_products_wording_and_is_saved_per_kind(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        first = (await client.get("/api/v1/invitation-email", headers=_auth(admin))).json()
+        assert first["templates"] == {"link": None, "temporary_password": None}
+        assert first["set_at"] is None
+
+        wording = {"subject": "Join {workspace}", "body": "Hello,\r\n\r\nOpen {link}\r\n"}
+        saved = await client.put(
+            "/api/v1/invitation-email", json={"link": wording}, headers=_auth(admin)
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["templates"] == {
+            "link": {"subject": "Join {workspace}", "body": "Hello,\n\nOpen {link}"},
+            "temporary_password": None,
+        }
+        assert saved.json()["set_by"] == str(api["steward"].id)
+
+        # Saving null restores the product's wording for that kind.
+        restored = await client.put("/api/v1/invitation-email", json={}, headers=_auth(admin))
+        assert restored.json()["templates"]["link"] is None
+
+    async def test_an_email_without_what_it_sends_is_refused(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        refused = await client.put(
+            "/api/v1/invitation-email",
+            json={"temporary_password": {"subject": "Welcome", "body": "Sign in at {link}"}},
+            headers=_auth(admin),
+        )
+        assert refused.status_code == 422
+        assert "{password}" in refused.json()["detail"]
+        assert (await client.get("/api/v1/invitation-email", headers=_auth(admin))).json()[
+            "templates"
+        ]["temporary_password"] is None
+
+    async def test_only_those_who_manage_members_see_or_change_it(self, api) -> None:
+        client = api["client"]
+        researcher = await _login(client, "researcher@lab.invalid")
+        assert (
+            await client.get("/api/v1/invitation-email", headers=_auth(researcher))
+        ).status_code == 403
+        assert (
+            await client.put("/api/v1/invitation-email", json={}, headers=_auth(researcher))
+        ).status_code == 403

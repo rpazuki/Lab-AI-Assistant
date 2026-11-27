@@ -19,6 +19,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     deleteRole: vi.fn(async () => ({ rules_removed: 0 })),
     createInvitation: vi.fn(),
     regenerateTemporaryPassword: vi.fn(),
+    getInvitationEmail: vi.fn(),
+    saveInvitationEmail: vi.fn(),
     revokeInvitation: vi.fn(async () => ({ id: "i1", state: "revoked" })),
     updateMember: vi.fn(),
     revokeMemberSessions: vi.fn(async () => ({ user_id: "u2" })),
@@ -146,6 +148,12 @@ const OPEN: Invitation = {
   invited_by: "u1",
 };
 
+const PRODUCT_WORDING = {
+  templates: { link: null, temporary_password: null },
+  set_at: null,
+  set_by: null,
+};
+
 describe("MembersClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -158,6 +166,7 @@ describe("MembersClient", () => {
     );
     vi.mocked(api.listInvitations).mockResolvedValue([OPEN]);
     vi.mocked(api.listRoles).mockResolvedValue(roleList());
+    vi.mocked(api.getInvitationEmail).mockResolvedValue(PRODUCT_WORDING);
   });
 
   it("lists members and keeps an admin's own row out of reach", async () => {
@@ -315,7 +324,7 @@ describe("MembersClient", () => {
     await userEvent.click(screen.getByRole("button", { name: "Create link" }));
 
     const message = (await screen.findByRole("textbox", { name: "Message" })) as HTMLTextAreaElement;
-    expect(message.value).toContain("join RLA Lab on the Lab AI Assistant as a researcher");
+    expect(message.value).toContain("join RLA Lab on the Lab AI Assistant, with the role researcher");
     expect(message.value).toMatch(/invite#token=a-token-long-enough-to-pass/);
     expect(message.value).toContain("Lab Admin");
     expect(screen.getByRole("textbox", { name: "Subject" })).toHaveValue(
@@ -389,15 +398,21 @@ describe("MembersClient", () => {
       "p2wx-8nfr-k4ty-6dmc",
     );
     expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toContain(
-      "as a reviewer",
+      "with the role reviewer",
     );
   });
 
-  it("puts the workspace first, then members, roles, invitations and the invite form", async () => {
+  it("puts the workspace first, then members, roles, invitations, the invite form and the email", async () => {
     render(<MembersClient />);
     await screen.findByText("(you)");
     const headings = screen.getAllByRole("heading", { level: 2 }).map((item) => item.textContent);
-    expect(headings).toEqual(["Members", "Roles", "Invitations", "Invite someone"]);
+    expect(headings).toEqual([
+      "Members",
+      "Roles",
+      "Invitations",
+      "Invite someone",
+      "Invitation email",
+    ]);
     for (const title of headings) {
       expect(screen.getByRole("button", { name: `Hide ${title}` })).toBeInTheDocument();
     }
@@ -423,6 +438,77 @@ describe("MembersClient", () => {
     expect(screen.queryByRole("columnheader", { name: /^Usage/ })).toBeInTheDocument();
     const members = screen.getAllByRole("table")[0] as HTMLElement;
     expect(within(members).getAllByRole("columnheader")).toHaveLength(5);
+  });
+
+  it("drafts an invitation in the wording the workspace saved", async () => {
+    vi.mocked(api.getInvitationEmail).mockResolvedValue({
+      templates: {
+        link: { subject: "Welcome to {workspace}", body: "Dear colleague,\n\n{link}\n\n{inviter}" },
+        temporary_password: null,
+      },
+      set_at: "2026-11-27T10:00:00Z",
+      set_by: "u1",
+    });
+    vi.mocked(api.createInvitation).mockResolvedValue({
+      id: "i2",
+      email: "late@lab.invalid",
+      role: "researcher",
+      kind: "link",
+      expires_at: "2026-11-26T10:00:00Z",
+      token: "a-token-long-enough-to-pass",
+    });
+    render(<MembersClient />);
+    await screen.findByText("(you)");
+    expect(screen.getByText(/Last saved .* by Lab Admin\./)).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("textbox", { name: "Email" }), "late@lab.invalid");
+    await userEvent.click(screen.getByRole("button", { name: "Create link" }));
+
+    expect(await screen.findByRole("textbox", { name: "Subject" })).toHaveValue("Welcome to RLA Lab");
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    expect(message.value).toMatch(/^Dear colleague,\n\nhttp.*invite#token=a-token-long-enough-to-pass\n\nLab Admin$/);
+  });
+
+  it("saves new wording for one kind and keeps the product's for the other", async () => {
+    vi.mocked(api.saveInvitationEmail).mockImplementation(async (templates) => ({
+      templates,
+      set_at: "2026-11-27T12:00:00Z",
+      set_by: "u1",
+    }));
+    render(<MembersClient />);
+    const message = (await screen.findByRole("textbox", {
+      name: "Message template",
+    })) as HTMLTextAreaElement;
+    expect(message.value).toContain("{link}");
+    const save = screen.getByRole("button", { name: "Save wording" });
+    expect(save).toBeDisabled();
+
+    await userEvent.clear(message);
+    await userEvent.type(message, "Hi! Open {{link} soon.");
+    expect(screen.getByTestId("email-preview-body")).toHaveTextContent(/Hi! Open http.*invite#token=… soon\./);
+    await userEvent.click(save);
+
+    expect(api.saveInvitationEmail).toHaveBeenCalledWith({
+      link: { subject: "Your invitation to {workspace} on the Lab AI Assistant", body: "Hi! Open {link} soon." },
+      temporary_password: null,
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("The invitation email is saved.");
+  });
+
+  it("will not save an email without what it sends, and warns of unknown placeholders", async () => {
+    render(<MembersClient />);
+    await userEvent.click(await screen.findByRole("button", { name: /^Temporary password/ }));
+    const message = screen.getByRole("textbox", { name: "Message template" });
+    await userEvent.clear(message);
+    await userEvent.type(message, "Sign in at {{sign_in_url} as {{name}.");
+
+    const problems = screen.getByRole("alert");
+    expect(problems).toHaveTextContent("must contain {password}");
+    expect(problems).toHaveTextContent("{name} is not a placeholder");
+    expect(screen.getByRole("button", { name: "Save wording" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Restore the product's wording" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save wording" })).toBeDisabled();
   });
 });
 

@@ -1191,6 +1191,17 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             ],
             note: "Offered until they have used one; after that they have a password of their own.",
           },
+          {
+            title: "How to change the invitation email",
+            needs: "Admins.",
+            steps: [
+              "Open **Invitation email** at the bottom of **Members**.",
+              "Choose **Link** or **Temporary password**: each kind of invitation has its own email.",
+              "Edit the **Subject template** and **Message template**. Words in braces, such as {link}, are filled in for each person; the list beside the message says what each one becomes.",
+              "Open **Preview, with example values** to check it, then select **Save wording**.",
+            ],
+            note: "The link email must contain {link} and the temporary password email {password}. **Restore the product's wording** goes back to the original. You can still change each email before sending it.",
+          },
         ],
       },
       {

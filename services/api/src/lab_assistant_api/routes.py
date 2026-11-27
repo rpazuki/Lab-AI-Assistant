@@ -40,6 +40,7 @@ from lab_assistant.application.discovery import DiscoveryService
 from lab_assistant.application.export import ExportService
 from lab_assistant.application.fetching import FetchQueue
 from lab_assistant.application.identity_conflicts import IdentityConflictService
+from lab_assistant.application.invitation_email import InvitationEmailService
 from lab_assistant.application.parse_quality import ParseQualityLimits, ParseQualityService
 from lab_assistant.application.reconciliation import IdentityService
 from lab_assistant.application.refresh import RefreshService
@@ -586,6 +587,43 @@ def _created_invitation(invitation: Invitation, token: str) -> dict[str, Any]:
         # A link's token, or the temporary password as it is to be read and typed.
         "token": token,
     }
+
+
+class EmailWording(BaseModel):
+    subject: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=5000)
+
+
+class InvitationEmailRequest(BaseModel):
+    """The workspace's wording of each invitation email; null keeps the product's."""
+
+    link: EmailWording | None = None
+    temporary_password: EmailWording | None = None
+
+
+@router.get("/invitation-email")
+async def invitation_email(actor: CurrentActor, container: Container) -> dict[str, Any]:
+    """The workspace's invitation email wording; null for a kind using the product's."""
+    return await InvitationEmailService(container.context).view(actor)
+
+
+@router.put(
+    "/invitation-email",
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def set_invitation_email(
+    payload: InvitationEmailRequest, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """Save the wording of both kinds. Each must still contain {link} or {password}."""
+    return await InvitationEmailService(container.context).save(
+        actor,
+        {
+            "link": payload.link.model_dump() if payload.link else None,
+            "temporary_password": (
+                payload.temporary_password.model_dump() if payload.temporary_password else None
+            ),
+        },
+    )
 
 
 @router.post(

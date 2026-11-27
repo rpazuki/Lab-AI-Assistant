@@ -512,6 +512,13 @@ export interface Invitation {
 
 export type InvitationKind = "link" | "temporary_password";
 
+/** The workspace's wording of each invitation email; null where it uses the product's. */
+export interface InvitationEmailSetting {
+  templates: Record<InvitationKind, { subject: string; body: string } | null>;
+  set_at: string | null;
+  set_by: string | null;
+}
+
 /** An invitation as created: its token is a link's, or the temporary password. Shown once. */
 export interface CreatedInvitation {
   id: string;
