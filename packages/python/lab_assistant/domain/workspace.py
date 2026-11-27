@@ -17,6 +17,7 @@ __all__ = [
     "Capability",
     "Group",
     "Invitation",
+    "InvitationKind",
     "Membership",
     "MembershipStatus",
     "Role",
@@ -343,6 +344,20 @@ class Group(BaseModel):
         return user_id in self.member_user_ids
 
 
+class InvitationKind(StrEnum):
+    """How an invitation reaches the person, and how they redeem it.
+
+    ``link``: a link they open, choosing a password on the page it leads to.
+    ``temporary_password``: a short password the admin sends them, used once on
+    the sign-in page, which then asks for a password of their own. Either way the
+    secret is the invitation's token, so it expires, is used once, and is replaced
+    by inviting the address again, exactly as a link is.
+    """
+
+    LINK = "link"
+    TEMPORARY_PASSWORD = "temporary_password"
+
+
 class Invitation(BaseModel):
     model_config = {"validate_assignment": True}
 
@@ -359,6 +374,7 @@ class Invitation(BaseModel):
     expires_at: datetime
     accepted_at: datetime | None = None
     revoked_at: datetime | None = None
+    kind: InvitationKind = InvitationKind.LINK
 
     def is_open(self, now: datetime) -> bool:
         return self.accepted_at is None and self.revoked_at is None and now < self.expires_at

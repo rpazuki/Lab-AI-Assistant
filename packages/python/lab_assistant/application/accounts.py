@@ -43,6 +43,7 @@ from lab_assistant.domain.workspace import (
     Capability,
     Group,
     Invitation,
+    InvitationKind,
     Membership,
     MembershipStatus,
     Role,
@@ -59,10 +60,12 @@ __all__ = [
     "InvitationState",
     "LoginRateLimited",
     "MemberView",
+    "PasswordChangeRequired",
     "PasswordHasher",
     "PasswordVerification",
     "RoleChoice",
     "invitation_state",
+    "normalise_temporary_password",
 ]
 
 #: Roles a person may hold. A service account is provisioned, never invited or
@@ -151,6 +154,38 @@ class LoginRateLimited(LabAssistantError):
 
     error_class = ErrorClass.RATE_LIMITED
     http_status = 429
+
+
+class PasswordChangeRequired(LabAssistantError):
+    """A temporary password was right: the person now chooses their own.
+
+    Not a failure in the audit sense, and not a session either: the sign-in page
+    reads ``context.reason`` and asks for a new password, which redeems the
+    invitation the temporary password belongs to.
+    """
+
+    error_class = ErrorClass.AUTHENTICATION_REQUIRED
+    http_status = 401
+
+
+#: Letters and digits that cannot be mistaken for one another when read off an
+#: email and typed: no 0/o, 1/l/i.
+_TEMPORARY_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+#: 16 characters of 31: about 79 bits, in four groups of four.
+_TEMPORARY_LENGTH = 16
+
+
+def _new_temporary_password() -> str:
+    """A password to read and type once, such as ``h7kq-3mzt-x9pe-4wbn``."""
+    import secrets
+
+    raw = "".join(secrets.choice(_TEMPORARY_ALPHABET) for _ in range(_TEMPORARY_LENGTH))
+    return "-".join(raw[index : index + 4] for index in range(0, _TEMPORARY_LENGTH, 4))
+
+
+def normalise_temporary_password(text: str) -> str:
+    """The password as stored: lower case, without the dashes or spaces it was read with."""
+    return "".join(char for char in text.lower() if char.isalnum())
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +339,13 @@ class AccountService:
                 if user is not None
                 else PasswordVerification(ok=False)
             )
+            temporary = (
+                await self._temporary_password_answer(uow, normalised, password)
+                if user is None
+                else None
+            )
+            if isinstance(temporary, PasswordChangeRequired):
+                raise temporary
             if user is None or not verification.ok or not user.is_active:
                 await uow.audit.append(
                     context.audit.build(
@@ -314,11 +356,19 @@ class AccountService:
                         subject_type="user",
                         subject_id=user.id if user else None,
                         previous_hash=await uow.audit.latest_hash(None),
-                        reason_code="invalid_credentials" if user else "unknown_user",
+                        reason_code=(
+                            str(temporary.context.get("reason"))
+                            if temporary is not None
+                            else "invalid_credentials"
+                            if user
+                            else "unknown_user"
+                        ),
                         metadata={"email_digest": sha256_text(normalised)[:16]},
                     )
                 )
                 await uow.commit()
+                if temporary is not None:
+                    raise temporary
                 # The same message for an unknown account and a wrong password. The
                 # audit row records which it was; the caller learns neither.
                 raise AuthenticationFailed("email or password is incorrect")
@@ -345,6 +395,79 @@ class AccountService:
         # mistyped their password twice is not locked out of their own account.
         await self._reset_login_budget(login_budget_key(normalised))
         return user
+
+    async def _temporary_password_answer(
+        self, uow: Any, normalised_email: str, password: str
+    ) -> LabAssistantError | None:
+        """What to say to a temporary password: choose your own, or ask for a new one.
+
+        Only when both the address and the password match an invitation sent by
+        temporary password, so the answer tells nobody anything they did not
+        already know. ``None`` falls through to the ordinary failure.
+        """
+        typed = normalise_temporary_password(password)
+        if len(typed) != _TEMPORARY_LENGTH:
+            return None
+        invitation = await uow.workspaces.get_invitation_by_digest(sha256_text(typed))
+        if (
+            invitation is None
+            or invitation.kind is not InvitationKind.TEMPORARY_PASSWORD
+            or invitation.email_normalized != normalised_email
+        ):
+            return None
+        state = invitation_state(invitation, self._context.now())
+        if state is InvitationState.OPEN:
+            return PasswordChangeRequired(
+                "choose a password of your own to finish signing in",
+                context={"reason": "password_change_required"},
+            )
+        if state is InvitationState.EXPIRED:
+            return AuthenticationFailed(
+                "this temporary password has expired; ask an administrator for a new one",
+                context={"reason": "temporary_password_expired"},
+            )
+        if state is InvitationState.REVOKED:
+            return AuthenticationFailed(
+                "this temporary password was replaced or withdrawn; use the newest one you "
+                "were sent, or ask an administrator for a new one",
+                context={"reason": "temporary_password_revoked"},
+            )
+        # Accepted: the person has their own password now, and the ordinary
+        # failure says exactly that.
+        return None
+
+    async def set_first_password(
+        self,
+        *,
+        email: str,
+        temporary_password: str,
+        password: str,
+        full_name: str | None = None,
+        client_signal: str | None = None,
+    ) -> tuple[User, Membership]:
+        """Exchange a temporary password for one of the person's own, and join.
+
+        The temporary password is the invitation's token, so this redeems the
+        invitation: it cannot be used again, and the account is created with the
+        password chosen here. The new password must not be the temporary one.
+        """
+        normalised = normalise_email(email)
+        typed = normalise_temporary_password(temporary_password)
+        await self._throttle_login(normalised, client_signal=client_signal)
+        async with self._context.uow_factory() as uow:
+            invitation = await uow.workspaces.get_invitation_by_digest(sha256_text(typed))
+        if (
+            invitation is None
+            or invitation.kind is not InvitationKind.TEMPORARY_PASSWORD
+            or invitation.email_normalized != normalised
+            or not invitation.is_open(self._context.now())
+        ):
+            raise PolicyDenied("this temporary password is not valid")
+        if normalise_temporary_password(password) == typed:
+            raise ValidationFailure("choose a password other than the temporary one")
+        return await self.accept_invitation(
+            token=typed, password=password, full_name=full_name, client_signal=client_signal
+        )
 
     async def _throttle_login(self, normalised_email: str, *, client_signal: str | None) -> None:
         limiter = RateLimiter(self._context)
@@ -521,7 +644,13 @@ class AccountService:
         return membership
 
     async def invite(
-        self, actor: ActorContext, *, email: str, role: str | Role, ttl_hours: int = 168
+        self,
+        actor: ActorContext,
+        *,
+        email: str,
+        role: str | Role,
+        ttl_hours: int = 168,
+        kind: InvitationKind = InvitationKind.LINK,
     ) -> tuple[Invitation, str]:
         """Create an invitation. The token is returned once and never stored.
 
@@ -529,6 +658,11 @@ class AccountService:
         is replaced rather than left valid beside its successor. An address that is
         already an active member is refused: changing their role is a membership
         change, not a second invitation.
+
+        With ``kind`` ``temporary_password`` the token is a short password for the
+        admin to send, used once on the sign-in page. An address that already has
+        an account is refused it: a password the admin knows must never stand in
+        for one the person chose, so they are sent a link and join with their own.
         """
         actor.require(Capability.MANAGE_MEMBERS)
         if not 1 <= ttl_hours <= 24 * 30:
@@ -537,7 +671,9 @@ class AccountService:
 
         context = self._context
         normalised = normalise_email(email)
-        token = secrets.token_urlsafe(32)
+        temporary = kind is InvitationKind.TEMPORARY_PASSWORD
+        token = _new_temporary_password() if temporary else secrets.token_urlsafe(32)
+        stored_token = normalise_temporary_password(token) if temporary else token
         now = context.now()
         async with context.uow_factory() as uow:
             # Resolving the role needs the workspace's own roles, so it happens
@@ -550,12 +686,18 @@ class AccountService:
                 email_normalized=normalised,
                 role=base,
                 role_name=role_name,
-                token_digest=sha256_text(token),
+                token_digest=sha256_text(stored_token),
                 invited_by=actor.user_id,
                 created_at=now,
                 expires_at=now + timedelta(hours=ttl_hours),
+                kind=kind,
             )
             existing_user = await uow.users.get_by_email(normalised)
+            if existing_user is not None and temporary:
+                raise ValidationFailure(
+                    "this address already has an account; send an invitation link instead, "
+                    "which they accept with the password they already have"
+                )
             if existing_user is not None:
                 membership = await uow.workspaces.get_membership(
                     actor.workspace_id, existing_user.id
@@ -585,11 +727,50 @@ class AccountService:
                         "email_digest": sha256_text(invitation.email_normalized)[:16],
                         "role": role_name or base.value,
                         "superseded": superseded,
+                        "kind": kind.value,
                     },
                 )
             )
             await uow.commit()
         return invitation, token
+
+    async def regenerate_temporary_password(
+        self, actor: ActorContext, *, invitation_id: UUID
+    ) -> tuple[Invitation, str]:
+        """A new temporary password for the same person, role and length of time.
+
+        For someone whose password expired before they used it, or who lost it:
+        the earlier one stops working if it still did, and the new one lasts as
+        long as the first was given.
+        """
+        actor.require(Capability.MANAGE_MEMBERS)
+        context = self._context
+        async with context.uow_factory() as uow:
+            earlier = next(
+                (
+                    item
+                    for item in await uow.workspaces.list_invitations(actor.workspace_id)
+                    if item.id == invitation_id
+                ),
+                None,
+            )
+        if earlier is None:
+            raise NotFound(f"invitation {invitation_id} not found")
+        if earlier.kind is not InvitationKind.TEMPORARY_PASSWORD:
+            raise StateTransitionError("only an invitation by temporary password has one to renew")
+        if earlier.accepted_at is not None:
+            raise StateTransitionError(
+                "this temporary password was already used; the person has their own now",
+                context={"state": InvitationState.ACCEPTED.value},
+            )
+        hours = (earlier.expires_at - earlier.created_at).total_seconds() / 3600
+        return await self.invite(
+            actor,
+            email=earlier.email_normalized,
+            role=earlier.role_name or earlier.role,
+            ttl_hours=min(24 * 30, max(1, round(hours))),
+            kind=InvitationKind.TEMPORARY_PASSWORD,
+        )
 
     async def list_invitations(self, actor: ActorContext) -> list[Invitation]:
         """Every invitation of the workspace, newest first."""

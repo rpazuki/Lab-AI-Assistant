@@ -70,7 +70,13 @@ from lab_assistant.domain.review import (
 )
 from lab_assistant.domain.scope import ConnectorPlanEntry, RelevancePolicy
 from lab_assistant.domain.states import IdentityState, RelevanceState
-from lab_assistant.domain.workspace import Capability, MembershipStatus, Role
+from lab_assistant.domain.workspace import (
+    Capability,
+    Invitation,
+    InvitationKind,
+    MembershipStatus,
+    Role,
+)
 from lab_assistant.evaluation.service import EvaluationService, benchmark_json, run_json
 from lab_assistant.evaluation.workbench import (
     REVIEW_FLAGS,
@@ -130,6 +136,17 @@ class InvitationRequest(BaseModel):
     #: A built-in role's name, or the name of one this workspace defined.
     role: str = Field(default=Role.RESEARCHER.value, min_length=1, max_length=48)
     ttl_hours: int = Field(default=168, ge=1, le=720)
+    #: A temporary password to send by hand, used once at sign-in, instead of a link.
+    temporary_password: bool = False
+
+
+class FirstPasswordRequest(BaseModel):
+    """A temporary password exchanged for the person's own, which signs them in."""
+
+    email: str = Field(min_length=3, max_length=320)
+    temporary_password: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=1, max_length=1000)
+    full_name: str | None = Field(default=None, max_length=200)
 
 
 class InvitationTokenRequest(BaseModel):
@@ -423,6 +440,7 @@ async def list_invitations(actor: CurrentActor, container: Container) -> dict[st
                 "email": item.email_normalized,
                 "role": item.role_name or item.role.value,
                 "state": invitation_state(item, now).value,
+                "kind": item.kind.value,
                 "created_at": item.created_at.isoformat(),
                 "expires_at": item.expires_at.isoformat(),
                 "accepted_at": item.accepted_at.isoformat() if item.accepted_at else None,
@@ -542,19 +560,47 @@ async def create_invitation(
 ) -> dict[str, Any]:
     """Create an invitation and return its token, once.
 
-    There is no mailer: the admin sends the link themselves. The token is never
-    stored, so a lost link is replaced by inviting the address again.
+    There is no mailer: the admin sends the link, or the temporary password,
+    themselves. The token is never stored, so a lost one is replaced by inviting
+    the address again.
     """
     invitation, token = await container.accounts.invite(
-        actor, email=payload.email, role=payload.role, ttl_hours=payload.ttl_hours
+        actor,
+        email=payload.email,
+        role=payload.role,
+        ttl_hours=payload.ttl_hours,
+        kind=(
+            InvitationKind.TEMPORARY_PASSWORD if payload.temporary_password else InvitationKind.LINK
+        ),
     )
+    return _created_invitation(invitation, token)
+
+
+def _created_invitation(invitation: Invitation, token: str) -> dict[str, Any]:
     return {
         "id": str(invitation.id),
         "email": invitation.email_normalized,
         "role": invitation.role_name or invitation.role.value,
+        "kind": invitation.kind.value,
         "expires_at": invitation.expires_at.isoformat(),
+        # A link's token, or the temporary password as it is to be read and typed.
         "token": token,
     }
+
+
+@router.post(
+    "/invitations/{invitation_id}/regenerate",
+    status_code=201,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def regenerate_temporary_password(
+    invitation_id: UUID, actor: CurrentActor, container: Container
+) -> dict[str, Any]:
+    """A new temporary password for the same person; the earlier one stops working."""
+    invitation, token = await container.accounts.regenerate_temporary_password(
+        actor, invitation_id=invitation_id
+    )
+    return _created_invitation(invitation, token)
 
 
 @router.post(
@@ -612,6 +658,38 @@ async def accept_invitation(
     """Redeem an invitation and sign in, in one step."""
     user, membership = await container.accounts.accept_invitation(
         token=payload.token,
+        password=payload.password,
+        full_name=payload.full_name,
+        client_signal=_client_signal(request),
+    )
+    workspaces = await container.accounts.current_workspaces(user.id)
+    token, _minted = mint_token(
+        secret=container.settings.secret_key,
+        user_id=user.id,
+        auth_epoch=user.auth_epoch,
+        ttl_minutes=container.settings.access_token_ttl_minutes,
+        workspace_id=membership.workspace_id,
+    )
+    return LoginResponse(
+        access_token=token,
+        expires_in=container.settings.access_token_ttl_minutes * 60,
+        user_id=user.id,
+        workspaces=[{"id": str(w.id), "slug": w.slug, "name": w.display_name} for w in workspaces],
+    )
+
+
+@router.post(
+    "/auth/first-sign-in",
+    response_model=LoginResponse,
+    dependencies=[requires(InstallationCapability.RECORD_INTERACTION)],
+)
+async def set_first_password(
+    request: Request, container: Container, payload: FirstPasswordRequest = Body(...)
+) -> LoginResponse:
+    """Replace a temporary password with the person's own and sign in, in one step."""
+    user, membership = await container.accounts.set_first_password(
+        email=payload.email,
+        temporary_password=payload.temporary_password,
         password=payload.password,
         full_name=payload.full_name,
         client_signal=_client_signal(request),

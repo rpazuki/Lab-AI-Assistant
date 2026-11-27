@@ -1204,6 +1204,38 @@ class TestDeletesOverSql:
             assert await uow.releases.get(workspace.id, draft.id) is None
             assert await uow.releases.list_items(workspace.id, draft.id) == []
 
+    async def test_a_temporary_password_is_one_sign_in_and_then_the_persons_own(
+        self, sql_stack
+    ) -> None:
+        from lab_assistant.application.accounts import PasswordChangeRequired
+        from lab_assistant.domain.workspace import InvitationKind
+
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="t@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="temporary-lab", display_name="Temporary Lab", owner_user_id=owner.id
+        )
+        admin = make_actor(user_id=owner.id, workspace_id=workspace.id, role=Role.ADMIN)
+        _invitation, temporary = await accounts.invite(
+            admin,
+            email="p@lab.invalid",
+            role=Role.RESEARCHER,
+            kind=InvitationKind.TEMPORARY_PASSWORD,
+        )
+        listed = await accounts.list_invitations(admin)
+        assert [item.kind for item in listed] == [InvitationKind.TEMPORARY_PASSWORD]
+
+        with pytest.raises(PasswordChangeRequired):
+            await accounts.authenticate(email="p@lab.invalid", password=temporary)
+        user, membership = await accounts.set_first_password(
+            email="p@lab.invalid", temporary_password=temporary, password="their-own-passphrase"
+        )
+        assert membership.workspace_id == workspace.id
+        signed_in = await accounts.authenticate(
+            email="p@lab.invalid", password="their-own-passphrase"
+        )
+        assert signed_in.id == user.id
+
 
 class TestReconciliationOverSql:
     """Reconciling a run large enough to need several batches.

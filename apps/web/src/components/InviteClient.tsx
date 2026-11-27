@@ -97,7 +97,7 @@ export function InviteClient() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
+    <form method="post" onSubmit={onSubmit} className="space-y-4">
       <p className="text-sm text-ink">
         You are invited to <strong>{preview.workspace.name}</strong> as a{" "}
         <strong>{preview.role.replace(/_/g, " ")}</strong>.

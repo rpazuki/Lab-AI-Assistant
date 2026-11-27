@@ -231,6 +231,8 @@ invitations = Table(
     Column("expires_at", DateTime(timezone=True), nullable=False),
     Column("accepted_at", DateTime(timezone=True)),
     Column("revoked_at", DateTime(timezone=True)),
+    # "link", or "temporary_password": the token is then a password sent by hand.
+    Column("kind", Text, nullable=False, server_default=text("'link'")),
 )
 
 resource_grants = Table(

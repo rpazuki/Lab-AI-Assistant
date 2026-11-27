@@ -18,6 +18,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     updateRole: vi.fn(async () => ({ id: "r1", name: "patent_holders" })),
     deleteRole: vi.fn(async () => ({ rules_removed: 0 })),
     createInvitation: vi.fn(),
+    regenerateTemporaryPassword: vi.fn(),
     revokeInvitation: vi.fn(async () => ({ id: "i1", state: "revoked" })),
     updateMember: vi.fn(),
     revokeMemberSessions: vi.fn(async () => ({ user_id: "u2" })),
@@ -138,6 +139,7 @@ const OPEN: Invitation = {
   email: "new@lab.invalid",
   role: "reviewer",
   state: "open",
+  kind: "link",
   created_at: "2026-11-18T10:00:00Z",
   expires_at: "2026-11-25T10:00:00Z",
   accepted_at: null,
@@ -170,6 +172,7 @@ describe("MembersClient", () => {
       id: "i2",
       email: "late@lab.invalid",
       role: "researcher",
+      kind: "link",
       expires_at: "2026-11-26T10:00:00Z",
       token: "a-token-long-enough-to-pass",
     });
@@ -295,6 +298,131 @@ describe("MembersClient", () => {
     render(<MembersClient />);
     await screen.findByRole("button", { name: "Suspend" });
     expect(screen.queryByRole("button", { name: "Read chats" })).not.toBeInTheDocument();
+  });
+
+  it("drafts the email for a link, with the link in it", async () => {
+    vi.mocked(api.createInvitation).mockResolvedValue({
+      id: "i2",
+      email: "late@lab.invalid",
+      role: "researcher",
+      kind: "link",
+      expires_at: "2026-11-26T10:00:00Z",
+      token: "a-token-long-enough-to-pass",
+    });
+    render(<MembersClient />);
+    await screen.findByText("(you)");
+    await userEvent.type(screen.getByRole("textbox", { name: "Email" }), "late@lab.invalid");
+    await userEvent.click(screen.getByRole("button", { name: "Create link" }));
+
+    const message = (await screen.findByRole("textbox", { name: "Message" })) as HTMLTextAreaElement;
+    expect(message.value).toContain("join RLA Lab on the Lab AI Assistant as a researcher");
+    expect(message.value).toMatch(/invite#token=a-token-long-enough-to-pass/);
+    expect(message.value).toContain("Lab Admin");
+    expect(screen.getByRole("textbox", { name: "Subject" })).toHaveValue(
+      "Your invitation to RLA Lab on the Lab AI Assistant",
+    );
+    // The draft is the admin's to change before it goes.
+    await userEvent.type(message, " P.S. See you Monday.");
+    const mail = screen.getByRole("link", { name: "Open in email app" });
+    expect(mail.getAttribute("href")).toMatch(/^mailto:late%40lab\.invalid\?subject=/);
+    expect(decodeURIComponent(mail.getAttribute("href") ?? "")).toContain("See you Monday.");
+  });
+
+  it("gives a temporary password instead of a link when asked", async () => {
+    vi.mocked(api.createInvitation).mockResolvedValue({
+      id: "i3",
+      email: "late@lab.invalid",
+      role: "reviewer",
+      kind: "temporary_password",
+      expires_at: "2026-11-26T10:00:00Z",
+      token: "h7kq-3mzt-x9pe-4wbn",
+    });
+    render(<MembersClient />);
+    await screen.findByText("(you)");
+    await userEvent.type(screen.getByRole("textbox", { name: "Email" }), "late@lab.invalid");
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: /Give a temporary password instead of a link/ }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Create temporary password" }));
+
+    expect(api.createInvitation).toHaveBeenCalledWith({
+      email: "late@lab.invalid",
+      role: "researcher",
+      ttl_hours: 168,
+      temporary_password: true,
+    });
+    expect(await screen.findByRole("textbox", { name: "Temporary password" })).toHaveValue(
+      "h7kq-3mzt-x9pe-4wbn",
+    );
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    expect(message.value).toContain("h7kq-3mzt-x9pe-4wbn");
+    expect(message.value).toContain("Sign in with your email address (late@lab.invalid)");
+    expect(message.value).toMatch(/\/login\n/);
+    expect(message.value).toContain("choose a password of your own");
+    expect(screen.queryByRole("textbox", { name: "Invitation link" })).toBeNull();
+  });
+
+  it("makes a new temporary password for one that ran out", async () => {
+    vi.mocked(api.listInvitations).mockResolvedValue([
+      { ...OPEN, id: "i4", state: "expired", kind: "temporary_password" },
+      OPEN,
+    ]);
+    vi.mocked(api.regenerateTemporaryPassword).mockResolvedValue({
+      id: "i5",
+      email: "new@lab.invalid",
+      role: "reviewer",
+      kind: "temporary_password",
+      expires_at: "2026-12-04T10:00:00Z",
+      token: "p2wx-8nfr-k4ty-6dmc",
+    });
+    render(<MembersClient />);
+    expect(await screen.findByText("By temporary password")).toBeInTheDocument();
+    expect(screen.getByText("By link")).toBeInTheDocument();
+    // A link has no password to renew.
+    expect(screen.getAllByRole("button", { name: /New temporary password for/ })).toHaveLength(1);
+    await userEvent.click(
+      screen.getByRole("button", { name: "New temporary password for new@lab.invalid" }),
+    );
+
+    expect(api.regenerateTemporaryPassword).toHaveBeenCalledWith("i4");
+    expect(await screen.findByRole("textbox", { name: "Temporary password" })).toHaveValue(
+      "p2wx-8nfr-k4ty-6dmc",
+    );
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toContain(
+      "as a reviewer",
+    );
+  });
+
+  it("puts the workspace first, then members, roles, invitations and the invite form", async () => {
+    render(<MembersClient />);
+    await screen.findByText("(you)");
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((item) => item.textContent);
+    expect(headings).toEqual(["Members", "Roles", "Invitations", "Invite someone"]);
+    for (const title of headings) {
+      expect(screen.getByRole("button", { name: `Hide ${title}` })).toBeInTheDocument();
+    }
+    // The totals come before every box, and do not fold.
+    const tiles = screen.getByLabelText("Workspace usage");
+    const members = screen.getByRole("heading", { level: 2, name: "Members" });
+    expect(tiles.compareDocumentPosition(members) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Hide Workspace/ })).toBeNull();
+  });
+
+  it("shows status and last sign-in in one column, each sortable", async () => {
+    vi.mocked(api.listMembers).mockResolvedValue(
+      roster([
+        member({ user_id: "u1", email: "admin@lab.invalid", full_name: "Lab Admin", role: "admin" }),
+        member({ last_login_at: "2026-11-20T09:30:00Z" }),
+      ]),
+    );
+    render(<MembersClient />);
+    await screen.findByText("(you)");
+    expect(screen.getByRole("button", { name: /^Status/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Last sign-in/ })).toBeInTheDocument();
+    expect(screen.getByText("Never signed in")).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: /^Usage/ })).toBeInTheDocument();
+    const members = screen.getAllByRole("table")[0] as HTMLElement;
+    expect(within(members).getAllByRole("columnheader")).toHaveLength(5);
   });
 });
 

@@ -1,6 +1,6 @@
 Status: active
 Owner: product owner
-Last verified: 2026-11-20
+Last verified: 2026-11-27
 Source of truth: `packages/python/lab_assistant/domain/workspace.py`
 
 # Roles and capabilities
@@ -49,6 +49,23 @@ they like: there is no mailer. The link carries its token after `#`, so no serve
 logs it; it expires (seven days by default), and inviting the same address again
 revokes the earlier link. Someone who already has an account accepts with their
 existing password.
+
+An admin can tick **Give a temporary password instead of a link**. The invitation's
+token is then a password of sixteen characters in four groups (`h7kq-3mzt-x9pe-4wbn`,
+with no `0`/`o` or `1`/`l`/`i`), read case-, space- and dash-insensitively. Signed in
+with it and its address, `POST /auth/login` answers 401 with
+`context.reason = "password_change_required"` and no session; the sign-in page then
+asks for a password of the person's own and sends both to `POST /auth/first-sign-in`,
+which redeems the invitation and signs them in. It is an invitation in every other
+respect: it expires, works once, and is replaced by inviting again or by **New
+password** (`POST /invitations/{id}/regenerate`), which keeps the role and the length
+of time. An expired or replaced one says so at sign-in (`temporary_password_expired`,
+`temporary_password_revoked`), and only to someone who typed both the address and
+the password. An address that already has an account is refused one: a password the
+admin knows never stands in for one the person chose.
+
+Either way the page drafts the email to send it in, from the admin's own address,
+for them to change before sending (`apps/web/src/lib/invitationEmail.ts`).
 
 Suspending a member bumps their `auth_epoch`, which invalidates every issued session
 immediately — a revocation that waits for a token to expire is not a revocation — and

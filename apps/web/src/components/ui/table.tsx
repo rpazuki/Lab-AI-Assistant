@@ -29,19 +29,42 @@ export function SortHeader<Key extends string>({
       className={numeric ? "numeric" : undefined}
       aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : "none"}
     >
-      <button
-        type="button"
-        onClick={() => table.sortBy(column)}
-        className={`inline-flex items-center gap-1 font-[inherit] uppercase tracking-[inherit] hover:text-heading ${
-          numeric ? "flex-row-reverse" : ""
-        } ${sorted ? "text-heading" : ""}`}
-      >
+      <SortButton table={table} column={column} numeric={numeric}>
         {children}
-        <span aria-hidden="true" className={sorted ? "" : "opacity-30"}>
-          {sorted === "desc" ? "▼" : "▲"}
-        </span>
-      </button>
+      </SortButton>
     </th>
+  );
+}
+
+/**
+ * The button inside a sorting header. On its own where one column shows two
+ * things, each sortable: "Status · Last sign-in" is two of these in one header.
+ */
+export function SortButton<Key extends string>({
+  table,
+  column,
+  numeric = false,
+  children,
+}: {
+  table: Pick<Table<unknown, Key>, "sort" | "sortBy">;
+  column: NoInfer<Key>;
+  numeric?: boolean;
+  children: ReactNode;
+}) {
+  const sorted = table.sort?.key === column ? table.sort.direction : null;
+  return (
+    <button
+      type="button"
+      onClick={() => table.sortBy(column)}
+      className={`inline-flex items-center gap-1 font-[inherit] uppercase tracking-[inherit] hover:text-heading ${
+        numeric ? "flex-row-reverse" : ""
+      } ${sorted ? "text-heading" : ""}`}
+    >
+      {children}
+      <span aria-hidden="true" className={sorted ? "" : "opacity-30"}>
+        {sorted === "desc" ? "▼" : "▲"}
+      </span>
+    </button>
   );
 }
 

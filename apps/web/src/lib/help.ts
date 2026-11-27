@@ -92,8 +92,8 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         id: "invitations",
         title: "Accepting an invitation",
         about: [
-          "An admin invites you by sending a link. The link names the workspace and the role you are joining as, works once, and expires (after seven days unless the admin chose otherwise). If the admin invites you again, the earlier link stops working.",
-          "If you already have an account with the same email, you join with your existing password; otherwise you choose one.",
+          "An admin invites you by sending a link, or a temporary password. Either one is for your address only, works once, and expires (after seven days unless the admin chose otherwise). If the admin invites you again, the earlier one stops working.",
+          "With a link, if you already have an account with the same email, you join with your existing password; otherwise you choose one. With a temporary password, you sign in with it once and then choose your own.",
         ],
         howTos: [
           {
@@ -114,6 +114,17 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Select **Join**.",
             ],
             note: "If the page says the invitation is not valid, it has expired, been used, or been replaced. Ask an admin for a new link.",
+          },
+          {
+            title: "How to join with a temporary password",
+            needs: "A temporary password sent to your address.",
+            steps: [
+              "Open the sign-in page and enter your **Email** and the temporary password. Capitals, spaces and dashes do not matter.",
+              "Optionally enter your **Full name**.",
+              "Enter a **New password** of at least 12 characters, and repeat it.",
+              "Select **Set password and sign in**. From then on, sign in with your new password.",
+            ],
+            note: "If sign-in says the temporary password has expired or was replaced, ask an admin for a new one.",
           },
         ],
       },
@@ -1155,7 +1166,8 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         statuses: ["invitation"],
         title: "Inviting people",
         about: [
-          "People join by invitation only. Creating an invitation gives you a link to send them yourself — the app does not send email. The link is shown once; if it is lost, invite the address again, which also cancels the earlier link.",
+          "People join by invitation only, by link or by temporary password. Creating an invitation shows the link or password once, with an email to send it in from your own address: the app does not send email. If a link is lost, invite the address again, which also cancels the earlier one.",
+          "A temporary password works once, on the sign-in page, and then asks the person to choose their own. It expires like a link. If it runs out or is lost, select **New password** on its row under **Invitations**: the new one lasts as long as the first and the old one stops working. An address that already has an account is sent a link instead.",
         ],
         howTos: [
           {
@@ -1163,10 +1175,21 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             needs: "Admins.",
             steps: [
               "Under **Invite someone**, enter their **Email**, choose a **Role**, and set **Valid for (days)**.",
-              "Select **Create link**.",
-              "Select **Copy link** and send it to them.",
+              "To send a password instead of a link, tick **Give a temporary password instead of a link**.",
+              "Select **Create link** (or **Create temporary password**).",
+              "Check the drafted email under **Email to send**, change it if you like, then select **Open in email app**, or copy the subject and message into your own email.",
             ],
             note: "Open invitations are listed under **Invitations**; select **Revoke** to cancel one.",
+          },
+          {
+            title: "How to give someone a new temporary password",
+            needs: "Admins.",
+            steps: [
+              "Under **Invitations**, find their row, which says **By temporary password**.",
+              "Select **New password**.",
+              "Send the new password with the drafted email.",
+            ],
+            note: "Offered until they have used one; after that they have a password of their own.",
           },
         ],
       },

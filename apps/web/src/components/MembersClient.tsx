@@ -14,7 +14,7 @@ import {
 import { CollapsiblePanel } from "@/components/ui/CollapsiblePanel";
 import { DeleteButton } from "@/components/ui/DeleteButton";
 import { Pager } from "@/components/ui/Pager";
-import { SortHeader, TableSearch } from "@/components/ui/table";
+import { SortButton, SortHeader, TableSearch } from "@/components/ui/table";
 import {
   createInvitation,
   createRole,
@@ -27,14 +27,26 @@ import {
   listMemberSessions,
   listMembers,
   listRoles,
+  regenerateTemporaryPassword,
   revokeInvitation,
   revokeMemberSessions,
   updateMember,
   updateRole,
 } from "@/lib/api";
+import { appPath } from "@/lib/config";
+import { invitationEmail, mailtoLink } from "@/lib/invitationEmail";
 import { usePager } from "@/lib/usePager";
 import { useTable } from "@/lib/useTable";
-import type { ChatMessage, Invitation, Member, MemberSession, Page, Role } from "@/types";
+import type {
+  ChatMessage,
+  CreatedInvitation,
+  Invitation,
+  Me,
+  Member,
+  MemberSession,
+  Page,
+  Role,
+} from "@/types";
 
 /**
  * The roles that ship with the product, in order of reach. A service account is
@@ -98,6 +110,15 @@ function when(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString() : "—";
 }
 
+/** A day, as short as it reads: "27 Nov 2026". The full time is its tooltip. */
+function day(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 const selectClass =
   "rounded-control border border-border-strong bg-surface px-2 py-1 text-sm text-ink shadow-control " +
   "disabled:cursor-not-allowed disabled:opacity-45";
@@ -105,9 +126,15 @@ const selectClass =
 /**
  * Members of the workspace and the invitations that bring new ones in.
  *
- * There is no mailer: creating an invitation shows its link once, for the admin
- * to send however they like. The token is never stored, so a lost link is
- * replaced by inviting the address again, which also revokes the old one.
+ * Top to bottom: the workspace at a glance, the members, the roles, the
+ * invitations, and the form that invites someone. Every box but the first folds
+ * away and stays folded on this browser.
+ *
+ * There is no mailer: creating an invitation shows its link, or a temporary
+ * password, once, with an email to send it in, for the admin to send from their
+ * own address. Neither is stored, so a lost link is replaced by inviting the
+ * address again, and a lost or expired temporary password by making a new one
+ * under Invitations.
  *
  * The API enforces the rules this page reflects — nobody changes their own
  * membership, only an admin grants admin — so a control that is disabled here is
@@ -117,7 +144,7 @@ export function MembersClient() {
   const [members, setMembers] = useState<Member[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
-  const [selfId, setSelfId] = useState<string | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
   const [defaultLimit, setDefaultLimit] = useState<number | null>(null);
   const [oversight, setOversight] = useState(false);
   const [reading, setReading] = useState<Member | null>(null);
@@ -128,13 +155,17 @@ export function MembersClient() {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<string>("researcher");
   const [days, setDays] = useState("7");
-  const [link, setLink] = useState<{ email: string; url: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [temporary, setTemporary] = useState(false);
+  /** The invitation just made, shown once, and the box it was made from. */
+  const [made, setMade] = useState<{ from: "invite" | "renew"; invitation: CreatedInvitation } | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
+  const selfId = me?.user_id ?? null;
 
   const refresh = useCallback(async () => {
     try {
-      const [nextMembers, nextInvitations, nextRoles, me] = await Promise.all([
+      const [nextMembers, nextInvitations, nextRoles, nextMe] = await Promise.all([
         listMembers(),
         listInvitations(),
         listRoles(),
@@ -145,7 +176,7 @@ export function MembersClient() {
       setOversight(nextMembers.chat_admin_access);
       setRoles(nextRoles.items);
       setInvitations(nextInvitations);
-      setSelfId(me.user_id);
+      setMe(nextMe);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "members could not be loaded");
@@ -177,12 +208,16 @@ export function MembersClient() {
     event.preventDefault();
     setBusy(true);
     setNotice(null);
-    setCopied(false);
     let failure: string | null = null;
     try {
       const hours = Math.round(Number(days) * 24);
-      const created = await createInvitation({ email: email.trim(), role, ttl_hours: hours });
-      setLink({ email: created.email, url: invitationLink(created.token) });
+      const created = await createInvitation({
+        email: email.trim(),
+        role,
+        ttl_hours: hours,
+        ...(temporary ? { temporary_password: true } : {}),
+      });
+      setMade({ from: "invite", invitation: created });
       setEmail("");
     } catch (caught) {
       failure = caught instanceof Error ? caught.message : "the invitation was not created";
@@ -193,14 +228,16 @@ export function MembersClient() {
     if (failure) setError(failure);
   }
 
-  async function copy() {
-    if (!link) return;
+  async function renew(item: Invitation) {
+    setNotice(null);
+    let failure: string | null = null;
     try {
-      await navigator.clipboard.writeText(link.url);
-      setCopied(true);
-    } catch {
-      // Clipboard access refused: the link is on screen to select by hand.
+      setMade({ from: "renew", invitation: await regenerateTemporaryPassword(item.id) });
+    } catch (caught) {
+      failure = caught instanceof Error ? caught.message : "no new password was made";
     }
+    await refresh();
+    if (failure) setError(failure);
   }
 
   const people = useTable(members, {
@@ -224,8 +261,23 @@ export function MembersClient() {
     },
     // Newest first: the invitation just sent is the one being checked.
     defaultSort: { key: "expires", direction: "desc" },
-    searchText: (item) => `${item.email} ${item.role} ${item.state}`,
+    searchText: (item) =>
+      `${item.email} ${item.role} ${item.state} ${item.kind === "temporary_password" ? "temporary password" : "link"}`,
   });
+  const statusSorted =
+    people.sort?.key === "status" || people.sort?.key === "last" ? people.sort.direction : null;
+
+  const draft = (from: "invite" | "renew") =>
+    made && made.from === from ? (
+      <InvitationDraft
+        key={made.invitation.id}
+        invitation={made.invitation}
+        role={labelFor(roles, made.invitation.role)}
+        workspace={me?.workspace.name ?? "the workspace"}
+        inviter={me?.full_name ?? me?.email ?? ""}
+        onDone={() => setMade(null)}
+      />
+    ) : null;
 
   return (
     <div className="space-y-4">
@@ -240,66 +292,14 @@ export function MembersClient() {
         </Alert>
       ) : null}
 
-      <Panel title="Invite someone">
-        <form onSubmit={invite} className="grid gap-3 sm:grid-cols-[1fr_12rem_8rem_auto] sm:items-end">
-          <Field label="Email">
-            <Input
-              type="email"
-              required
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="e.g., name@imperial.ac.uk"
-            />
-          </Field>
-          <Field label="Role">
-            <select
-              className={`${selectClass} w-full py-2`}
-              value={role}
-              onChange={(event) => setRole(event.target.value)}
-            >
-              <RoleOptions roles={roles} />
-            </select>
-          </Field>
-          <Field label="Valid for (days)">
-            <Input
-              type="number"
-              min={1}
-              max={30}
-              required
-              value={days}
-              onChange={(event) => setDays(event.target.value)}
-            />
-          </Field>
-          <Button type="submit" disabled={busy || !email.trim()}>
-            Create link
-          </Button>
-        </form>
-        {link ? (
-          <div className="mt-4 space-y-2">
-            <Alert tone="info" role="status">
-              Send this link to {link.email}. It is shown only now: if it is lost, invite the
-              address again.
-            </Alert>
-            <div className="flex flex-wrap items-center gap-2">
-              <Input readOnly value={link.url} aria-label="Invitation link" className="flex-1 font-mono text-xs" />
-              <Button type="button" variant="ghost" onClick={copy}>
-                {copied ? "Copied" : "Copy link"}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-      </Panel>
-
-      <RolesPanel
-        roles={roles}
-        onChanged={async (action, done) => {
-          await act(action, done);
-        }}
-      />
-
       <UsageTiles members={members} />
 
-      <Panel title={`Members (${members.length})`} flush>
+      <CollapsiblePanel
+        title="Members"
+        storageKey="members.members"
+        count={<span className="text-sm text-muted">{members.length}</span>}
+        flush
+      >
         {members.length === 0 ? (
           <div className="px-5 py-3">
             <Empty>No members yet.</Empty>
@@ -307,7 +307,7 @@ export function MembersClient() {
         ) : (
           <div className="overflow-x-auto">
             <TableSearch table={people} label="members" placeholder="Filter by name, email, role or status" />
-            <table className="data-table">
+            <table className="data-table data-table-compact">
               <thead>
                 <tr>
                   <SortHeader table={people} column="member">
@@ -316,14 +316,27 @@ export function MembersClient() {
                   <SortHeader table={people} column="role">
                     Role
                   </SortHeader>
-                  <SortHeader table={people} column="status">
-                    Status
-                  </SortHeader>
+                  <th
+                    scope="col"
+                    aria-sort={
+                      statusSorted === "asc"
+                        ? "ascending"
+                        : statusSorted === "desc"
+                          ? "descending"
+                          : "none"
+                    }
+                  >
+                    <span className="flex flex-col items-start gap-0.5">
+                      <SortButton table={people} column="status">
+                        Status
+                      </SortButton>
+                      <SortButton table={people} column="last">
+                        Last sign-in
+                      </SortButton>
+                    </span>
+                  </th>
                   <SortHeader table={people} column="usage">
                     Usage
-                  </SortHeader>
-                  <SortHeader table={people} column="last">
-                    Last sign-in
                   </SortHeader>
                   <th>
                     <span className="sr-only">Actions</span>
@@ -336,19 +349,20 @@ export function MembersClient() {
                   const suspended = member.status === "suspended";
                   return (
                     <tr key={member.user_id}>
-                      <td>
-                        <span className="block font-medium text-ink">
+                      <td className="min-w-40 max-w-64">
+                        {/* "anywhere", not "break-word": only it lets a long address shrink the column. */}
+                        <span className="block font-medium text-ink [overflow-wrap:anywhere]">
                           {member.full_name ?? member.email}
                           {self ? <span className="ml-1.5 text-xs text-muted">(you)</span> : null}
                         </span>
                         {member.full_name ? (
-                          <span className="block text-xs text-muted">{member.email}</span>
+                          <span className="block text-xs text-muted [overflow-wrap:anywhere]">{member.email}</span>
                         ) : null}
                       </td>
                       <td>
                         <select
                           aria-label={`Role of ${member.email}`}
-                          className={selectClass}
+                          className={`${selectClass} max-w-40`}
                           value={member.role}
                           disabled={self}
                           onChange={(event) =>
@@ -361,10 +375,16 @@ export function MembersClient() {
                           <RoleOptions roles={roles} />
                         </select>
                       </td>
-                      <td>
+                      <td className="whitespace-nowrap">
                         <StateChip state={member.status} kind="membership" />
+                        <span
+                          className="mt-1 block text-xs text-muted"
+                          title={member.last_login_at ? when(member.last_login_at) : undefined}
+                        >
+                          {member.last_login_at ? day(member.last_login_at) : "Never signed in"}
+                        </span>
                       </td>
-                      <td className="min-w-56">
+                      <td className="w-44 min-w-36">
                         {editingLimit === member.user_id ? (
                           <LimitEditor
                             member={member}
@@ -384,9 +404,9 @@ export function MembersClient() {
                           <UsageCell member={member} onEdit={() => setEditingLimit(member.user_id)} />
                         )}
                       </td>
-                      <td className="text-xs text-muted">{when(member.last_login_at)}</td>
                       <td>
-                        <div className="flex justify-end gap-2">
+                        {/* Stacked, and allowed to wrap: three buttons side by side were the widest thing in the table. */}
+                        <div className="flex w-32 flex-col items-stretch gap-1.5 [&>button]:whitespace-normal">
                           {oversight ? (
                             <Button
                               variant="ghost"
@@ -456,11 +476,28 @@ export function MembersClient() {
             </table>
           </div>
         )}
-      </Panel>
+      </CollapsiblePanel>
 
       {reading ? <MemberChats member={reading} onClose={() => setReading(null)} /> : null}
 
-      <Panel title="Invitations" flush>
+      <RolesPanel
+        roles={roles}
+        onChanged={async (action, done) => {
+          await act(action, done);
+        }}
+      />
+
+      <CollapsiblePanel
+        title="Invitations"
+        storageKey="members.invitations"
+        count={
+          <span className="text-sm text-muted">
+            {invitations.filter((item) => item.state === "open").length} open
+          </span>
+        }
+        flush
+      >
+        {made?.from === "renew" ? <div className="border-b border-border p-5">{draft("renew")}</div> : null}
         {invitations.length === 0 ? (
           <div className="px-5 py-3">
             <Empty>No invitations yet.</Empty>
@@ -468,7 +505,7 @@ export function MembersClient() {
         ) : (
           <div className="overflow-x-auto">
             <TableSearch table={invites} label="invitations" placeholder="Filter by email, role or state" />
-            <table className="data-table">
+            <table className="data-table data-table-compact">
               <thead>
                 <tr>
                   <SortHeader table={invites} column="email">
@@ -489,52 +526,232 @@ export function MembersClient() {
                 </tr>
               </thead>
               <tbody>
-                {invites.rows.map((item) => (
-                  <tr key={item.id}>
-                    <td>{item.email}</td>
-                    <td>{roleLabel(item.role)}</td>
-                    <td>
-                      <StateChip state={item.state} kind="invitation" />
-                    </td>
-                    <td className="text-xs text-muted">
-                      {item.state === "accepted" ? `accepted ${when(item.accepted_at)}` : when(item.expires_at)}
-                    </td>
-                    <td>
-                      {item.state === "open" ? (
-                        <div className="flex justify-end">
-                          <Button
-                            variant="danger"
-                            size="sm"
-                            onClick={() =>
-                              act(() => revokeInvitation(item.id), `The invitation to ${item.email} is revoked.`)
-                            }
-                          >
-                            Revoke
-                          </Button>
+                {invites.rows.map((item) => {
+                  const renewable = item.kind === "temporary_password" && item.state !== "accepted";
+                  return (
+                    <tr key={item.id}>
+                      <td>
+                        <span className="block break-all">{item.email}</span>
+                        <span className="block text-xs text-muted">
+                          {item.kind === "temporary_password" ? "By temporary password" : "By link"}
+                        </span>
+                      </td>
+                      <td>{labelFor(roles, item.role)}</td>
+                      <td>
+                        <StateChip state={item.state} kind="invitation" />
+                      </td>
+                      <td className="text-xs text-muted">
+                        {item.state === "accepted" ? `accepted ${when(item.accepted_at)}` : when(item.expires_at)}
+                      </td>
+                      <td>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          {renewable ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`New temporary password for ${item.email}`}
+                              onClick={() => void renew(item)}
+                            >
+                              New password
+                            </Button>
+                          ) : null}
+                          {item.state === "open" ? (
+                            <Button
+                              variant="danger"
+                              size="sm"
+                              onClick={() =>
+                                act(() => revokeInvitation(item.id), `The invitation to ${item.email} is revoked.`)
+                              }
+                            >
+                              Revoke
+                            </Button>
+                          ) : null}
+                          {item.state === "revoked" || item.state === "expired" ? (
+                            <DeleteButton
+                              what={`the ${item.state} invitation to ${item.email}`}
+                              consequence={
+                                item.kind === "temporary_password"
+                                  ? "Its temporary password already does not work; it only leaves this list."
+                                  : "Its link already does not work; it only leaves this list."
+                              }
+                              onDelete={() =>
+                                void act(
+                                  () => deleteInvitation(item.id),
+                                  `The invitation to ${item.email} is deleted.`,
+                                )
+                              }
+                            />
+                          ) : null}
                         </div>
-                      ) : null}
-                      {item.state === "revoked" || item.state === "expired" ? (
-                        <div className="flex justify-end">
-                          <DeleteButton
-                            what={`the ${item.state} invitation to ${item.email}`}
-                            consequence="Its link already does not work; it only leaves this list."
-                            onDelete={() =>
-                              void act(
-                                () => deleteInvitation(item.id),
-                                `The invitation to ${item.email} is deleted.`,
-                              )
-                            }
-                          />
-                        </div>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
-      </Panel>
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="Invite someone" storageKey="members.invite">
+        <form onSubmit={invite} className="grid gap-3 sm:grid-cols-[1fr_12rem_8rem_auto] sm:items-end">
+          <Field label="Email">
+            <Input
+              type="email"
+              required
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="e.g., name@imperial.ac.uk"
+            />
+          </Field>
+          <Field label="Role">
+            <select
+              className={`${selectClass} w-full py-2`}
+              value={role}
+              onChange={(event) => setRole(event.target.value)}
+            >
+              <RoleOptions roles={roles} />
+            </select>
+          </Field>
+          <Field label="Valid for (days)">
+            <Input
+              type="number"
+              min={1}
+              max={30}
+              required
+              value={days}
+              onChange={(event) => setDays(event.target.value)}
+            />
+          </Field>
+          <Button type="submit" disabled={busy || !email.trim()}>
+            {temporary ? "Create temporary password" : "Create link"}
+          </Button>
+          <label className="flex items-start gap-2 text-sm text-ink sm:col-span-4">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={temporary}
+              onChange={(event) => setTemporary(event.target.checked)}
+            />
+            <span>
+              Give a temporary password instead of a link
+              <span className="block text-xs text-muted">
+                They sign in with it once and then choose their own. Not for an address that
+                already has an account: send that person a link.
+              </span>
+            </span>
+          </label>
+        </form>
+        {made?.from === "invite" ? <div className="mt-4">{draft("invite")}</div> : null}
+      </CollapsiblePanel>
+    </div>
+  );
+}
+
+/**
+ * An invitation just made: its link or temporary password, shown once, and the
+ * email to send it in, which the admin may change before sending.
+ */
+function InvitationDraft({
+  invitation,
+  role,
+  workspace,
+  inviter,
+  onDone,
+}: {
+  invitation: CreatedInvitation;
+  role: string;
+  workspace: string;
+  inviter: string;
+  onDone: () => void;
+}) {
+  const temporary = invitation.kind === "temporary_password";
+  const secret = temporary ? invitation.token : invitationLink(invitation.token);
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [copied, setCopied] = useState<string | null>(null);
+
+  // Filled in once, on the client: the links need this page's address.
+  useEffect(() => {
+    const drafted = invitationEmail({
+      kind: invitation.kind,
+      email: invitation.email,
+      role,
+      workspace,
+      inviter,
+      secret,
+      signInUrl: `${window.location.origin}${appPath("/login")}`,
+      expiresAt: invitation.expires_at,
+    });
+    setSubject(drafted.subject);
+    setBody(drafted.body);
+    // Drafted once: later edits are the admin's, and a reload must not undo them.
+  }, [invitation.id]);
+
+  async function copy(what: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(what);
+    } catch {
+      // Clipboard access refused: the text is on screen to select by hand.
+    }
+  }
+
+  const what = temporary ? "temporary password" : "link";
+  return (
+    <div className="space-y-3">
+      <Alert tone="info" role="status">
+        Send this {what} to {invitation.email}. It is shown only now:{" "}
+        {temporary
+          ? "if it is lost or runs out, make a new one under Invitations."
+          : "if it is lost, invite the address again."}
+      </Alert>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          readOnly
+          value={secret}
+          aria-label={temporary ? "Temporary password" : "Invitation link"}
+          className="flex-1 font-mono text-xs"
+        />
+        <Button type="button" variant="ghost" onClick={() => void copy(what, secret)}>
+          {copied === what ? "Copied" : temporary ? "Copy password" : "Copy link"}
+        </Button>
+      </div>
+      <div className="space-y-2 rounded-control border border-border p-3">
+        <p className="text-sm font-semibold text-heading">Email to send</p>
+        <Field label="Subject">
+          <Input value={subject} onChange={(event) => setSubject(event.target.value)} />
+        </Field>
+        <Field label="Message">
+          <textarea
+            rows={14}
+            value={body}
+            onChange={(event) => setBody(event.target.value)}
+            className="w-full rounded-control border border-border-strong bg-surface px-3 py-2 font-mono text-xs text-ink shadow-control"
+          />
+        </Field>
+        <div className="flex flex-wrap gap-2">
+          <a
+            className={
+              "inline-flex items-center justify-center whitespace-nowrap rounded-control border " +
+              "border-primary bg-primary px-2.5 py-1 text-xs font-medium text-on-primary shadow-control " +
+              "transition-colors hover:border-primary-hover hover:bg-primary-hover"
+            }
+            href={mailtoLink(invitation.email, { subject, body })}
+          >
+            Open in email app
+          </a>
+          <Button type="button" variant="ghost" size="sm" onClick={() => void copy("subject", subject)}>
+            {copied === "subject" ? "Copied" : "Copy subject"}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => void copy("message", body)}>
+            {copied === "message" ? "Copied" : "Copy message"}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className="ml-auto" onClick={onDone}>
+            Done
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -574,15 +791,10 @@ function UsageCell({ member, onEdit }: { member: Member; onEdit: () => void }) {
     member.token_limit > 0 ? Math.min(1, member.usage.total_tokens / member.token_limit) : 1;
   return (
     <div className="space-y-1">
-      <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="tabular-nums text-ink">
-          {formatTokens(member.usage.total_tokens)} / {formatTokens(member.token_limit)} tokens
-          {member.custom_token_limit ? "" : " (default)"}
-        </span>
-        <button type="button" className="text-link underline hover:no-underline" onClick={onEdit}>
-          Change limit
-        </button>
-      </div>
+      <p className="text-xs tabular-nums text-ink">
+        {formatTokens(member.usage.total_tokens)} / {formatTokens(member.token_limit)} tokens
+        {member.custom_token_limit ? "" : " (default)"}
+      </p>
       <div
         role="meter"
         aria-label={`Tokens used by ${member.email}`}
@@ -601,6 +813,9 @@ function UsageCell({ member, onEdit }: { member: Member; onEdit: () => void }) {
         {member.usage.sessions} conversation{member.usage.sessions === 1 ? "" : "s"}
         {member.limit_reached ? " · limit reached" : ""}
       </p>
+      <button type="button" className="text-xs text-link underline hover:no-underline" onClick={onEdit}>
+        Change limit
+      </button>
     </div>
   );
 }

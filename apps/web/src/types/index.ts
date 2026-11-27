@@ -502,10 +502,24 @@ export interface Invitation {
   email: string;
   role: string;
   state: "open" | "accepted" | "revoked" | "expired";
+  /** A link to open, or a temporary password to type once at sign-in. */
+  kind: InvitationKind;
   created_at: string;
   expires_at: string;
   accepted_at: string | null;
   invited_by: string;
+}
+
+export type InvitationKind = "link" | "temporary_password";
+
+/** An invitation as created: its token is a link's, or the temporary password. Shown once. */
+export interface CreatedInvitation {
+  id: string;
+  email: string;
+  role: string;
+  kind: InvitationKind;
+  expires_at: string;
+  token: string;
 }
 
 /** What an invitation offers, shown before it is accepted. */

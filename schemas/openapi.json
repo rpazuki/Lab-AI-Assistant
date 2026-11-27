@@ -481,6 +481,48 @@
         "title": "FeedbackRequest",
         "type": "object"
       },
+      "FirstPasswordRequest": {
+        "description": "A temporary password exchanged for the person's own, which signs them in.",
+        "properties": {
+          "email": {
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "password": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          },
+          "temporary_password": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Temporary Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "temporary_password",
+          "password"
+        ],
+        "title": "FirstPasswordRequest",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -519,6 +561,11 @@
             "minLength": 1,
             "title": "Role",
             "type": "string"
+          },
+          "temporary_password": {
+            "default": false,
+            "title": "Temporary Password",
+            "type": "boolean"
           },
           "ttl_hours": {
             "default": 168,
@@ -2587,6 +2634,45 @@
           }
         },
         "summary": "Audit Events"
+      }
+    },
+    "/api/v1/auth/first-sign-in": {
+      "post": {
+        "description": "Replace a temporary password with the person's own and sign in, in one step.",
+        "operationId": "set_first_password_api_v1_auth_first_sign_in_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FirstPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set First Password"
       }
     },
     "/api/v1/auth/login": {
@@ -9256,7 +9342,7 @@
         "summary": "List Invitations"
       },
       "post": {
-        "description": "Create an invitation and return its token, once.\n\nThere is no mailer: the admin sends the link themselves. The token is never\nstored, so a lost link is replaced by inviting the address again.",
+        "description": "Create an invitation and return its token, once.\n\nThere is no mailer: the admin sends the link, or the temporary password,\nthemselves. The token is never stored, so a lost one is replaced by inviting\nthe address again.",
         "operationId": "create_invitation_api_v1_invitations_post",
         "parameters": [
           {
@@ -9473,6 +9559,81 @@
           }
         },
         "summary": "Delete Invitation"
+      }
+    },
+    "/api/v1/invitations/{invitation_id}/regenerate": {
+      "post": {
+        "description": "A new temporary password for the same person; the earlier one stops working.",
+        "operationId": "regenerate_temporary_password_api_v1_invitations__invitation_id__regenerate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invitation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invitation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Regenerate Temporary Password Api V1 Invitations  Invitation Id  Regenerate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regenerate Temporary Password"
       }
     },
     "/api/v1/invitations/{invitation_id}/revoke": {

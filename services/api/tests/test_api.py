@@ -1911,3 +1911,150 @@ class TestCollectionsArePaged:
             await api["client"].get("/api/v1/candidates/conflicts", headers=_auth(token))
         ).json()
         assert first["conflict_total"] == 2
+
+
+class TestTemporaryPasswords:
+    """An invitation by temporary password: sent by hand, used once, then replaced."""
+
+    async def _invite(self, client, admin: str, email: str, **extra) -> dict[str, Any]:
+        created = await client.post(
+            "/api/v1/invitations",
+            json={"email": email, "role": "reviewer", "temporary_password": True, **extra},
+            headers=_auth(admin),
+        )
+        assert created.status_code == 201, created.text
+        return created.json()
+
+    async def test_signing_in_with_it_asks_for_a_password_of_ones_own(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        created = await self._invite(client, admin, "new.person@lab.invalid")
+        temporary = created["token"]
+        assert created["kind"] == "temporary_password"
+        # Four groups of four, from letters and digits that cannot be confused.
+        assert len(temporary) == 19 and temporary.count("-") == 3
+        assert not set(temporary) & set("01ilo")
+
+        # Typed in capitals and without the dashes, it still works.
+        typed = temporary.replace("-", "").upper()
+        challenged = await client.post(
+            "/api/v1/auth/login", json={"email": "New.Person@lab.invalid", "password": typed}
+        )
+        assert challenged.status_code == 401
+        assert challenged.json()["context"]["reason"] == "password_change_required"
+        assert "access_token" not in challenged.json()
+
+        same = await client.post(
+            "/api/v1/auth/first-sign-in",
+            json={
+                "email": "new.person@lab.invalid",
+                "temporary_password": typed,
+                "password": temporary,
+            },
+        )
+        assert same.status_code == 422
+        chosen = await client.post(
+            "/api/v1/auth/first-sign-in",
+            json={
+                "email": "new.person@lab.invalid",
+                "temporary_password": temporary,
+                "password": PASSWORD,
+                "full_name": "New Person",
+            },
+        )
+        assert chosen.status_code == 200, chosen.text
+        me = await client.get("/api/v1/auth/me", headers=_auth(chosen.json()["access_token"]))
+        assert (me.json()["role"], me.json()["full_name"]) == ("reviewer", "New Person")
+
+        # Used once: the temporary password is now just a wrong password.
+        again = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "new.person@lab.invalid", "password": temporary},
+        )
+        assert again.status_code == 401
+        assert "reason" not in again.json().get("context", {})
+        assert await _login(client, "new.person@lab.invalid")
+        listed = (await client.get("/api/v1/invitations", headers=_auth(admin))).json()["items"]
+        assert [(row["kind"], row["state"]) for row in listed] == [
+            ("temporary_password", "accepted")
+        ]
+
+    async def test_it_works_only_with_its_own_address(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        temporary = (await self._invite(client, admin, "new.person@lab.invalid"))["token"]
+        other = await client.post(
+            "/api/v1/auth/login", json={"email": "someone@lab.invalid", "password": temporary}
+        )
+        assert other.status_code == 401
+        assert "reason" not in other.json().get("context", {})
+        refused = await client.post(
+            "/api/v1/auth/first-sign-in",
+            json={
+                "email": "someone@lab.invalid",
+                "temporary_password": temporary,
+                "password": PASSWORD,
+            },
+        )
+        assert refused.status_code == 403
+
+    async def test_an_expired_one_says_so_and_a_new_one_replaces_it(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        first = await self._invite(client, admin, "late@lab.invalid", ttl_hours=48)
+        api["harness"].clock.advance(49 * 3600)
+
+        expired = await client.post(
+            "/api/v1/auth/login", json={"email": "late@lab.invalid", "password": first["token"]}
+        )
+        assert expired.status_code == 401
+        assert expired.json()["context"]["reason"] == "temporary_password_expired"
+
+        admin = await _login(client, "steward@lab.invalid")
+        renewed = await client.post(
+            f"/api/v1/invitations/{first['id']}/regenerate", headers=_auth(admin)
+        )
+        assert renewed.status_code == 201, renewed.text
+        second = renewed.json()
+        assert second["token"] != first["token"]
+        assert (second["role"], second["kind"]) == ("reviewer", "temporary_password")
+        # As long as the first was given: two days.
+        assert second["expires_at"] > first["expires_at"]
+
+        challenged = await client.post(
+            "/api/v1/auth/login", json={"email": "late@lab.invalid", "password": second["token"]}
+        )
+        assert challenged.json()["context"]["reason"] == "password_change_required"
+
+        # Renewing again withdraws the second, which then says it was replaced.
+        await client.post(f"/api/v1/invitations/{second['id']}/regenerate", headers=_auth(admin))
+        replaced = await client.post(
+            "/api/v1/auth/login", json={"email": "late@lab.invalid", "password": second["token"]}
+        )
+        assert replaced.json()["context"]["reason"] == "temporary_password_revoked"
+
+    async def test_an_address_with_an_account_is_sent_a_link_instead(self, api) -> None:
+        client = api["client"]
+        await api["harness"].accounts.create_user(email="elsewhere@lab.invalid", password=PASSWORD)
+        admin = await _login(client, "steward@lab.invalid")
+        refused = await client.post(
+            "/api/v1/invitations",
+            json={"email": "elsewhere@lab.invalid", "temporary_password": True},
+            headers=_auth(admin),
+        )
+        assert refused.status_code == 422
+        assert "invitation link" in refused.json()["detail"]
+
+    async def test_a_link_has_no_password_to_renew(self, api) -> None:
+        client = api["client"]
+        admin = await _login(client, "steward@lab.invalid")
+        link = (
+            await client.post(
+                "/api/v1/invitations", json={"email": "link@lab.invalid"}, headers=_auth(admin)
+            )
+        ).json()
+        assert link["kind"] == "link"
+        refused = await client.post(
+            f"/api/v1/invitations/{link['id']}/regenerate", headers=_auth(admin)
+        )
+        assert refused.status_code == 409

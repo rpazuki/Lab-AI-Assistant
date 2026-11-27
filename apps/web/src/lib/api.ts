@@ -18,6 +18,7 @@ import type {
   AuditEvent,
   Benchmark,
   BulkRelevanceResult,
+  CreatedInvitation,
   Candidate,
   CandidateFacets,
   CandidateFilters,
@@ -168,6 +169,8 @@ export async function login(
       status: response.status,
       detail: problem.detail ?? "email or password is incorrect",
       error_class: problem.error_class ?? "authentication_required",
+      // Says when a temporary password was right and a new one is to be chosen.
+      context: problem.context,
     });
   }
   return (await response.json()) as { workspaces: { id: string; slug: string; name: string }[] };
@@ -981,12 +984,46 @@ export const revokeMemberSessions = (userId: string) =>
 export const listInvitations = () =>
   request<{ items: Invitation[] }>("/invitations").then((body) => body.items);
 
-/** Create an invitation. The token in the answer is shown once and never again. */
-export const createInvitation = (payload: { email: string; role: string; ttl_hours?: number }) =>
-  request<{ id: string; email: string; role: string; expires_at: string; token: string }>(
-    "/invitations",
-    { method: "POST", body: JSON.stringify(payload) },
-  );
+/**
+ * Create an invitation. The token in the answer is shown once and never again:
+ * a link's token, or with `temporary_password` the password to send by hand.
+ */
+export const createInvitation = (payload: {
+  email: string;
+  role: string;
+  ttl_hours?: number;
+  temporary_password?: boolean;
+}) =>
+  request<CreatedInvitation>("/invitations", { method: "POST", body: JSON.stringify(payload) });
+
+/** A new temporary password for the same person and role; the earlier one stops working. */
+export const regenerateTemporaryPassword = (invitationId: string) =>
+  request<CreatedInvitation>(`/invitations/${invitationId}/regenerate`, { method: "POST" });
+
+/** Exchange a temporary password for one's own, and arrive signed in. */
+export async function setFirstPassword(payload: {
+  email: string;
+  temporary_password: string;
+  password: string;
+  full_name?: string;
+}): Promise<void> {
+  const response = await fetch(appPath("/api/auth/first-sign-in"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const problem = (await response.json().catch(() => ({}))) as Partial<ProblemDetails>;
+    throw new ApiError({
+      type: "about:blank",
+      title: "password not set",
+      status: response.status,
+      detail: problem.detail ?? "the password could not be set",
+      error_class: problem.error_class ?? "authentication_required",
+      context: problem.context,
+    });
+  }
+}
 
 export const revokeInvitation = (invitationId: string) =>
   request<{ id: string; state: string }>(`/invitations/${invitationId}/revoke`, {
