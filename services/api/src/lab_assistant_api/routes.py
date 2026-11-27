@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Body, Depends, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -101,6 +102,8 @@ from lab_assistant_api.deps import (
 from lab_assistant_api.security import mint_token
 
 __all__ = ["router"]
+
+_log = structlog.get_logger("lab_assistant_api")
 
 
 def _client_signal(request: Request) -> str | None:
@@ -888,6 +891,16 @@ async def ask(
             detail = exc.detail if isinstance(exc, LabAssistantError) else "internal error"
             error_class = (
                 exc.error_class.value if isinstance(exc, LabAssistantError) else "internal"
+            )
+            # The response already said 200, so the access log shows success:
+            # without this line a failed answer leaves no trace on the server.
+            # The question is not logged; the session id finds it.
+            _log.error(
+                "chat.answer_failed",
+                session_id=str(session_id),
+                error_class=error_class,
+                detail=detail,
+                exc_info=exc,
             )
             yield _sse("error", {"detail": detail, "error_class": error_class})
 

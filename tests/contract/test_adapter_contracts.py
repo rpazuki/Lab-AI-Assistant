@@ -8,6 +8,7 @@ validation. These are the promises the rest of the suite leans on.
 from __future__ import annotations
 
 from hashlib import sha256
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -399,27 +400,81 @@ async def _repeat(chunk: bytes, times: int):
 
 class TestProviderContract:
     @pytest.mark.parametrize(
-        ("model", "expected"),
-        [
-            ("claude-sonnet-4-6", {"temperature": 0.1}),
-            ("claude-opus-5", {}),
-            ("claude-sonnet-5", {}),
-            ("claude-fable-5", {}),
-        ],
+        "model", ["claude-sonnet-4-6", "claude-opus-5", "claude-sonnet-5", "claude-fable-5"]
     )
-    def test_sampling_parameters_are_model_gated(self, model: str, expected: dict) -> None:
-        """Newer models reject temperature with a 400 rather than ignoring it."""
-        assert sampling_params(model, temperature=0.1) == expected
+    def test_no_sampling_parameter_is_sent_to_any_model(self, model: str) -> None:
+        """API version 2026-10-21 rejects them on every model, even at defaults."""
+        assert sampling_params(model, temperature=0.1) == {}
+        assert sampling_params(model, temperature=None) == {}
+        assert AnthropicProvider(api_key="x", model=model).properties.accepted_sampling_params == (
+            frozenset()
+        )
 
-    def test_no_temperature_means_no_parameter(self) -> None:
-        assert sampling_params("claude-sonnet-4-6", temperature=None) == {}
+    async def test_no_request_carries_a_sampling_parameter(self) -> None:
+        """What reaches the SDK: the 2.x SDK raises TypeError on `temperature`."""
+        from lab_assistant.contracts.models import (
+            GenerationRequest,
+            StreamUsage,
+            StructuredRequest,
+        )
 
-    def test_declared_properties_follow_the_model(self) -> None:
-        opus = AnthropicProvider(api_key="x", model="claude-opus-5")
-        assert opus.properties.accepted_sampling_params == frozenset()
-        assert AnthropicProvider(
-            api_key="x", model="claude-sonnet-4-6"
-        ).properties.accepted_sampling_params == frozenset({"temperature"})
+        calls: list[dict] = []
+
+        class _Message:
+            content = (SimpleNamespace(type="text", text="ok"),)
+            stop_reason = "end_turn"
+            model = "claude-sonnet-4-6"
+            usage = SimpleNamespace(input_tokens=1, output_tokens=1)
+
+        class _Stream:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            @property
+            async def text_stream(self):
+                yield "ok"
+
+            async def get_final_message(self):
+                return _Message()
+
+        class _Messages:
+            async def create(self, **kwargs):
+                calls.append(kwargs)
+                return _Message()
+
+            def stream(self, **kwargs):
+                calls.append(kwargs)
+                return _Stream()
+
+        provider = AnthropicProvider(
+            api_key="x",
+            model="claude-sonnet-4-6",
+            client=SimpleNamespace(messages=_Messages()),
+        )
+        answer = GenerationRequest(
+            system_prompt="s",
+            prompt_bundle_id="p",
+            prompt_bundle_version="1",
+            question="q",
+            temperature=0.1,
+        )
+        await provider.generate(answer)
+        assert [t async for t in provider.stream(answer, usage=StreamUsage())] == ["ok"]
+        await provider.structured(
+            StructuredRequest(
+                system_prompt="s",
+                user_prompt="u",
+                schema_name="claims",
+                json_schema={"type": "object"},
+                temperature=0.0,
+            )
+        )
+        assert len(calls) == 3
+        for kwargs in calls:
+            assert not {"temperature", "top_p", "top_k"} & set(kwargs)
 
     async def test_truncated_structured_output_is_not_parsed_data(self) -> None:
         provider = FakeLLMProvider(

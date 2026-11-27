@@ -3,11 +3,13 @@
 Two behaviours the design depends on, both carried over as explicit code rather
 than assumptions (spike S7):
 
-1. **Sampling parameters are model-gated.** Newer Claude models reject
-   ``temperature``, ``top_p``, and ``top_k`` with a 400 rather than ignoring them.
-   ``sampling_params`` decides per target model, so ``LLM_MODEL`` can move between
-   generations without a code change and no call site re-adds an unconditional
-   ``temperature=``.
+1. **No sampling parameters are sent.** From API version ``2026-10-21``, which
+   the ``anthropic`` 2.x SDK sends, a request with ``temperature``, ``top_p`` or
+   ``top_k`` is a 400 on every model, and the SDK no longer accepts them. Answers
+   and extractions use the model's default sampling. ``sampling_params`` is the one
+   place that decides, and it now always answers "none"; call sites keep passing
+   the configured temperature so it is still recorded where a run is described,
+   and no call site re-adds an unconditional ``temperature=``.
 2. **Truncation is not success.** A ``max_tokens`` stop on a structured call can
    yield syntactically valid but semantically truncated output. The adapter
    reports ``truncated=True`` and returns no parsed data, so validation cannot
@@ -35,21 +37,17 @@ from lab_assistant.contracts.models import (
 
 __all__ = ["AnthropicProvider", "sampling_params"]
 
-#: Model families that reject sampling parameters outright.
-_NO_SAMPLING_PREFIXES = ("claude-opus-5", "claude-sonnet-5", "claude-fable-5")
-
 
 def sampling_params(model: str, *, temperature: float | None) -> dict[str, float]:
-    """Sampling parameters this model will accept.
+    """Sampling parameters to send: none, on every model.
 
-    Returning an empty mapping is the correct answer for models that reject the
-    field; passing it anyway is a 400, not a no-op.
+    API version ``2026-10-21`` rejects ``temperature``, ``top_p`` and ``top_k``
+    with a 400 on every model, even at their defaults, and the 2.x SDK that sends
+    that version has no such arguments. Kept as a function so a future version
+    that accepts a sampling control has one place to say so.
     """
-    if temperature is None:
-        return {}
-    if any(model.startswith(prefix) for prefix in _NO_SAMPLING_PREFIXES):
-        return {}
-    return {"temperature": temperature}
+    del model, temperature
+    return {}
 
 
 @dataclass

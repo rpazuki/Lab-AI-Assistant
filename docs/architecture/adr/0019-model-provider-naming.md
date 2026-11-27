@@ -1,6 +1,6 @@
 Status: accepted
 Owner: technical owner + product owner
-Last verified: 2026-08-13
+Last verified: 2026-11-27
 Applies to: generation and extraction
 
 # ADR-0019: Provider and model naming, and what the defaults mean
@@ -27,7 +27,12 @@ what extraction and chat record as model lineage.
   mode, so it cannot reach a deployment by inertia.
 - The model string is **configuration, not code**. `AnthropicProvider.sampling_params`
   decides per target model which sampling parameters are legal, so `LAB_LLM_MODEL`
-  can move between model generations without a code change.
+  can move between model generations without a code change. *Amended 2026-11-27:*
+  it now sends none on any model. API version `2026-10-21`, which the `anthropic`
+  2.x SDK sends, rejects `temperature`, `top_p` and `top_k` on every model, and the
+  SDK no longer accepts them; an unpinned image picked up 2.x and every answer
+  failed. Answers and extractions use the model's default sampling, and the SDK is
+  pinned to `>=2,<3`.
 - Every generated answer and every extraction records the provider, the model
   revision, and the settings used. Model lineage is per record, not per deployment,
   so a corpus built across a model change stays attributable.

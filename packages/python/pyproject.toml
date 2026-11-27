@@ -57,7 +57,9 @@ objectstore = ["boto3>=1.35"]
 # The GCS adapter's SDK (ADR-0024). Every image installs both storage extras, so
 # switching LAB_OBJECT_STORE_KIND is configuration, not a rebuild.
 gcs = ["google-cloud-storage>=2.18"]
-anthropic = ["anthropic>=0.40"]
+# 2.x sends API version 2026-10-21, which has no sampling parameters; the
+# provider sends none. Below 3: a new major is a deliberate upgrade, not a rebuild.
+anthropic = ["anthropic>=2,<3"]
 export = ["pyarrow>=16.0"]
 
 [project.scripts]
