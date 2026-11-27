@@ -7,6 +7,7 @@ downloadable URL is never, by itself, permission.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -49,6 +50,17 @@ class RightsRequest(BaseModel):
     evidence_assertion_ids: tuple[UUID, ...] = ()
 
 
+def licence_key(licence: str | None) -> str:
+    """A licence as a rule compares it: lower case, spaces and underscores as hyphens.
+
+    Sources write one licence several ways: ``CC-BY-4.0``, ``cc by``, ``cc_by``,
+    ``CC BY-NC-ND``. Read literally, ``cc by`` is not ``cc-by`` and a paper under an
+    open licence is treated as unlicensed. Both the licence and a rule's prefixes go
+    through this, so a deny rule (``all-rights-reserved``) matches its spellings too.
+    """
+    return re.sub(r"[\s_]+", "-", (licence or "").strip().lower())
+
+
 class RightsPolicyRule(BaseModel):
     """One institution-approved rule. Ordered; first match wins per action."""
 
@@ -69,8 +81,8 @@ class RightsPolicyRule(BaseModel):
 
     def matches(self, request: RightsRequest) -> bool:
         if self.licence_prefixes:
-            licence = (request.licence_expression or "").lower()
-            if not any(licence.startswith(prefix.lower()) for prefix in self.licence_prefixes):
+            licence = licence_key(request.licence_expression)
+            if not any(licence.startswith(licence_key(p)) for p in self.licence_prefixes):
                 return False
         if self.routes and request.route not in self.routes:
             return False

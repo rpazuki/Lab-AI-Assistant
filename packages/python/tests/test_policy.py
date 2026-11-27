@@ -352,6 +352,38 @@ class TestRightsPolicy:
         assert PolicyAction.SEND_TO_EXTERNAL_MODEL not in verdict.allowed_actions
 
 
+class TestLicenceSpellings:
+    """Sources write one licence several ways; a rule must read them alike."""
+
+    REPLICATING = default_open_access_policy(replicate_open_content=True)
+
+    def _allowed(self, licence: str) -> frozenset[PolicyAction]:
+        return self.REPLICATING.evaluate(
+            RightsRequest(
+                workspace_id=uuid4(),
+                subject_type="asset",
+                subject_id=uuid4(),
+                licence_expression=licence,
+            )
+        ).allowed_actions
+
+    @pytest.mark.parametrize(
+        "licence", ["cc by", "CC BY-NC-ND", "cc_by_4.0", "  cc-by  ", "CC BY 4.0", "cc  by-sa"]
+    )
+    def test_an_open_licence_however_spelled_is_open(self, licence: str) -> None:
+        assert PolicyAction.REPLICATE_CONTENT in self._allowed(licence)
+        assert self._allowed(licence) == self._allowed("cc-by")
+
+    @pytest.mark.parametrize(
+        "licence", ["ccby", "other-oa", "https://www.elsevier.com/tdm/userlicense/1.0/", ""]
+    )
+    def test_anything_else_is_not_read_as_open(self, licence: str) -> None:
+        assert PolicyAction.REPLICATE_CONTENT not in self._allowed(licence)
+
+    def test_a_deny_rule_matches_its_spellings_too(self) -> None:
+        assert self._allowed("all rights reserved") == self._allowed("all-rights-reserved")
+
+
 class TestModelTransferPolicy:
     def test_restricted_classification_falls_back_to_local(self) -> None:
         policy = ModelTransferPolicy(approved_providers=("anthropic",))
