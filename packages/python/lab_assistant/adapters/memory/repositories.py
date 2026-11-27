@@ -507,6 +507,14 @@ class _Objects:
     async def register(self, record: ObjectRecord) -> None:
         if record.id in self._db.objects:
             return
+        # One row per digest in a workspace, as the SQL unique constraint has it:
+        # without this, a second registration of the same bytes passed here and
+        # failed only on a real database.
+        for existing in self._db.objects.values():
+            if existing.workspace_id == record.workspace_id and existing.sha256 == record.sha256:
+                raise ValueError(
+                    f"object {existing.id} already registers {record.sha256} in this workspace"
+                )
         self._db.objects[record.id] = record
 
     async def get(self, object_id: UUID) -> ObjectRecord | None:
@@ -525,6 +533,19 @@ class _Objects:
         self._db.objects[object_id] = record.model_copy(
             update={"tombstoned": True, "tombstone_reason": reason}
         )
+
+    async def hold_withheld(self, object_id: UUID, *, storage_key: str) -> bool:
+        record = self._db.objects.get(object_id)
+        if (
+            record is None
+            or not record.tombstoned
+            or not (record.tombstone_reason or "").endswith(":archive")
+        ):
+            return False
+        self._db.objects[object_id] = record.model_copy(
+            update={"tombstoned": False, "tombstone_reason": None, "storage_key": storage_key}
+        )
+        return True
 
     async def list_objects(
         self,

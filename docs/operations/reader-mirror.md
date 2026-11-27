@@ -31,9 +31,24 @@ publisher (Imperial)                      bucket                    reader (mirr
 - **Text travels only where the data steward allows it.** A paper's text, chunks and
   vectors are copied only when its rights decision grants `replicate_content`. With
   `LAB_RIGHTS_REPLICATE_OPEN_CONTENT=true` on the publisher, decisions made from then on
-  grant it for open licences. Decisions made before that keep the actions they had, and
-  no command re-decides them yet. Until then, the mirror gets those papers' records and
-  reviewed claims, but not their text.
+  grant it for open licences. Decisions made before that keep the actions they had, so
+  the mirror gets those papers' records and reviewed claims, but not their text, until
+  they are re-decided (below).
+
+  **Re-deciding earlier decisions.** On the publisher, from `/opt/lab-assistant`, run
+  `lab rights reapply`. It applies the current policy to every existing decision and
+  only ever adds `replicate_content`, where the policy grants it for the decision's own
+  licence. Prohibited, undecided and lapsed decisions are left alone, and published
+  releases are unchanged. Without `--apply` it only reports what it would change, by
+  licence. The person named by `--actor` needs the right to decide rights.
+
+  ```bash
+  sudo docker compose -p lab-assistant -f docker-compose.yml -f infra/compose/docker-compose.prod.yml exec api lab rights reapply --workspace rlalab --actor YOU@ic.ac.uk
+  ```
+
+  Then run it again with `--apply`, and publish: `sudo bash scripts/archive.sh publish`.
+  The mirror's next sync brings in the text and the search index, including for
+  releases it already holds.
 - **The policy checkpoint expires.** It is valid for `LAB_ARCHIVE_POLICY_VALIDITY_HOURS`
   (24 by default). After that, a reader stops serving restricted material. The
   publisher therefore renews it every 6 hours ([§4](#4-timers)).

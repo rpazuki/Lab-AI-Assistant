@@ -302,7 +302,9 @@ LAB_RIGHTS_REPLICATE_OPEN_CONTENT=true
 It is off by default, because storing a paper here is not permission to store it
 elsewhere. It applies to rights decisions made after it is set; earlier decisions keep
 what they allowed, so those papers travel as records and reviewed claims without their
-text.
+text. To let earlier decisions copy content too, re-decide them on the publisher with
+`lab rights reapply` (a dry run unless `--apply`), then publish. The mirror guide gives
+the full command.
 
 **Keeping the policy checkpoint fresh.** Every publication carries a signed policy
 checkpoint that is valid for `LAB_ARCHIVE_POLICY_VALIDITY_HOURS` (24 by default). Once

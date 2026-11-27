@@ -1,6 +1,6 @@
 Status: proposed
 Owner: technical owner + data steward
-Last verified: 2026-11-18
+Last verified: 2026-11-27
 Applies to: what a published snapshot carries, and how a reader takes it (phase 3)
 
 # ADR-0026: Content leaves the producer only under an explicit replication permission
@@ -72,8 +72,13 @@ order puts rights decisions before the assets that name them.
   has not made the decision. Tests that need text build their harness with the
   replicating policy.
 - An existing corpus does not start replicating when the setting is turned on:
-  its decisions predate the action. Re-deciding them needs a command that does
-  not exist yet.
+  its decisions predate the action. *Amended 2026-11-27:* `lab rights reapply`
+  (`application/rights_reapply.py`) re-decides them. It applies the current policy
+  to each decision's own licence and access basis, and only adds
+  `replicate_content`; it never revives a prohibited, undecided or lapsed decision.
+  A reader that already holds a release fills in the payloads it recorded as
+  withheld when a later snapshot carries them, and never revives a payload
+  tombstoned for any other reason.
 - Whether a `cc-by-nc-nd` licence permits replicating *derived* text is exactly
   the kind of question this leaves to the steward; the open-licence rule matches
   by prefix and covers it.

@@ -294,6 +294,16 @@ class SnapshotImporter:
         store = self._context.object_store
         for artifact_id, ref in inventory.items():
             if ref.is_resolvable:
+                async with self._context.uow_factory() as uow:
+                    known = await uow.objects.get_by_digest(workspace_id, ref.sha256)
+                if known is not None and known.tombstoned and not _withheld_here(known):
+                    # Taken down on this reader: a later snapshot does not bring
+                    # it back. The row keeps saying why it is not held.
+                    self._object_ids[artifact_id] = known.id
+                    continue
+                if known is not None and not known.tombstoned:
+                    self._object_ids[artifact_id] = known.id
+                    continue
                 data = (directory / content_location(ref.sha256)).read_bytes()
                 stored = await store.put(
                     data,
@@ -302,9 +312,14 @@ class SnapshotImporter:
                     media_type=ref.media_type,
                 )
                 async with self._context.uow_factory() as uow:
-                    await register_object(uow, stored)
+                    if known is not None:
+                        # Withheld by an earlier snapshot and allowed now: the
+                        # same row, which this reader's assets already name.
+                        await uow.objects.hold_withheld(known.id, storage_key=stored.key)
+                    else:
+                        await register_object(uow, stored)
                     await uow.commit()
-                self._object_ids[artifact_id] = stored.id
+                self._object_ids[artifact_id] = known.id if known is not None else stored.id
             else:
                 object_id = uuid5(NAMESPACE_URL, f"withheld:{workspace_id}:{ref.sha256}")
                 async with self._context.uow_factory() as uow:
@@ -907,6 +922,11 @@ def _read_head(directory: Path) -> HeadDescriptor | None:
     if not path.is_file():
         return None
     return HeadDescriptor.model_validate_json(path.read_bytes())
+
+
+def _withheld_here(record: Any) -> bool:
+    """A row an import tombstoned because the snapshot withheld its bytes."""
+    return (record.tombstone_reason or "").endswith(":archive")
 
 
 def _latest_checkpoint(directory: Path) -> PolicyCheckpoint | None:

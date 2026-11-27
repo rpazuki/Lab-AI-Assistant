@@ -410,6 +410,15 @@ class ObjectRegistryRepository(Protocol):
 
     async def tombstone(self, object_id: UUID, *, reason: str) -> None: ...
 
+    async def hold_withheld(self, object_id: UUID, *, storage_key: str) -> bool:
+        """A payload an archive import recorded as withheld has arrived: hold it.
+
+        Only a row whose tombstone says it was withheld by the archive
+        (``…:archive``) is filled in; any other tombstone, a takedown above all,
+        is left as it is. True when the row now holds the bytes.
+        """
+        ...
+
     async def list_objects(
         self,
         workspace_id: UUID,

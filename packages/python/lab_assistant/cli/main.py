@@ -412,6 +412,21 @@ def _parser() -> argparse.ArgumentParser:
             required=name in ("validate", "publish", "rollback", "withdraw", "retract-work"),
         )
 
+    rights = subparsers.add_parser("rights", help="rights decisions")
+    rights_sub = rights.add_subparsers(dest="rights_command", required=True)
+    reapply = rights_sub.add_parser(
+        "reapply",
+        help=(
+            "let existing decisions copy content to mirrors where the current policy "
+            "grants replicate_content; a dry run unless --apply"
+        ),
+    )
+    reapply.add_argument("--workspace", required=True, help="workspace slug")
+    reapply.add_argument(
+        "--actor", required=True, help="who decides: their email address or user id"
+    )
+    reapply.add_argument("--apply", action="store_true", help="write; without it, only report")
+
     template = subparsers.add_parser("template", help="extraction templates")
     template_sub = template.add_subparsers(dest="template_command", required=True)
     register_template = template_sub.add_parser(
@@ -509,6 +524,8 @@ def _dispatch(args: argparse.Namespace, settings: Settings, provenance: ConfigPr
             return asyncio.run(_template(args, settings))
         case "release":
             return asyncio.run(_release(args, settings))
+        case "rights":
+            return asyncio.run(_rights(args, settings))
         case "package":
             return _package_validate(args.path)
         case "legacy":
@@ -2163,6 +2180,49 @@ async def _release(args: argparse.Namespace, settings: Settings) -> int:
             return 0
         alias = await service.rollback(actor, alias=args.alias)
         print(f"alias {alias.alias} rolled back to {alias.release_id}")
+        return 0
+    finally:
+        for hook in container.shutdown:
+            await hook()
+
+
+async def _rights(args: argparse.Namespace, settings: Settings) -> int:
+    """``lab rights reapply``: the current policy's replicate_content, on old decisions."""
+    from lab_assistant.application.context import resolve_actor
+    from lab_assistant.application.rights_reapply import RightsReapplyService
+    from lab_assistant.domain.workspace import normalise_email
+    from lab_assistant_api.deps import build_container
+
+    container = build_container(settings)
+    try:
+        async with container.context.uow_factory() as uow:
+            workspace = await uow.workspaces.get_by_slug(args.workspace.lower())
+            if "@" in args.actor:
+                user = await uow.users.get_by_email(normalise_email(args.actor))
+                user_id = user.id if user else None
+            else:
+                user_id = UUID(args.actor)
+        if workspace is None:
+            print(f"workspace {args.workspace!r} not found", file=sys.stderr)
+            return 1
+        if user_id is None:
+            print(f"no account for {args.actor!r}", file=sys.stderr)
+            return 1
+        actor = await resolve_actor(container.context, user_id=user_id, workspace_id=workspace.id)
+        report = await RightsReapplyService(container.context).reapply(actor, apply=args.apply)
+        print(json.dumps(report.as_dict(), indent=2))
+        if report.widened and not args.apply:
+            print(
+                f"dry run: {report.widened} decision(s) would gain replicate_content; "
+                "run again with --apply to write",
+                file=sys.stderr,
+            )
+        elif report.widened:
+            print(
+                f"{report.widened} decision(s) now allow replicate_content. Mirrors get the "
+                "text with the next `scripts/archive.sh publish` and sync.",
+                file=sys.stderr,
+            )
         return 0
     finally:
         for hook in container.shutdown:

@@ -681,6 +681,19 @@ class _Objects(_Base):
             .values(tombstoned=True, tombstone_reason=reason)
         )
 
+    async def hold_withheld(self, object_id: UUID, *, storage_key: str) -> bool:
+        o = t.objects
+        result = await self._c.execute(
+            update(o)
+            .where(
+                o.c.id == object_id,
+                o.c.tombstoned.is_(True),
+                o.c.tombstone_reason.like("%:archive"),
+            )
+            .values(tombstoned=False, tombstone_reason=None, storage_key=storage_key)
+        )
+        return bool(result.rowcount)
+
     async def list_objects(
         self,
         workspace_id: UUID,
