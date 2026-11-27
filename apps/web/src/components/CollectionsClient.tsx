@@ -22,7 +22,14 @@ import {
   row,
   rowList,
 } from "@/components/ui/primitives";
-import { assistedUpload, fetchIncluded, fetchSweep, listPlans } from "@/lib/api";
+import {
+  QUEUE_ROWS_PER_FILE,
+  acquisitionQueueDownloadUrl,
+  assistedUpload,
+  fetchIncluded,
+  fetchSweep,
+  listPlans,
+} from "@/lib/api";
 import { describeStatus, statusGroup } from "@/lib/statuses";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { watchTask } from "@/lib/watchTask";
@@ -145,6 +152,8 @@ export function CollectionsClient() {
     ([status, count]) => FETCHING.has(status) && count > 0,
   );
   const live = useLiveRefresh(refresh, { active: fetching });
+  // What the list was asked for, not the words still being typed.
+  const downloadFilters = { status: planStatus, q: planQuery, outcome: planOutcome };
   const reload = live.refresh;
   // A new page or filter loads at once rather than at the next scheduled refresh.
   useEffect(() => {
@@ -255,7 +264,10 @@ export function CollectionsClient() {
           </form>
         </PanelSection>
 
-        <PanelSection title="Bulk action" hint="Fetch what can be fetched, and upload many files at once.">
+        <PanelSection
+          title="Bulk action"
+          hint="Fetch what can be fetched, download what the search finds, and upload many files at once."
+        >
           <div className="flex flex-wrap items-center gap-4">
             <Button
               variant="primary"
@@ -291,6 +303,38 @@ export function CollectionsClient() {
               again does nothing twice: a planned paper is not planned again, and a paper every source
               already answered stays with a person.
             </span>
+          </div>
+          <div className="space-y-1" aria-label="Download the papers" role="group">
+            {plans.total > 0 ? (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                <span className="text-ink">
+                  {planStatus || planQuery || planOutcome
+                    ? `Download the ${plans.total.toLocaleString()} ${plans.total === 1 ? "plan" : "plans"} this search finds, on every page:`
+                    : `Download all ${plans.total.toLocaleString()} ${plans.total === 1 ? "plan" : "plans"}, on every page:`}
+                </span>
+                <a
+                  className="text-link underline hover:no-underline"
+                  href={acquisitionQueueDownloadUrl("csv", downloadFilters)}
+                  download
+                >
+                  One CSV
+                </a>
+                <a
+                  className="text-link underline hover:no-underline"
+                  href={acquisitionQueueDownloadUrl("zip", downloadFilters)}
+                  download
+                >
+                  A zip of CSVs, {QUEUE_ROWS_PER_FILE} papers each
+                </a>
+              </div>
+            ) : (
+              <p className="text-sm text-muted">Nothing to download: no plan matches this search.</p>
+            )}
+            <p className="max-w-xl text-xs text-muted">
+              For fetching papers by hand. Each row has the paper&apos;s DOI, PubMed and PubMed Central
+              links, where the last fetch looked, and its plan id. Search first to narrow it, for
+              example to the plans waiting for an upload.
+            </p>
           </div>
           <details>
             <summary className="cursor-pointer text-sm text-ink">Import many PDFs at once</summary>

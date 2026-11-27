@@ -1913,6 +1913,100 @@ class TestCollectionsArePaged:
         assert first["conflict_total"] == 2
 
 
+class TestAcquisitionQueueDownload:
+    """The queue's search as one CSV, or as a zip of CSVs of at most 100 rows."""
+
+    async def _seed(self, api, count: int) -> None:
+        from lab_assistant.domain.assets import AcquisitionPlan
+        from lab_assistant.domain.identity import Work, WorkKind
+        from lab_assistant.domain.states import RelevanceState as Relevance
+
+        context, ws = api["harness"].context, api["workspace"].id
+        async with context.uow_factory() as uow:
+            for index in range(count):
+                work = Work(
+                    id=context.new_id(),
+                    workspace_id=ws,
+                    work_kind=WorkKind.ARTICLE,
+                    relevance=Relevance.INCLUDED,
+                    created_at=context.now(),
+                )
+                await uow.works.add(work)
+                await uow.assets.add_plan(
+                    AcquisitionPlan(
+                        id=context.new_id(),
+                        workspace_id=ws,
+                        work_id=work.id,
+                        status="assisted" if index % 3 else "fetched",
+                        created_at=context.now(),
+                    )
+                )
+            await uow.commit()
+
+    @staticmethod
+    def _rows(data: bytes) -> list[dict[str, str]]:
+        import csv
+        import io
+
+        return list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
+
+    async def test_one_csv_of_every_plan_the_search_finds(self, api) -> None:
+        await self._seed(api, 7)
+        client = api["client"]
+        token = await _login(client, "steward@lab.invalid")
+        whole = await client.get("/api/v1/acquisition-plans/export.csv", headers=_auth(token))
+        assert whole.status_code == 200
+        assert whole.headers["content-type"].startswith("text/csv")
+        assert whole.headers["content-disposition"].startswith(
+            'attachment; filename="acquisition-queue-'
+        )
+        rows = self._rows(whole.content)
+        assert len(rows) == 7
+        assert {"title", "doi", "url", "status", "last_outcome", "plan_id"} <= set(rows[0])
+
+        assisted = await client.get(
+            "/api/v1/acquisition-plans/export.csv",
+            headers=_auth(token),
+            params={"status": "assisted", "outcome": "none"},
+        )
+        assert {row["status"] for row in self._rows(assisted.content)} == {"assisted"}
+        assert len(self._rows(assisted.content)) == 4
+        assert 'assisted.csv"' in assisted.headers["content-disposition"]
+
+        # Nothing but a status's own characters reaches the header.
+        odd = await client.get(
+            "/api/v1/acquisition-plans/export.csv",
+            headers=_auth(token),
+            params={"status": 'x"; y'},
+        )
+        assert odd.status_code == 200 and self._rows(odd.content) == []
+        assert odd.headers["content-disposition"].endswith('-xy.csv"')
+
+        assert (
+            await client.get("/api/v1/acquisition-plans/export.pdf", headers=_auth(token))
+        ).status_code == 422
+        assert (await client.get("/api/v1/acquisition-plans/export.csv")).status_code == 401
+
+    async def test_a_zip_of_csvs_of_at_most_a_hundred_rows(self, api) -> None:
+        import io
+        import zipfile
+
+        await self._seed(api, 205)
+        client = api["client"]
+        token = await _login(client, "steward@lab.invalid")
+        response = await client.get("/api/v1/acquisition-plans/export.zip", headers=_auth(token))
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        names = archive.namelist()
+        assert len(names) == 3 and names == sorted(names)
+        assert names[0].startswith("acquisition-queue-") and names[0].endswith("-001.csv")
+        sizes = [len(self._rows(archive.read(name))) for name in names]
+        assert sizes == [100, 100, 5]
+        every = [row["plan_id"] for name in names for row in self._rows(archive.read(name))]
+        assert len(set(every)) == 205
+
+
 class TestTemporaryPasswords:
     """An invitation by temporary password: sent by hand, used once, then replaced."""
 

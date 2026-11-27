@@ -715,6 +715,24 @@ export const listPlans = (
     `/acquisition-plans${queryString({ ...options })}`,
   );
 
+/** The most papers in one file of the queue's zip download. */
+export const QUEUE_ROWS_PER_FILE = 100;
+
+/**
+ * A plain link to the acquisition queue as a spreadsheet: every plan the same
+ * search finds, on every page, with each paper's links. `csv` is one file;
+ * `zip` holds CSVs of at most {@link QUEUE_ROWS_PER_FILE} rows each.
+ */
+export function acquisitionQueueDownloadUrl(
+  format: "csv" | "zip",
+  filters: { status?: string; q?: string; outcome?: string } = {},
+): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
+  const query = params.toString();
+  return appPath(`/api/backend/acquisition-plans/export.${format}${query ? `?${query}` : ""}`);
+}
+
 /**
  * Upload an authorised copy against a queued candidate.
  *

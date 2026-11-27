@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, File, Form, Query, Request, Response, UploadFile
@@ -26,6 +26,11 @@ from lab_assistant.adapters.connectors.seed_lookup import SeedLookupService, bui
 from lab_assistant.application.abstract_fallback import AbstractFallbackService
 from lab_assistant.application.accounts import MemberView, RoleChoice, invitation_state
 from lab_assistant.application.acquisition import AcquisitionService
+from lab_assistant.application.acquisition_export import (
+    AcquisitionExportService,
+    rows_csv,
+    rows_zip,
+)
 from lab_assistant.application.analytics import AnalyticsService
 from lab_assistant.application.bulk_review import (
     SKIP_REASONS,
@@ -2201,6 +2206,43 @@ async def list_plans(
         "total": total,
         "status_counts": status_counts,
     }
+
+
+@router.get("/acquisition-plans/export.{fmt}")
+async def export_plans(
+    fmt: Literal["csv", "zip"],
+    actor: CurrentActor,
+    container: Container,
+    status: Annotated[str | None, Query()] = None,
+    q: Annotated[
+        str | None,
+        Query(description="words each in the paper's title or one of its identifiers (a DOI)"),
+    ] = None,
+    outcome: Annotated[
+        str | None, Query(description="the latest attempt's outcome; none for never tried")
+    ] = None,
+) -> Response:
+    """Every plan the same search finds, with its links, for fetching papers by hand.
+
+    ``csv`` is one file; ``zip`` holds CSVs of at most 100 rows each, every one
+    with its header, numbered in the queue's order.
+    """
+    rows = await AcquisitionExportService(container.context).rows(
+        actor, status=status, words=tuple((q or "").split()), outcome=outcome
+    )
+    stem = f"acquisition-queue-{container.context.now().date().isoformat()}"
+    if status:
+        # Into a header: only the characters a status is made of.
+        stem += "-" + "".join(c for c in status if c.isalnum() or c == "_")
+    body = rows_csv(rows) if fmt == "csv" else rows_zip(rows, stem)
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8" if fmt == "csv" else "application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{stem}.{fmt}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post(

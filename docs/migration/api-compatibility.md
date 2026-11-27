@@ -93,14 +93,14 @@ parsing, extraction, review, releases, and export. There is nothing to redirect;
 | `/api/v1/admin/ingestion/configs…`, `/ingestion/defaults` | `POST/GET /api/v1/scopes`, `PUT/DELETE /scopes/{id}`, `/scopes/{id}/gate`, `/scopes/{id}/approve` | a draft is corrected (`PUT`) or deleted (`DELETE`) in place; an approved version is immutable, and editing creates the next version |
 | `/api/v1/admin/ingestion/jobs…`, `/ingestion/worker` | `POST/GET /api/v1/discovery-runs`, `/discovery-runs/{id}/freeze`, `GET /api/v1/operations/tasks` | a job is a discovery run plus its tasks; worker state is read from task rows |
 | `/ingestion/jobs/{id}/cancel` | `lab task cancel --task …` | per task; the API offers retry of dead letters (`POST /operations/tasks/{id}/retry`), not cancellation |
-| `/ingestion/acquisition-queue[/review-csv]` | `GET /api/v1/acquisition-plans` | the CSV is retired; the queue is a page with an upload per plan |
+| `/ingestion/acquisition-queue[/review-csv]` | `GET /api/v1/acquisition-plans`, `GET /api/v1/acquisition-plans/export.{csv,zip}` | the queue is a page with an upload per plan; the plans a search of it finds download as one CSV, or a zip of CSVs of at most 100 rows, with each paper's links |
 | `/ingestion/pdf-upload-folders`, `/ingestion/uploads` | `POST /api/v1/bulk-imports`, `lab acquisition import-folder` | PDFs are matched to waiting plans by DOI, PMID or PMCID in the name or on the first page, and go through the assisted-upload checks |
 | datasheet manifest / rows / CSV downloads | `POST /api/v1/exports/{release_id}`, `GET /api/v1/exports/{release_id}/download[?file=…]` | the wide-form XLSX is a file of the release's export package |
 | `/admin/datasheets/templates…`, `/templates/seed-default` | `GET/POST /api/v1/extraction/templates`, `POST /extraction/templates/{id}/{version}/approve`, `lab template register` | a template is a registered, immutable version; approving one makes extraction use it |
 | `/admin/datasheets/runs` (create), `/runs/{id}/reextract`, `/runs/{id}/cancel` | `POST /api/v1/extraction/runs` (`rerun`), `GET /extraction/runs`, `POST /extraction/runs/{id}/cancel` | a run is a batch of extraction tasks over parsed documents |
 | `/runs/{id}/extraction-estimate` | `GET /api/v1/extraction/estimate` | sampled; priced at the configured rates |
 | `/runs/{id}/rows`, `/runs/{id}/candidates`, `/runs/{id}/datasheet.csv` | `GET /api/v1/extraction/rows`, `GET /extraction/rows.csv?shape=wide|long` | the working sheet of current proposals; the citable sheet is the release export |
-| `/runs/{id}/manifest.csv`, `/runs/{id}/acquisition-links.csv` | `GET /api/v1/acquisition-plans` | **retired as files**: the acquisition queue is a page |
+| `/runs/{id}/manifest.csv`, `/runs/{id}/acquisition-links.csv` | `GET /api/v1/acquisition-plans`, `GET /api/v1/acquisition-plans/export.{csv,zip}` | the acquisition queue is a page; its links download for the plans a search finds, not per run |
 | `/admin/datasheets/lookup/organism`, `/lookup/product` | `GET /api/v1/lookup/organism`, `GET /api/v1/lookup/product`, `POST /api/v1/lookup/queries` | NCBI Taxonomy synonyms and PubChem names, then one query per source in its own dialect; used by the scope form, and only proposals until a steward saves the scope |
 
 ## Evaluation

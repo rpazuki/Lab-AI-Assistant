@@ -326,3 +326,53 @@ describe("The Collections page groups its settings and searches its queue", () =
     );
   });
 });
+
+describe("The acquisition queue downloads what its search finds", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    vi.mocked(api.listCandidates).mockResolvedValue({ items: [], next_cursor: null, total: 0 });
+    vi.mocked(api.listPlans).mockResolvedValue({
+      items: [],
+      next_cursor: null,
+      total: 1234,
+      status_counts: { assisted: 1234 },
+    });
+  });
+
+  it("links one CSV and a zip of CSVs, for every page of the search as applied", async () => {
+    const user = userEvent.setup();
+    render(<CollectionsClient />);
+    const csv = await screen.findByRole("link", { name: "One CSV" });
+    const zip = screen.getByRole("link", { name: "A zip of CSVs, 100 papers each" });
+    expect(screen.getByText("Download all 1,234 plans, on every page:")).toBeInTheDocument();
+    expect(csv).toHaveAttribute("href", "/assist/api/backend/acquisition-plans/export.csv");
+    expect(zip).toHaveAttribute("href", "/assist/api/backend/acquisition-plans/export.zip");
+    expect(csv).toHaveAttribute("download");
+
+    // Words still being typed are not the search yet.
+    await user.type(screen.getByLabelText("Title or identifier has"), "sterol");
+    expect(csv).toHaveAttribute("href", "/assist/api/backend/acquisition-plans/export.csv");
+    const queue = screen.getByLabelText("Title or identifier has").closest("form")!;
+    await user.click(within(queue).getByRole("button", { name: "Search" }));
+    await user.selectOptions(screen.getByLabelText("Filter by status"), "assisted");
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: "One CSV" })).toHaveAttribute(
+        "href",
+        "/assist/api/backend/acquisition-plans/export.csv?status=assisted&q=sterol",
+      ),
+    );
+    expect(screen.getByRole("link", { name: "A zip of CSVs, 100 papers each" })).toHaveAttribute(
+      "href",
+      "/assist/api/backend/acquisition-plans/export.zip?status=assisted&q=sterol",
+    );
+    expect(screen.getByText("Download the 1,234 plans this search finds, on every page:")).toBeInTheDocument();
+  });
+
+  it("offers nothing when the search finds nothing", async () => {
+    vi.mocked(api.listPlans).mockResolvedValue({ items: [], next_cursor: null, total: 0, status_counts: {} });
+    render(<CollectionsClient />);
+    expect(await screen.findByText("Nothing to download: no plan matches this search.")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "One CSV" })).not.toBeInTheDocument();
+  });
+});

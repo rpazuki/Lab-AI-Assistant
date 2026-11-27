@@ -886,6 +886,22 @@ class _Works:
             out.setdefault(identifier.work_id, []).append(identifier.value_display)
         return out
 
+    async def list_identifiers_for_works(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, list[WorkIdentifier]]:
+        wanted = set(work_ids)
+        out: dict[UUID, list[WorkIdentifier]] = {}
+        for identifier in sorted(
+            self._db.identifiers.values(), key=lambda identifier: identifier.value_normalized
+        ):
+            if (
+                identifier.workspace_id == workspace_id
+                and identifier.work_id in wanted
+                and identifier.status == "active"
+            ):
+                out.setdefault(identifier.work_id, []).append(identifier)
+        return out
+
     async def list_all_identifiers(
         self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
     ) -> list[WorkIdentifier]:
@@ -1338,6 +1354,16 @@ class _Assets:
             and (plan_id is None or attempt.acquisition_plan_id == plan_id)
         ]
         return sorted(attempts, key=lambda a: a.attempt_number)
+
+    async def list_attempts_for_plans(
+        self, workspace_id: UUID, plan_ids: Sequence[UUID]
+    ) -> dict[UUID, list[AcquisitionAttempt]]:
+        wanted = set(plan_ids)
+        out: dict[UUID, list[AcquisitionAttempt]] = {}
+        for attempt in sorted(self._db.attempts.values(), key=lambda a: a.attempt_number):
+            if attempt.workspace_id == workspace_id and attempt.acquisition_plan_id in wanted:
+                out.setdefault(attempt.acquisition_plan_id, []).append(attempt)
+        return out
 
     async def add_asset(self, asset: Asset) -> None:
         self._db.assets[asset.id] = asset

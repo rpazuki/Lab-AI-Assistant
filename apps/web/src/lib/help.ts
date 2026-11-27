@@ -679,6 +679,16 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             note: "Pressing it again plans only papers included since; retries fetches that ran out of retries on a fault or that a source never answered (rate-limited or down); checks again, without fetching, a stored file an older identity rule could not tie to its paper; gives the open routes to an upload-only paper once discovery records an open licence for it (after a later run, say); and checks degraded documents against the **Parse quality** limits. A paper every source already answered stays waiting for a person, so the same sources are not asked the same question again; upload it instead.",
           },
           {
+            title: "How to download a list of papers to fetch by hand",
+            steps: [
+              "Under **Acquisition queue** › **Search**, narrow the plans, for example **Status** assisted for those waiting for an upload. Select **Search**.",
+              "Under **Bulk action**, select **One CSV**, or **A zip of CSVs, 100 papers each** to share the work out or do a batch at a time.",
+              "Open each row's **url** (the DOI's link, else PubMed Central's or PubMed's) and download the paper where the lab is entitled to.",
+              "Upload what you found from the queue, one by one or with **Import many PDFs at once**.",
+            ],
+            note: "The download holds every plan the search finds, not only the page on screen. Each row also has **last_tried_url**, where the last fetch looked (often the PDF itself), and the **plan_id**, which says which plan a file belongs to. A title that starts like a spreadsheet formula is prefixed with an apostrophe.",
+          },
+          {
             title: "How to upload a paper the system could not fetch",
             needs: STEWARD,
             steps: [

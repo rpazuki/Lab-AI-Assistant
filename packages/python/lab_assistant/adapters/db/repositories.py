@@ -1094,6 +1094,25 @@ class _Works(_Base):
                 out.setdefault(work_id, []).append(value)
         return out
 
+    async def list_identifiers_for_works(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, list[WorkIdentifier]]:
+        i = t.work_identifiers
+        out: dict[UUID, list[WorkIdentifier]] = {}
+        for chunk in _chunks(list(dict.fromkeys(work_ids))):
+            if not chunk:
+                continue
+            found = await self._many(
+                IDENTIFIERS,
+                self._scope(IDENTIFIERS, workspace_id),
+                i.c.work_id.in_(chunk),
+                i.c.status == "active",
+                order=i.c.value_normalized,
+            )
+            for identifier in found:
+                out.setdefault(identifier.work_id, []).append(identifier)
+        return out
+
     async def list_all_identifiers(
         self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
     ) -> list[WorkIdentifier]:
@@ -1733,6 +1752,24 @@ class _Assets(_Base):
         return await self._many(
             ATTEMPTS, *conditions, order=t.acquisition_attempts.c.attempt_number
         )
+
+    async def list_attempts_for_plans(
+        self, workspace_id: UUID, plan_ids: Sequence[UUID]
+    ) -> dict[UUID, list[AcquisitionAttempt]]:
+        a = t.acquisition_attempts
+        out: dict[UUID, list[AcquisitionAttempt]] = {}
+        for chunk in _chunks(list(dict.fromkeys(plan_ids))):
+            if not chunk:
+                continue
+            found = await self._many(
+                ATTEMPTS,
+                self._scope(ATTEMPTS, workspace_id),
+                a.c.acquisition_plan_id.in_(chunk),
+                order=a.c.attempt_number,
+            )
+            for attempt in found:
+                out.setdefault(attempt.acquisition_plan_id, []).append(attempt)
+        return out
 
     async def add_asset(self, asset: Asset) -> None:
         await self._upsert(ASSETS, asset)

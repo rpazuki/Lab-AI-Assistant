@@ -1237,6 +1237,132 @@ class TestDeletesOverSql:
         assert signed_in.id == user.id
 
 
+class TestAcquisitionExportOverSql:
+    """The queue's CSV: every page of a search, with each paper's links."""
+
+    async def test_every_page_of_a_search_with_its_links(self, sql_stack, monkeypatch) -> None:
+        import csv
+        import io
+        import zipfile
+
+        from lab_assistant.application import acquisition_export
+        from lab_assistant.application.acquisition_export import (
+            AcquisitionExportService,
+            rows_csv,
+            rows_zip,
+        )
+        from lab_assistant.contracts.errors import AcquisitionOutcome
+        from lab_assistant.domain.assets import (
+            AcquisitionAttempt,
+            AcquisitionPlan,
+            AcquisitionRoute,
+        )
+        from lab_assistant.domain.review import WorkSummary
+
+        # Three reads of two plans each, so the export pages as a large queue does.
+        monkeypatch.setattr(acquisition_export, "_BATCH", 2)
+        context, accounts = sql_stack["context"], sql_stack["accounts"]
+        owner = await accounts.create_user(email="x@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="export-lab", display_name="Export Lab", owner_user_id=owner.id
+        )
+        ws = workspace.id
+        plans = []
+        async with context.uow_factory() as uow:
+            for index in range(5):
+                work = Work(
+                    id=context.new_id(),
+                    workspace_id=ws,
+                    work_kind=WorkKind.ARTICLE,
+                    relevance=RelevanceState.INCLUDED,
+                    created_at=datetime.now(UTC),
+                )
+                await uow.works.add(work)
+                await uow.works.upsert_summaries(
+                    [WorkSummary(work_id=work.id, workspace_id=ws, title=f"=Paper {index}")]
+                )
+                await uow.works.add_identifier(
+                    WorkIdentifier(
+                        id=context.new_id(),
+                        workspace_id=ws,
+                        work_id=work.id,
+                        scheme=IdentifierScheme.DOI,
+                        value_normalized=f"10.1000/p{index}",
+                        value_display=f"10.1000/P{index}",
+                    )
+                )
+                plan = AcquisitionPlan(
+                    id=context.new_id(),
+                    workspace_id=ws,
+                    work_id=work.id,
+                    status="assisted" if index % 2 == 0 else "fetched",
+                    created_at=datetime.now(UTC),
+                )
+                await uow.assets.add_plan(plan)
+                plans.append(plan)
+            await uow.works.add_identifier(
+                WorkIdentifier(
+                    id=context.new_id(),
+                    workspace_id=ws,
+                    work_id=plans[0].work_id,
+                    scheme=IdentifierScheme.PMCID,
+                    value_normalized="pmc123",
+                    value_display="PMC123",
+                )
+            )
+            for number, outcome in enumerate(
+                (AcquisitionOutcome.NOT_FOUND, AcquisitionOutcome.ENTITLEMENT_REQUIRED), start=1
+            ):
+                await uow.assets.add_attempt(
+                    AcquisitionAttempt(
+                        id=context.new_id(),
+                        workspace_id=ws,
+                        acquisition_plan_id=plans[0].id,
+                        manifestation_id=None,
+                        connector_id="unpaywall",
+                        route=AcquisitionRoute.OPEN_REPOSITORY,
+                        attempt_number=number,
+                        outcome=outcome,
+                        requested_at=datetime.now(UTC),
+                        source_url_redacted=f"https://publisher.example/p0-{number}.pdf",
+                    )
+                )
+            await uow.commit()
+
+        actor = make_actor(user_id=owner.id, workspace_id=ws, role=Role.ADMIN)
+        service = AcquisitionExportService(context)
+        every = await service.rows(actor)
+        assert [row["plan_id"] for row in every] == sorted(str(plan.id) for plan in plans)
+
+        assisted = await service.rows(actor, status="assisted")
+        assert len(assisted) == 3
+        first = next(row for row in assisted if row["plan_id"] == str(plans[0].id))
+        assert first["doi"] == "10.1000/P0" and first["pmcid"] == "PMC123"
+        assert first["url"] == first["doi_url"] == "https://doi.org/10.1000/P0"
+        assert first["pmc_url"] == "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC123/"
+        # The latest attempt: its answer, and where it looked.
+        assert first["last_outcome"] == "entitlement_required"
+        assert first["last_tried_url"] == "https://publisher.example/p0-2.pdf"
+        others = [row for row in assisted if row is not first]
+        assert {row["last_outcome"] for row in others} == {"never tried"}
+
+        found = await service.rows(actor, words=("10.1000/p3",))
+        assert [row["work_id"] for row in found] == [str(plans[3].work_id)]
+
+        # A title that starts like a formula is escaped in the file.
+        text = rows_csv(every).decode("utf-8-sig")
+        parsed = list(csv.DictReader(io.StringIO(text)))
+        assert len(parsed) == 5 and parsed[0]["title"].startswith("'=Paper")
+
+        archive = zipfile.ZipFile(io.BytesIO(rows_zip(every, "queue", per_file=2)))
+        assert archive.namelist() == ["queue-001.csv", "queue-002.csv", "queue-003.csv"]
+        sizes = [
+            len(list(csv.DictReader(io.StringIO(archive.read(name).decode("utf-8-sig")))))
+            for name in archive.namelist()
+        ]
+        assert sizes == [2, 2, 1]
+
+
 class TestReconciliationOverSql:
     """Reconciling a run large enough to need several batches.
 

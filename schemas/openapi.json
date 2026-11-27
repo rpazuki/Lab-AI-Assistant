@@ -1926,6 +1926,132 @@
         "summary": "List Plans"
       }
     },
+    "/api/v1/acquisition-plans/export.{fmt}": {
+      "get": {
+        "description": "Every plan the same search finds, with its links, for fetching papers by hand.\n\n``csv`` is one file; ``zip`` holds CSVs of at most 100 rows each, every one\nwith its header, numbered in the queue's order.",
+        "operationId": "export_plans_api_v1_acquisition_plans_export__fmt__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fmt",
+            "required": true,
+            "schema": {
+              "enum": [
+                "csv",
+                "zip"
+              ],
+              "title": "Fmt",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "description": "words each in the paper's title or one of its identifiers (a DOI)",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "words each in the paper's title or one of its identifiers (a DOI)",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "the latest attempt's outcome; none for never tried",
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "the latest attempt's outcome; none for never tried",
+              "title": "Outcome"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Plans"
+      }
+    },
     "/api/v1/acquisition-plans/fetch-included": {
       "post": {
         "description": "Queue the sweep: plan every included paper without a plan, try waiting fetches again.\n\nWaiting fetches go back in the queue only when an automatic route is left; a\npaper only a person can supply stays waiting for that person.\n\nThe sweep reads every waiting fetch and every degraded parse, which is minutes\nof work on a corpus of this size, so it is queued rather than done here: the\nrequest used to race the gateway's read timeout and be cut off half done. The\ncounts it used to return are read back from the task by ``fetch_included_status``.",

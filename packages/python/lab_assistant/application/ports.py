@@ -672,6 +672,12 @@ class WorkRepository(Protocol):
         """Each work's active DOIs (any DOI scheme), as displayed, in a stable order."""
         ...
 
+    async def list_identifiers_for_works(
+        self, workspace_id: UUID, work_ids: Sequence[UUID]
+    ) -> dict[UUID, list[WorkIdentifier]]:
+        """Each work's active identifiers, for many works at once."""
+        ...
+
     async def list_all_identifiers(
         self, workspace_id: UUID, *, limit: int = 500, after_id: UUID | None = None
     ) -> list[WorkIdentifier]:
@@ -845,6 +851,12 @@ class AssetRepository(Protocol):
     async def list_attempts(
         self, workspace_id: UUID, *, plan_id: UUID | None = None
     ) -> list[AcquisitionAttempt]: ...
+    async def list_attempts_for_plans(
+        self, workspace_id: UUID, plan_ids: Sequence[UUID]
+    ) -> dict[UUID, list[AcquisitionAttempt]]:
+        """Each plan's attempts, for many plans at once, by attempt number."""
+        ...
+
     async def add_asset(self, asset: Asset) -> None: ...
     async def update_asset(self, asset: Asset) -> None: ...
     async def get_asset(self, workspace_id: UUID, asset_id: UUID) -> Asset | None: ...
