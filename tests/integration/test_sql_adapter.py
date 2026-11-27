@@ -438,6 +438,97 @@ class TestSearchProjectionOverSql:
         assert copied == 1
         assert await search.count_chunks(workspace.id, release_b) == 1
 
+    async def test_text_with_nul_characters_is_stored(self, sql_stack) -> None:
+        """PDF text can carry NUL where a glyph has no mapping; Postgres refuses it.
+
+        One such character in one paper failed a whole release's index build on
+        the deployment, five attempts in a row.
+        """
+        from lab_assistant.contracts.parsing import (
+            NodeKind,
+            RenditionDocument,
+            RenditionNode,
+            TableCell,
+        )
+        from lab_assistant.domain.chunking import chunk_rendition
+        from lab_assistant.domain.release import CorpusRelease
+
+        context = sql_stack["context"]
+        accounts = sql_stack["accounts"]
+        owner = await accounts.create_user(email="o@lab.invalid", password="a-long-passphrase")
+        workspace, _ = await accounts.create_workspace(
+            slug="lab", display_name="Lab", owner_user_id=owner.id
+        )
+        release_id = context.new_id()
+        async with context.uow_factory() as uow:
+            await uow.releases.add(
+                CorpusRelease(
+                    id=release_id,
+                    workspace_id=workspace.id,
+                    name="corpus",
+                    semantic_version="1.0.0",
+                    created_at=datetime.now(tz=UTC),
+                )
+            )
+            await uow.commit()
+        document = RenditionDocument(
+            format="pdf",
+            nodes=(
+                RenditionNode(
+                    node_id="s-1",
+                    kind=NodeKind.SECTION,
+                    title="Classi\x00cation",
+                    children=(
+                        RenditionNode(
+                            node_id="p-1",
+                            kind=NodeKind.PARAGRAPH,
+                            text="Strains were classi\x00ed by lipid yield\x00.",
+                        ),
+                        RenditionNode(
+                            node_id="t-1",
+                            kind=NodeKind.TABLE,
+                            title="E\x00ciency",
+                            cells=(
+                                TableCell(
+                                    node_id="c-1", row=0, column=0, is_header=True, text="Yield"
+                                ),
+                                TableCell(node_id="c-2", row=1, column=0, text="0.4\x002"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        chunks = chunk_rendition(document, release_item_digest="d", rendition_digest="r")
+        work_id, rendition_id = context.new_id(), context.new_id()
+        rows = [
+            {
+                "chunk_key": chunk.chunk_key,
+                "work_id": str(work_id),
+                "rendition_id": str(rendition_id),
+                "node_ids": list(chunk.node_ids),
+                "content": chunk.content,
+                "content_sha256": chunk.content_sha256,
+                "chunk_type": chunk.chunk_type,
+                "section_label": chunk.section_label,
+                "page": None,
+                "token_count": chunk.token_count,
+                "chunker_id": "structural-v1",
+                "chunker_version": "1",
+                "metadata": dict(chunk.metadata),
+            }
+            for chunk in chunks
+        ]
+
+        assert await context.search_index.write_chunks(workspace.id, release_id, rows) == 2
+        contents = sorted(chunk.content for chunk in chunks)
+        assert contents == ["Eciency — Yield: 0.42", "Strains were classied by lipid yield."]
+        assert {chunk.section_label for chunk in chunks} == {"Classication"}
+        found = await context.search_index.lexical_search(
+            workspace.id, release_id, query="lipid yield", top_k=5, work_ids=[work_id]
+        )
+        assert found and "\x00" not in found[0]["content"]
+
     async def test_vector_search_is_scoped_to_one_release(self, sql_stack) -> None:
         """A chunk key is content-derived, so releases share keys by design.
 

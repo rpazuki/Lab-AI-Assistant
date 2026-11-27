@@ -138,11 +138,23 @@ def _chunk_key(
     )
 
 
+def _storable(text: str) -> str:
+    """The text without NUL characters, which Postgres refuses to store as text.
+
+    PDF text extraction emits them where a glyph has no Unicode mapping (often a
+    ligature, as in "classi\x00cation"). One such character failed a whole release's
+    index build, so every chunk passes through here, whichever parser made it.
+    """
+    return text.replace("\x00", "")
+
+
 def _section_context(node: RenditionNode, ancestry: Sequence[RenditionNode]) -> str | None:
     for parent in reversed(ancestry):
         if parent.kind in (NodeKind.SECTION, NodeKind.ABSTRACT, NodeKind.SHEET):
-            return parent.label or parent.title
-    return node.label or node.title
+            label = parent.label or parent.title
+            return _storable(label) if label else label
+    label = node.label or node.title
+    return _storable(label) if label else label
 
 
 def chunk_rendition(
@@ -186,7 +198,7 @@ def chunk_rendition(
             overlap_tokens=profile.overlap_tokens,
         )
         for window in windows:
-            content = window.strip()
+            content = _storable(window).strip()
             if not content:
                 continue
             digest = sha256_text(content)
@@ -226,11 +238,11 @@ def chunk_rendition(
             node.title or node.label or "",
         )
         for row_index in sorted(rows):
-            content = " | ".join(rows[row_index]).strip()
+            content = _storable(" | ".join(rows[row_index])).strip()
             if not content:
                 continue
             if caption:
-                content = f"{caption} — {content}"
+                content = f"{_storable(caption)} — {content}"
             digest = sha256_text(content)
             node_ids = tuple(sorted(row_nodes[row_index]))
             chunks.append(

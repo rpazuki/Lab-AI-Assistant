@@ -145,7 +145,7 @@ describe("ReleasesClient", () => {
     });
     render(<ReleasesClient />);
     await userEvent.click(await screen.findByRole("button", { name: "Draft from approved material" }));
-    expect(vi.mocked(api.draftRelease).mock.calls[0][0]).not.toHaveProperty("parent_release_id");
+    expect(vi.mocked(api.draftRelease).mock.calls[0]?.[0]).not.toHaveProperty("parent_release_id");
     expect(await screen.findByText(/with 1 paper\. Nothing is published yet/)).toBeInTheDocument();
   });
 
