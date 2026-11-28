@@ -40,6 +40,7 @@ __all__ = [
     "RetrievalResult",
     "RetrievalService",
     "reciprocal_rank_fusion",
+    "work_label",
 ]
 
 RETRIEVAL_PROFILE_VERSION = "default/1"
@@ -285,11 +286,15 @@ class RetrievalService:
         )
 
         abstract_renditions: dict[str, bool] = {}
+        # Several passages often come from one paper: look it up once.
+        labels: dict[UUID, dict[str, Any]] = {}
         async with context.uow_factory() as uow:
             for key in final_keys[:limit]:
                 row = by_key[key]
                 work_id = UUID(str(row["work_id"]))
-                work_meta = await self._work_label(uow, actor.workspace_id, work_id)
+                if work_id not in labels:
+                    labels[work_id] = await self._work_label(uow, actor.workspace_id, work_id)
+                work_meta = labels[work_id]
                 abstract_only = await _from_abstract(
                     uow, actor.workspace_id, row.get("rendition_id"), abstract_renditions
                 )
@@ -313,6 +318,14 @@ class RetrievalService:
                         locator=_locator_label(row),
                         display_restricted=display_restricted,
                         abstract_only=abstract_only,
+                        journal=work_meta.get("journal"),
+                        authors=tuple(work_meta.get("authors") or ()),
+                        doi=work_meta.get("doi"),
+                        pmid=work_meta.get("pmid"),
+                        pmcid=work_meta.get("pmcid"),
+                        section=row.get("section_label"),
+                        page=row.get("page"),
+                        chunk_type=row.get("chunk_type"),
                     )
                 )
                 result.handle_index[handle] = {
@@ -363,30 +376,7 @@ class RetrievalService:
         return result
 
     async def _work_label(self, uow, workspace_id: UUID, work_id: UUID) -> dict[str, Any]:
-        from lab_assistant.application.reconciliation import canonical_metadata
-
-        assertions = await uow.observations.list_assertions(workspace_id, work_id=work_id)
-        metadata = canonical_metadata(list(assertions))
-        identifiers = await uow.works.list_identifiers(workspace_id, work_id)
-        label = None
-        for identifier in identifiers:
-            if identifier.scheme.is_strong:
-                label = f"{identifier.scheme.value}:{identifier.value_display}"
-                break
-        year = metadata.get("year")
-        title = metadata.get("title")
-        if title is None and not assertions:
-            # A reader has no source assertions, only the reconciliation the
-            # snapshot carried (`application/archive_import.py`).
-            imported = await uow.imports.get_work_metadata(workspace_id, work_id)
-            if imported is not None:
-                title = imported.get("title")
-                year = imported.get("publication_year")
-        return {
-            "title": title,
-            "year": int(year) if isinstance(year, int) else None,
-            "source_label": label,
-        }
+        return await work_label(uow, workspace_id, work_id)
 
     async def _span_for_row(self, uow, workspace_id: UUID, row: dict[str, Any]) -> UUID | None:
         """Find the evidence span covering a chunk's first node, if one exists.
@@ -413,6 +403,48 @@ def _mint_handle(*, release_id: UUID, chunk_key: str, span_id: UUID | None) -> s
     """
     digest = sha256_text(f"{release_id}|{chunk_key}|{span_id or ''}")
     return f"E{digest[:10]}"
+
+
+async def work_label(uow: Any, workspace_id: UUID, work_id: UUID) -> dict[str, Any]:
+    """What a reader needs to name a paper and find it: title, authors, journal, ids.
+
+    A publisher reconciles these from its source assertions; a reader has none,
+    only what the snapshot carried (`application/archive_import.py`).
+    """
+    from lab_assistant.application.reconciliation import author_names, canonical_metadata
+
+    assertions = await uow.observations.list_assertions(workspace_id, work_id=work_id)
+    metadata = canonical_metadata(list(assertions))
+    identifiers = await uow.works.list_identifiers(workspace_id, work_id)
+    label = None
+    found: dict[str, str] = {}
+    for identifier in identifiers:
+        scheme = getattr(identifier.scheme, "value", identifier.scheme)
+        if label is None and getattr(identifier.scheme, "is_strong", False):
+            label = f"{scheme}:{identifier.value_display}"
+        if scheme in ("doi", "pmid", "pmcid") and scheme not in found:
+            found[scheme] = identifier.value_display
+    year = metadata.get("year")
+    title = metadata.get("title")
+    journal = metadata.get("container_title") or metadata.get("journal")
+    authors = author_names(metadata.get("authors") or ())
+    if title is None and not assertions:
+        imported = await uow.imports.get_work_metadata(workspace_id, work_id)
+        if imported is not None:
+            title = imported.get("title")
+            year = imported.get("publication_year")
+            journal = imported.get("container_title")
+            authors = [str(name) for name in imported.get("authors") or ()]
+    return {
+        "title": title,
+        "year": int(year) if isinstance(year, int) else None,
+        "source_label": label,
+        "journal": journal if isinstance(journal, str) else None,
+        "authors": authors,
+        "doi": found.get("doi"),
+        "pmid": found.get("pmid"),
+        "pmcid": found.get("pmcid"),
+    }
 
 
 def _locator_label(row: dict[str, Any]) -> str:

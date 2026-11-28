@@ -1691,6 +1691,7 @@ class _Imports:
         title: str | None,
         publication_year: int | None,
         container_title: str | None,
+        authors: tuple[str, ...] = (),
         scope_ids: tuple[UUID, ...] = (),
     ) -> None:
         self._db.work_metadata[(workspace_id, work_id)] = {
@@ -1698,6 +1699,7 @@ class _Imports:
             "title": title,
             "publication_year": publication_year,
             "container_title": container_title,
+            "authors": list(authors),
             "scope_ids": [str(scope_id) for scope_id in scope_ids],
         }
 

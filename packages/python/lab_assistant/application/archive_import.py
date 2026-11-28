@@ -487,6 +487,7 @@ class SnapshotImporter:
                     title=record.title,
                     publication_year=record.publication_year,
                     container_title=record.container_title,
+                    authors=tuple(record.authors),
                     scope_ids=tuple(record.scope_ids),
                 )
             for record in rows[RecordKind.MANIFESTATION].values():

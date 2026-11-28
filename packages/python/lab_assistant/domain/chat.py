@@ -119,6 +119,11 @@ class ChatMessage(BaseModel):
     llm_model: str | None = None
     model_revision: str | None = None
     citations: tuple[Citation, ...] = ()
+    #: The sources the answer was written from, as the asker was shown them:
+    #: paper details, where in the paper, and the passage. Kept so a reopened
+    #: conversation shows them again; the citations alone cover only what the
+    #: answer cited, and say nothing about the paper.
+    sources: tuple[dict[str, Any], ...] = ()
     citation_validation_passed: bool = True
     unsupported_citation_handles: tuple[str, ...] = ()
     input_tokens: int = 0

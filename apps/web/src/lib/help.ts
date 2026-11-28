@@ -296,15 +296,15 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         id: "asking",
         title: "Asking a question",
         about: [
-          "Ask answers questions from the published corpus only: the release currently being served. It first retrieves the passages most relevant to your question, shows them as **Sources**, and then writes an answer that cites them.",
-          "Every citation is a handle such as [E1a2b3c4d5] that opens the exact passage it came from. A citation the system cannot verify is shown as flagged rather than hidden, so you always know which claims are backed.",
+          "Ask answers questions from the published corpus only: the release currently being served. It first retrieves the passages most relevant to your question, shows them as **Sources** on the right, and then writes an answer that cites them. Each source names its paper (authors, journal, year, and DOI or PubMed links), where in the paper the passage is, and the passage itself.",
+          "Every citation in the answer is a small number, the number of its source. A citation the system cannot verify is shown as flagged (a **?** for a source it never supplied) rather than hidden, so you always know which claims are backed.",
         ],
         howTos: [
           {
             title: "How to ask a question",
             steps: [
-              "Type your question in the box at the bottom of the conversation.",
-              "Select **Ask**. The sources appear on the right as soon as retrieval finishes; the answer follows word by word.",
+              "Type your question in the box at the bottom of the conversation. Shift+Enter starts a new line.",
+              "Press Enter or select **Ask**. The sources appear on the right as soon as retrieval finishes; the answer follows word by word. **Stop** ends an answer early, and it is not saved.",
               "To ask a follow-up, type it in the same box. The conversation keeps its context.",
             ],
             note: "Ask about what the papers report, as specifically as you can: strain, product, condition. The answer will say when the corpus does not cover something.",
@@ -312,9 +312,10 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
           {
             title: "How to check a citation",
             steps: [
-              "Select a citation handle in the answer.",
-              "Read the passage under **Evidence in context**, below the sources.",
+              "Select a citation number in the answer. Its source is marked under **Sources** and opens in context.",
+              "Read the whole paragraph, with the cited passage marked, and where it is in the paper: its section, which paragraph, and for a PDF the page.",
             ],
+            note: "To see an earlier answer's sources, select **sources** under that answer.",
           },
         ],
       },
@@ -322,18 +323,18 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
         id: "sessions",
         title: "Conversations",
         about: [
-          "Each conversation is a session, listed under **Sessions** on the left and named after its first question. Sessions are private to you, except that admins of the workspace can read them (see below).",
+          "Each conversation is a session, named after its first question. **Sessions**, above the conversation, opens the list over the page and closes again when you choose one, so the answer has the room. Sessions are private to you, except that admins of the workspace can read them (see below).",
         ],
         howTos: [
           {
             title: "How to start a new conversation",
-            steps: ["Select **New** at the top of **Sessions**, then ask your question."],
+            steps: ["Select **New session**, above the conversation, then ask your question."],
           },
           {
             title: "How to rename or delete a conversation",
             steps: [
-              "Find it under **Sessions**.",
-              "Select **rename** and type the new title, or select **delete**.",
+              "Select **Sessions** to open the list.",
+              "Select **rename** beside it and type the new title, or select **delete**.",
             ],
             note: "Deleting hides the conversation from you; it does not give back the tokens it used.",
           },

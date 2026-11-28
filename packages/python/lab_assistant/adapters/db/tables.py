@@ -1163,6 +1163,7 @@ chat_messages = Table(
     Column("llm_model", Text),
     Column("model_revision", Text),
     Column("citations", _JSONB, nullable=False, server_default=text("'[]'")),
+    Column("sources", _JSONB, nullable=False, server_default=text("'[]'")),
     Column("citation_validation_passed", Boolean, nullable=False, server_default=text("true")),
     Column(
         "unsupported_citation_handles",
@@ -1461,6 +1462,8 @@ work_metadata = Table(
     Column("title", Text),
     Column("publication_year", Integer),
     Column("container_title", Text),
+    #: The authors as a citation names them, as the snapshot carried them.
+    Column("authors", _JSONB, nullable=False, server_default=text("'[]'")),
     #: The scopes whose discovery runs found the paper on the publisher, as the
     #: snapshot carried them: a reader has no runs to work it out from.
     Column("scope_ids", _JSONB, nullable=False, server_default=text("'[]'")),

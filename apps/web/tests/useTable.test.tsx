@@ -127,7 +127,8 @@ describe("a sortable table", () => {
 describe("every data table", () => {
   it("sorts through the shared headers", () => {
     // A table that lists rows uses SortHeader, so sorting is the same everywhere.
-    // The help guides' status tables keep the glossary's order on purpose.
+    // The help guides' status tables keep the glossary's order on purpose, and a
+    // table in an answer is the model's text, shown in the order it wrote it.
     const dir = join(__dirname, "../src/components");
     const files = (function walk(path: string): string[] {
       return readdirSync(path).flatMap((name) => {
@@ -137,7 +138,8 @@ describe("every data table", () => {
     })(dir);
     const unsorted = files.filter((file) => {
       const text = readFileSync(file, "utf8");
-      return /<table/.test(text) && !text.includes("<SortHeader") && !file.endsWith("HelpClient.tsx");
+      return /<table/.test(text) && !text.includes("<SortHeader") && !file.endsWith("HelpClient.tsx") &&
+        !file.endsWith("Markdown.tsx")
     });
     expect(unsorted).toEqual([]);
   });

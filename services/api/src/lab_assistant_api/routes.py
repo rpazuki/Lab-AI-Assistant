@@ -824,12 +824,12 @@ async def list_sessions(
 async def get_session(
     session_id: UUID, actor: CurrentActor, container: Container
 ) -> dict[str, Any]:
-    session, messages = await ChatService(container.context).get_session(
-        actor, session_id=session_id
-    )
+    chat = ChatService(container.context)
+    session, messages = await chat.get_session(actor, session_id=session_id)
+    described = await chat.describe_answers(actor, messages)
     return {
         **_session_json(session),
-        "messages": [_message_json(message) for message in messages],
+        "messages": [_message_json(message, described.get(message.id)) for message in messages],
     }
 
 
@@ -3397,8 +3397,16 @@ async def record_retraction(
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 def _sse(event: str, data: Any) -> str:
+    """One server-sent event. Each line of the payload is its own ``data:`` line.
+
+    A blank line ends an event, so a token holding a line break, which an answer
+    in Markdown has at every paragraph, cannot be written as one ``data:`` line:
+    the client would end the event there and drop the rest. Split, the client
+    joins the lines back with the breaks between them, as the format defines.
+    """
     payload = data if isinstance(data, str) else json.dumps(data, default=str)
-    return f"event: {event}\ndata: {payload}\n\n"
+    lines = payload.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return f"event: {event}\n" + "".join(f"data: {line}\n" for line in lines) + "\n"
 
 
 def _member_json(
@@ -3449,8 +3457,12 @@ def _session_json(session) -> dict[str, Any]:
     }
 
 
-def _message_json(message) -> dict[str, Any]:
+def _message_json(message, described: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A message; with ``described`` (`ChatService.describe_answers`), its sources."""
+    described = described or {}
     return {
+        "sources": described.get("sources", []),
+        "release_label": described.get("release_label"),
         "id": str(message.id),
         "role": message.role.value,
         "content": message.content,

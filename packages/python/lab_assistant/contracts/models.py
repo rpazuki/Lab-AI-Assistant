@@ -107,6 +107,16 @@ class EvidenceBlock(BaseModel):
     #: True when the block is from the paper's abstract, standing in for a full
     #: text nobody could fetch: an answer resting on it must say so.
     abstract_only: bool = False
+    #: What a reader needs to find the paper and the passage. Shown beside the
+    #: source, never put in the prompt: the generator sees the fields above.
+    journal: str | None = None
+    authors: tuple[str, ...] = ()
+    doi: str | None = None
+    pmid: str | None = None
+    pmcid: str | None = None
+    section: str | None = None
+    page: int | None = None
+    chunk_type: str | None = None
 
 
 class GenerationRequest(BaseModel):

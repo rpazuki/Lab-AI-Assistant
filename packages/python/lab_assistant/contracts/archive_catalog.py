@@ -170,6 +170,9 @@ class WorkRecord(CatalogRecord):
     title: str | None = None
     publication_year: int | None = None
     container_title: str | None = None
+    #: The authors as a citation names them ("Pazuki R"), reconciled like the
+    #: title: a reader shows them beside each source and cannot work them out.
+    authors: tuple[str, ...] = ()
     #: The scopes whose discovery runs found this work when the snapshot was
     #: packaged. A reader has no discovery runs, so without this it cannot say
     #: which papers a scope covers, and so cannot stop serving one.

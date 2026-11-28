@@ -18,11 +18,17 @@ from typing import Any
 from uuid import UUID
 
 from lab_assistant.application.context import ActorContext, ServiceContext
+from lab_assistant.application.passage_place import place_of
 from lab_assistant.application.retrieval import RetrievalService
 from lab_assistant.application.usage import UsageService
 from lab_assistant.contracts.errors import NotFound, PolicyDenied
 from lab_assistant.contracts.events import ActorType, AuditAction
-from lab_assistant.contracts.models import GenerationRequest, GenerationResult, StreamUsage
+from lab_assistant.contracts.models import (
+    EvidenceBlock,
+    GenerationRequest,
+    GenerationResult,
+    StreamUsage,
+)
 from lab_assistant.contracts.policy import PolicyAction, ResourceRef, ResourceType
 from lab_assistant.domain.chat import (
     ChatMessage,
@@ -36,7 +42,7 @@ from lab_assistant.domain.chat import (
 from lab_assistant.domain.workspace import Capability
 from lab_assistant.policy.model_transfer import TransferRequest
 
-__all__ = ["ANSWER_PROMPT", "PROMPT_BUNDLE_ID", "AnswerOutcome", "ChatService"]
+__all__ = ["ANSWER_PROMPT", "PROMPT_BUNDLE_ID", "AnswerOutcome", "ChatService", "source_payload"]
 
 PROMPT_BUNDLE_ID = "answer-researcher"
 #: 2: evidence from an abstract is marked, and an answer resting on it says so.
@@ -136,6 +142,93 @@ class ChatService:
                 raise NotFound(f"session {session_id} not found")
             messages = await uow.chat.list_messages(actor.workspace_id, session_id)
         return session, messages
+
+    async def describe_answers(
+        self, actor: ActorContext, messages: list[ChatMessage]
+    ) -> dict[UUID, dict[str, Any]]:
+        """Each answer's sources and release name, as this reader may see them now.
+
+        An answer keeps the sources it was written from, but what a reader may
+        open can change after it: a mirror stops serving a release or a scope, a
+        paper's rights narrow. So each kept source is checked again here, and its
+        passage is cut to an excerpt, or left out, as retrieval would do today.
+
+        Answers from before sources were kept have only their citations: their
+        cited papers are rebuilt from those, without the passage text, which the
+        citation still opens.
+        """
+        from lab_assistant.application.mirror_access import read_withheld, withheld_work_ids
+        from lab_assistant.application.retrieval import _bounded_excerpt, work_label
+
+        context = self._context
+        ws = actor.workspace_id
+        policy_input = actor.policy_input(now=context.now())
+        described: dict[UUID, dict[str, Any]] = {}
+        labels: dict[UUID, str | None] = {}
+        papers: dict[UUID, dict[str, Any]] = {}
+
+        def allows(action: PolicyAction, work_id: UUID) -> bool:
+            return context.policy_engine.allows(
+                policy_input,
+                action=action,
+                resource=ResourceRef(resource_type=ResourceType.WORK, resource_id=work_id),
+            )
+
+        async with context.uow_factory() as uow:
+            withheld = await read_withheld(uow, ws)
+            withheld_works = await withheld_work_ids(uow, ws, withheld)
+            for message in messages:
+                if message.role is not MessageRole.ASSISTANT:
+                    continue
+                if message.release_id is not None and message.release_id not in labels:
+                    labels[message.release_id] = await _release_label(uow, ws, message.release_id)
+                release_withheld = message.release_id in withheld.release_ids
+                stored = [dict(source) for source in message.sources]
+                if not stored:
+                    for citation in message.citations:
+                        if citation.work_id is None or citation.status is not CitationStatus.VALID:
+                            continue
+                        if citation.work_id not in papers:
+                            papers[citation.work_id] = await work_label(uow, ws, citation.work_id)
+                        stored.append(
+                            {
+                                **papers[citation.work_id],
+                                "handle": citation.handle,
+                                "locator": citation.display_label,
+                                "abstract_only": bool(citation.locator.get("abstract_only")),
+                                "display_restricted": False,
+                                "snippet": "",
+                                "text": "",
+                                "work_id": str(citation.work_id),
+                                "from_citation": True,
+                            }
+                        )
+                sources: list[dict[str, Any]] = []
+                for source in stored:
+                    work_id = UUID(str(source["work_id"])) if source.get("work_id") else None
+                    if (
+                        release_withheld
+                        or (work_id is not None and work_id in withheld_works)
+                        or (work_id is not None and not allows(PolicyAction.QUERY, work_id))
+                    ):
+                        source = {**source, "snippet": "", "text": "", "withheld": True}
+                    elif (
+                        work_id is not None
+                        and not source.get("display_restricted")
+                        and not allows(PolicyAction.DISPLAY_FULL_CONTENT, work_id)
+                    ):
+                        source = {
+                            **source,
+                            "snippet": _bounded_excerpt(str(source.get("snippet") or "")),
+                            "text": _bounded_excerpt(str(source.get("text") or "")),
+                            "display_restricted": True,
+                        }
+                    sources.append(source)
+                described[message.id] = {
+                    "sources": sources,
+                    "release_label": labels.get(message.release_id) if message.release_id else None,
+                }
+        return described
 
     async def rename_session(
         self, actor: ActorContext, *, session_id: UUID, title: str
@@ -253,24 +346,15 @@ class ChatService:
             alias=alias,
             top_k=top_k,
         )
+        async with context.uow_factory() as uow:
+            release_label = await _release_label(uow, actor.workspace_id, retrieval.plan.release_id)
         yield {
             "type": "sources",
             "data": {
                 "release_id": str(retrieval.plan.release_id),
+                "release_label": release_label,
                 "classification": retrieval.plan.classification,
-                "sources": [
-                    {
-                        "handle": block.handle,
-                        "title": block.work_title,
-                        "year": block.work_year,
-                        "source_label": block.source_label,
-                        "locator": block.locator,
-                        "display_restricted": block.display_restricted,
-                        "abstract_only": block.abstract_only,
-                        "snippet": block.text[:400],
-                    }
-                    for block in retrieval.evidence
-                ],
+                "sources": _sources_of(retrieval),
                 "claims": retrieval.claims,
             },
         }
@@ -334,6 +418,7 @@ class ChatService:
                 "unsupported_handles": list(outcome.unsupported_handles),
                 "citation_validation_passed": outcome.message.citation_validation_passed,
                 "release_id": str(retrieval.plan.release_id),
+                "release_label": release_label,
                 "latency_ms": outcome.message.latency_ms,
             },
         }
@@ -454,6 +539,7 @@ class ChatService:
             llm_model=result.model,
             model_revision=result.model_revision,
             citations=tuple(citations),
+            sources=tuple(_sources_of(retrieval)),
             citation_validation_passed=not unsupported,
             unsupported_citation_handles=unsupported,
             input_tokens=result.input_tokens,
@@ -589,6 +675,7 @@ class ChatService:
             "resolved": True,
             "span": None,
             "nodes": nodes,
+            "place": place_of(document, node_ids),
             "rendition_id": str(rendition.id),
             "work_id": str(rendition.work_id) if rendition.work_id else None,
             "release_id": str(citation.release_id) if citation.release_id else None,
@@ -630,7 +717,47 @@ class ChatService:
     async def resolve_citation(
         self, actor: ActorContext, *, message_id: UUID, handle: str
     ) -> dict[str, Any]:
-        """Open a citation: the exact span, in its source context."""
+        """Open a citation: the exact span, in its source context.
+
+        Besides the passage, it says where the passage is in its paper (``place``:
+        sections, paragraph, page) and names the release it came from.
+        """
+        resolved = await self._open_citation(actor, message_id=message_id, handle=handle)
+        if not resolved.get("resolved"):
+            return resolved
+        context = self._context
+        release_id = resolved.get("release_id")
+        async with context.uow_factory() as uow:
+            resolved["release_label"] = await _release_label(
+                uow, actor.workspace_id, UUID(release_id) if release_id else None
+            )
+            span = resolved.get("span")
+            rendition = (
+                await uow.renditions.get_rendition(
+                    actor.workspace_id, UUID(resolved["rendition_id"])
+                )
+                if span and resolved.get("rendition_id")
+                else None
+            )
+        if span and rendition is not None:
+            # A verified span carries its quote; the paragraph around it and its
+            # place need the rendition, which costs a read and is worth it here.
+            from lab_assistant.application.parsing import ParsingService
+
+            try:
+                document = await ParsingService(context).load_document(
+                    actor.workspace_id, rendition
+                )
+            except Exception:  # the quote is verified; its surroundings are a help
+                document = None
+            if document is not None:
+                resolved["place"] = place_of(document, [span["node_id"]])
+                resolved["paragraph"] = document.text_of(span["node_id"])
+        return resolved
+
+    async def _open_citation(
+        self, actor: ActorContext, *, message_id: UUID, handle: str
+    ) -> dict[str, Any]:
         context = self._context
         async with context.uow_factory() as uow:
             message = await uow.chat.get_message(actor.workspace_id, message_id)
@@ -704,6 +831,48 @@ class ChatService:
                 "work_id": str(work_id) if work_id else None,
                 "release_id": str(citation.release_id) if citation.release_id else None,
             }
+
+
+def source_payload(block: EvidenceBlock, provenance: dict[str, Any] | None) -> dict[str, Any]:
+    """One source as the asker sees it: the paper, where in it, and the passage."""
+    return {
+        "handle": block.handle,
+        "title": block.work_title,
+        "year": block.work_year,
+        "journal": block.journal,
+        "authors": list(block.authors),
+        "doi": block.doi,
+        "pmid": block.pmid,
+        "pmcid": block.pmcid,
+        "source_label": block.source_label,
+        "locator": block.locator,
+        "section": block.section,
+        "page": block.page,
+        "chunk_type": block.chunk_type,
+        "display_restricted": block.display_restricted,
+        "abstract_only": block.abstract_only,
+        "snippet": block.text[:400],
+        "text": block.text,
+        # Not shown; kept so a reopened answer can check the paper is still served.
+        "work_id": (provenance or {}).get("work_id"),
+    }
+
+
+def _sources_of(retrieval) -> list[dict[str, Any]]:
+    return [
+        source_payload(block, retrieval.handle_index.get(block.handle))
+        for block in retrieval.evidence
+    ]
+
+
+async def _release_label(uow: Any, workspace_id: UUID, release_id: UUID | None) -> str | None:
+    """A release as people name it, "rla-corpus 1.2.0", rather than by its id."""
+    if release_id is None:
+        return None
+    release = await uow.releases.get(workspace_id, release_id)
+    if release is None:
+        return None
+    return f"{release.name} {release.semantic_version}"
 
 
 def _evidence_by_handle(retrieval) -> dict[str, str]:

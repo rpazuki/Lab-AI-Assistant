@@ -1376,6 +1376,7 @@ class ArchiveImportRepository(Protocol):
         title: str | None,
         publication_year: int | None,
         container_title: str | None,
+        authors: tuple[str, ...] = (),
         scope_ids: tuple[UUID, ...] = (),
     ) -> None: ...
 

@@ -474,7 +474,7 @@ class ArchiveCatalogBuilder:
         relations = await uow.works.list_relations(workspace_id, work_id)
         assertions = await uow.observations.list_assertions(workspace_id, work_id=work_id)
 
-        from lab_assistant.application.reconciliation import canonical_metadata
+        from lab_assistant.application.reconciliation import author_names, canonical_metadata
 
         metadata = canonical_metadata(list(assertions))
         year = metadata.get("year")
@@ -488,6 +488,7 @@ class ArchiveCatalogBuilder:
                 title=metadata.get("title"),
                 publication_year=year if isinstance(year, int) else None,
                 container_title=metadata.get("container_title") or metadata.get("journal"),
+                authors=tuple(author_names(metadata.get("authors") or ())),
                 scope_ids=tuple(sorted(closure.scopes_by_work.get(work.id, ()), key=str)),
                 identity_status=_value(work.identity_status),
                 retraction_status=_value(work.retraction_status),

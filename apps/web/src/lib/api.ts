@@ -18,6 +18,7 @@ import type {
   AuditEvent,
   Benchmark,
   BulkRelevanceResult,
+  CitationContext,
   CreatedInvitation,
   InvitationEmailSetting,
   PlanFilters,
@@ -266,6 +267,7 @@ export function parseFrame(frame: string): AskEvent | null {
   for (const line of frame.split("\n")) {
     if (line.startsWith("event: ")) event = line.slice(7).trim();
     else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
+    else if (line === "data:") dataLines.push("");
   }
   if (!event) return null;
   const raw = dataLines.join("\n");
@@ -280,7 +282,7 @@ export function parseFrame(frame: string): AskEvent | null {
 }
 
 export const resolveCitation = (messageId: string, handle: string) =>
-  request<Record<string, unknown>>(`/chat/messages/${messageId}/citations/${handle}`);
+  request<CitationContext>(`/chat/messages/${messageId}/citations/${handle}`);
 
 export const sendFeedback = (
   messageId: string,

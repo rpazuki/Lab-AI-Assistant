@@ -109,24 +109,80 @@ export interface ChatMessage {
   citation_validation_passed: boolean;
   unsupported_handles: string[];
   latency_ms: number;
+  /** The sources the answer was written from, checked again for this reader. */
+  sources?: SourceBlock[];
+  /** The release by name and version, "rla-corpus 1.2.0". */
+  release_label?: string | null;
 }
 
 export interface SourceBlock {
   handle: string;
   title: string | null;
   year: number | null;
+  journal?: string | null;
+  /** As a citation names them: "Pazuki R". */
+  authors?: string[];
+  doi?: string | null;
+  pmid?: string | null;
+  pmcid?: string | null;
   source_label: string | null;
   locator: string | null;
+  /** The section the passage is in, and its page in a PDF. */
+  section?: string | null;
+  page?: number | null;
+  /** "paragraph", "table_row", "abstract", "figure_caption"… */
+  chunk_type?: string | null;
   display_restricted: boolean;
   /** From the paper's abstract: its full text could not be fetched. */
   abstract_only?: boolean;
   snippet: string;
+  /** The whole passage the answer was given. */
+  text?: string;
+  /** An answer from before sources were kept: rebuilt from its citation, no passage. */
+  from_citation?: boolean;
+  /** This installation no longer serves it: the passage is left out. */
+  withheld?: boolean;
+}
+
+/** Where a cited passage sits in its paper. */
+export interface PassagePlace {
+  kind?: string;
+  section_path?: string[];
+  paragraph?: number;
+  paragraphs?: number;
+  page?: number;
+  paragraph_on_page?: number;
+  paragraphs_on_page?: number;
+  table?: { label: string | null; caption: string | null; row: number | null; columns: string[] };
+}
+
+/** An opened citation: the passage in its source context. */
+export interface CitationContext {
+  handle?: string;
+  status?: CitationStatus;
+  resolved: boolean;
+  reason?: string;
+  span?: { node_id: string; quote_preview: string } | null;
+  nodes?: { node_id: string; text: string; kind: string; row: number | null; column: number | null }[];
+  /** The whole paragraph a verified span is in. */
+  paragraph?: string | null;
+  place?: PassagePlace;
+  release_label?: string | null;
 }
 
 /** Streamed answer events. `sources` arrives before any prose, so the interface
  *  can show what the answer is grounded in while it is still being written. */
 export type AskEvent =
-  | { type: "sources"; data: { release_id: string; classification: string; sources: SourceBlock[]; claims: unknown[] } }
+  | {
+      type: "sources";
+      data: {
+        release_id: string;
+        release_label?: string | null;
+        classification: string;
+        sources: SourceBlock[];
+        claims: unknown[];
+      };
+    }
   | { type: "token"; data: string }
   | {
       type: "done";
@@ -136,6 +192,7 @@ export type AskEvent =
         unsupported_handles: string[];
         citation_validation_passed: boolean;
         release_id: string;
+        release_label?: string | null;
         latency_ms: number;
       };
     }

@@ -14,6 +14,7 @@ automatic_rule``, so "why are these one work" is always answerable.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -67,6 +68,7 @@ __all__ = [
     "IdentityService",
     "ReconciliationHandler",
     "ReconciliationReport",
+    "author_names",
     "canonical_metadata",
 ]
 
@@ -168,6 +170,44 @@ def canonical_metadata(assertions: list[SourceAssertion]) -> dict[str, Any]:
 
     resolved["_provenance"] = provenance
     return resolved
+
+
+#: How many authors a paper's citation line keeps. A consortium paper can list
+#: hundreds; a reader identifies it by the first few.
+AUTHOR_NAMES_KEPT = 20
+
+
+def author_names(authors: Iterable[Any], *, limit: int = AUTHOR_NAMES_KEPT) -> list[str]:
+    """Authors as a citation names them, "Pazuki R", each once and in order.
+
+    Every source asserts its own author list, so the same person arrives once
+    from PubMed and again from Crossref, spelt a little differently. Two names
+    are the same author when the family name and the first initial agree; the
+    first spelling seen is kept, so the list keeps the first source's order.
+    """
+    names: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for author in authors:
+        if isinstance(author, str):
+            family, given = author.strip(), ""
+        elif isinstance(author, dict):
+            family = str(author.get("last_name") or author.get("family") or "").strip()
+            given = str(author.get("fore_name") or author.get("given") or "").strip()
+            if not family:
+                family = str(author.get("name") or author.get("collective_name") or "").strip()
+        else:
+            continue
+        if not family:
+            continue
+        initials = "".join(part[0] for part in re.split(r"[\s.\-]+", given) if part).upper()
+        key = (family.casefold(), initials[:1])
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(f"{family} {initials}".strip())
+        if len(names) >= limit:
+            break
+    return names
 
 
 async def refresh_summaries(

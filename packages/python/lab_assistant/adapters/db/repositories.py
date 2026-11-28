@@ -251,6 +251,7 @@ MESSAGES = Mapper(
         "retrieved_claim_revision_ids": uuid_list,
         "unsupported_citation_handles": _str_tuple,
         "citations": lambda rows: tuple(rows or ()),
+        "sources": lambda rows: tuple(rows or ()),
     },
 )
 FEEDBACK = Mapper(t.feedback, Feedback, loaders={"flagged_citation_handles": _str_tuple})
@@ -3226,6 +3227,7 @@ class _SqlImports:
         title: str | None,
         publication_year: int | None,
         container_title: str | None,
+        authors: tuple[str, ...] = (),
         scope_ids: tuple[UUID, ...] = (),
     ) -> None:
         values = {
@@ -3233,6 +3235,7 @@ class _SqlImports:
             "title": title,
             "publication_year": publication_year,
             "container_title": container_title,
+            "authors": list(authors),
             "scope_ids": [str(scope_id) for scope_id in scope_ids],
         }
         where = and_(
