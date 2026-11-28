@@ -65,6 +65,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       release_label: "rla-corpus 1.1.0",
     })),
     sendFeedback: vi.fn(async () => ({ id: "f1" })),
+    deleteSession: vi.fn(async () => undefined),
     ask: vi.fn(),
   };
 });
@@ -289,6 +290,68 @@ describe("AskClient", () => {
     expect(screen.queryByText(/Sources appear here/)).not.toBeInTheDocument();
     // Choosing a conversation closes the drawer.
     expect(screen.queryByRole("dialog", { name: "Sessions" })).not.toBeInTheDocument();
+  });
+
+  it("can show only the sources the answer cited", async () => {
+    window.localStorage.removeItem("lab.ask.citedOnly");
+    const uncited = { ...LIPID, handle: "Ebbbbbbbbbb", title: "A paper it did not cite" };
+    vi.mocked(api.ask).mockImplementation(async (_session, _question, onEvent) => {
+      onEvent(sourcesEvent([LIPID, uncited]));
+      onEvent({ type: "token", data: "It reached 0.42 g/g [E0123456789]." });
+      onEvent(doneEvent(["E0123456789"]));
+    });
+    render(<AskClient />);
+    await askQuestion("yield?");
+
+    const sources = await screen.findByRole("list", { name: "Sources" });
+    expect(within(sources).getByText("A paper it did not cite")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Cited 1" }));
+    expect(within(sources).queryByText("A paper it did not cite")).not.toBeInTheDocument();
+    expect(within(sources).getByText(/Lipid production in an oleaginous yeast/)).toBeInTheDocument();
+    expect(window.localStorage.getItem("lab.ask.citedOnly")).toBe("1");
+    await userEvent.click(screen.getByRole("button", { name: "All 2" }));
+    expect(within(sources).getByText("A paper it did not cite")).toBeInTheDocument();
+  });
+
+  it("copies an answer with its references", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    vi.mocked(api.ask).mockImplementation(async (_session, _question, onEvent) => {
+      onEvent(sourcesEvent([LIPID]));
+      onEvent({ type: "token", data: "It reached 0.42 g/g [E0123456789]." });
+      onEvent(doneEvent(["E0123456789"]));
+    });
+    render(<AskClient />);
+    await askQuestion("yield?");
+    await userEvent.click(await screen.findByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const copied = (writeText.mock.calls[0] as unknown as [string])[0];
+    expect(copied).toContain("It reached 0.42 g/g [1].");
+    expect(copied).toContain("1. Pazuki R, Ledesma-Amaro R, Smith J, Jones K.");
+    expect(await screen.findByText("Copied, with references.")).toBeInTheDocument();
+  });
+
+  it("asks before deleting a session", async () => {
+    vi.mocked(api.listSessions).mockResolvedValue({
+      items: [
+        { id: "s9", title: "Lipid yields", pinned_release_id: null, created_at: null, updated_at: null },
+      ],
+      next_cursor: null,
+      total: 1,
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<AskClient />);
+    await userEvent.click(await screen.findByRole("button", { name: /Sessions/ }));
+    const remove = await screen.findByRole("button", { name: "Delete Lipid yields" });
+
+    await userEvent.click(remove);
+    expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining("Delete “Lipid yields”?"));
+    expect(api.deleteSession).not.toHaveBeenCalled();
+
+    await userEvent.click(remove);
+    await waitFor(() => expect(api.deleteSession).toHaveBeenCalledWith("s9"));
+    confirm.mockRestore();
+    vi.mocked(api.listSessions).mockResolvedValue({ items: [], next_cursor: null, total: 0 });
   });
 
   it("keeps the sessions in a drawer that opens and closes", async () => {

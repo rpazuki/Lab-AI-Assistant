@@ -20,6 +20,7 @@ import {
   resolveCitation,
   sendFeedback,
 } from "@/lib/api";
+import { answerAsMarkdown, exportFileName } from "@/lib/answerExport";
 import { usePager } from "@/lib/usePager";
 import type {
   Allowance,
@@ -44,6 +45,25 @@ interface Turn {
   releaseLabel: string | null;
   latencyMs: number | null;
   error: string | null;
+}
+
+const CITED_ONLY_KEY = "lab.ask.citedOnly";
+
+/** A choice that cannot be stored is simply not kept, as elsewhere in the app. */
+function remembered(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function remember(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Not kept.
+  }
 }
 
 function blankTurn(question: string): Turn {
@@ -94,6 +114,11 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
   const [shownTurn, setShownTurn] = useState<number | null>(null);
   const [opened, setOpened] = useState<Record<string, ContextState>>({});
   const [highlighted, setHighlighted] = useState<string | null>(null);
+  // Show only the sources the answer cited. Remembered on this browser.
+  const [citedOnly, setCitedOnly] = useState(false);
+  useEffect(() => {
+    setCitedOnly(remembered(CITED_ONLY_KEY) === "1");
+  }, []);
   const cards = useRef<Record<string, HTMLLIElement | null>>({});
   const [question, setQuestion] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -160,6 +185,12 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
 
   const shownIndex = shownTurn ?? turns.length - 1;
   const shown = turns[shownIndex] as Turn | undefined;
+  const citedHandles = new Set(shown?.citations.map((citation) => citation.handle) ?? []);
+  const citedCount = shown?.sources.filter((source) => citedHandles.has(source.handle)).length ?? 0;
+  // Offered once the answer is finished and cited some, but not all, of its sources.
+  const canFilter =
+    Boolean(shown?.messageId) && citedCount > 0 && citedCount < (shown?.sources.length ?? 0);
+  const filtering = canFilter && citedOnly;
   const currentTitle = sessions.find((session) => session.id === sessionId)?.title;
 
   async function onAsk(event?: React.FormEvent) {
@@ -334,6 +365,14 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
             }
           }}
           onDelete={async (session) => {
+            const name = session.title ? `“${session.title}”` : "this untitled session";
+            if (
+              !window.confirm(
+                `Delete ${name}? It leaves your list and cannot be brought back here. The tokens it used are not given back.`,
+              )
+            ) {
+              return;
+            }
             await deleteSession(session.id);
             if (session.id === sessionId) openSession(null);
             void refreshSessions();
@@ -433,6 +472,35 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
                   For: {shown.question}
                 </p>
               ) : null}
+              {canFilter && shown ? (
+                <div
+                  role="group"
+                  aria-label="Which sources to show"
+                  className="flex items-center gap-1 border-b border-border px-5 py-2 text-xs"
+                >
+                  {[
+                    { value: false, label: `All ${shown.sources.length}` },
+                    { value: true, label: `Cited ${citedCount}` },
+                  ].map((option) => (
+                    <button
+                      key={option.label}
+                      type="button"
+                      aria-pressed={filtering === option.value}
+                      onClick={() => {
+                        setCitedOnly(option.value);
+                        remember(CITED_ONLY_KEY, option.value ? "1" : "0");
+                      }}
+                      className={`rounded-badge px-2 py-1 font-medium transition-colors ${
+                        filtering === option.value
+                          ? "bg-primary text-on-primary"
+                          : "text-muted hover:bg-surface-subtle hover:text-heading"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               {shown?.sources.some((source) => source.abstract_only) ? (
                 <div className="px-5 pt-3">
                   <Alert tone="info" role="status">
@@ -446,6 +514,7 @@ export function AskClient({ initialSessionId }: { initialSessionId?: string }) {
                 <ol className={rowList} aria-label="Sources">
                   {shown.sources.map((source, position) => {
                     const citation = shown.citations.find((c) => c.handle === source.handle);
+                    if (filtering && !citation) return null;
                     const key = `${shown.messageId}|${source.handle}`;
                     return (
                       <SourceCard
@@ -498,6 +567,33 @@ function TurnCard({
     () => new Map(turn.sources.map((source, index) => [source.handle, index + 1])),
     [turn.sources],
   );
+  const [copied, setCopied] = useState<string | null>(null);
+  const exportable = () => answerAsMarkdown(turn);
+
+  async function copy() {
+    const text = exportable();
+    let done = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      done = true;
+    } catch {
+      // The clipboard API needs a secure page and the browser's leave; the
+      // older copy command, from this click, often works where it is refused.
+      done = copyBySelection(text);
+    }
+    setCopied(done ? "Copied, with references." : "The browser would not copy. Use Download instead.");
+    window.setTimeout(() => setCopied(null), 4000);
+  }
+
+  function download() {
+    const url = URL.createObjectURL(new Blob([exportable()], { type: "text/markdown" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = exportFileName(turn.question);
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   const renderCitation = (handle: string, key: string): ReactNode => {
     const number = numbers.get(handle);
     const citation = turn.citations.find((c) => c.handle === handle);
@@ -577,6 +673,27 @@ function TurnCard({
             </span>
           ) : null}
           {turn.latencyMs !== null ? <span>{seconds(turn.latencyMs)}</span> : null}
+          {turn.answer ? (
+            <span className="flex gap-3">
+              <button
+                type="button"
+                className="text-link underline hover:no-underline"
+                onClick={() => void copy()}
+                title="Copy the answer as Markdown, with a numbered reference list"
+              >
+                Copy
+              </button>
+              <button
+                type="button"
+                className="text-link underline hover:no-underline"
+                onClick={download}
+                title="Download the answer as a Markdown file, with a numbered reference list"
+              >
+                Download
+              </button>
+              {copied ? <span role="status">{copied}</span> : null}
+            </span>
+          ) : null}
           <span className="ml-auto flex gap-3">
             <button
               type="button"
@@ -597,6 +714,23 @@ function TurnCard({
       ) : null}
     </article>
   );
+}
+
+function copyBySelection(text: string): boolean {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(area);
+  }
 }
 
 function toTurns(messages: ChatMessage[]): Turn[] {

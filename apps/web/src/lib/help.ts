@@ -315,7 +315,15 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
               "Select a citation number in the answer. Its source is marked under **Sources** and opens in context.",
               "Read the whole paragraph, with the cited passage marked, and where it is in the paper: its section, which paragraph, and for a PDF the page.",
             ],
-            note: "To see an earlier answer's sources, select **sources** under that answer.",
+            note: "To see an earlier answer's sources, select **sources** under that answer. Once an answer is finished, **Cited** above the sources shows only those it cited, and **All** brings the rest back; your choice is remembered on this browser.",
+          },
+          {
+            title: "How to copy or save an answer",
+            steps: [
+              "Under the finished answer, select **Copy** to copy it, or **Download** to save it as a Markdown file.",
+              "Paste or open it where you need it. Its citations are numbered in the order the answer uses them, with a reference list (authors, title, journal, year, DOI, PMID) underneath.",
+            ],
+            note: "The numbers in the copy can differ from those on the page: on the page a number is the source's place in the sources list.",
           },
         ],
       },
@@ -334,9 +342,9 @@ export const HELP_TOPICS: readonly HelpTopic[] = [
             title: "How to rename or delete a conversation",
             steps: [
               "Select **Sessions** to open the list.",
-              "Select **rename** beside it and type the new title, or select **delete**.",
+              "Select **rename** beside it and type the new title, or select **delete** and confirm.",
             ],
-            note: "Deleting hides the conversation from you; it does not give back the tokens it used.",
+            note: "Deleting removes the conversation from your list for good; it does not give back the tokens it used.",
           },
         ],
       },
